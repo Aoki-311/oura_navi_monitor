@@ -213,6 +213,27 @@ cd /Users/lee/Downloads/VScode/oura_navi_monitor
 ./scripts/create_github_trigger.sh
 ```
 
+Default trigger file filters:
+
+- `含まれるファイル`:
+  - `app/**`
+  - `frontend/**`
+  - `deploy/**`
+  - `scripts/**`
+  - `sql/**`
+  - `Dockerfile`
+  - `requirements.txt`
+  - `cloudbuild.yaml`
+  - `.env.example`
+- `無視されるファイル`:
+  - `**/.venv/**`
+  - `**/__pycache__/**`
+  - `**/*.pyc`
+  - `**/.DS_Store`
+  - `tests/**`
+  - `docs/**`
+  - `**/*.md`
+
 Trigger behavior:
 
 - Push to `main` starts a build

@@ -10,6 +10,8 @@ REPO_NAME="${REPO_NAME:-oura_navi_monitor}"
 BRANCH_PATTERN="${BRANCH_PATTERN:-^main$}"
 BUILD_CONFIG="${BUILD_CONFIG:-cloudbuild.yaml}"
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-projects/${PROJECT_ID}/serviceAccounts/lcs-agent@lcs-developer-483404.iam.gserviceaccount.com}"
+INCLUDED_FILES="${INCLUDED_FILES:-app/**,frontend/**,deploy/**,scripts/**,sql/**,Dockerfile,requirements.txt,cloudbuild.yaml,.env.example}"
+IGNORED_FILES="${IGNORED_FILES:-**/.venv/**,**/__pycache__/**,**/*.pyc,**/.DS_Store,tests/**,docs/**,**/*.md}"
 
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found"; exit 1; }
 
@@ -34,6 +36,8 @@ if [[ -n "${trigger_id}" ]]; then
     --repo-name="${REPO_NAME}" \
     --branch-pattern="${BRANCH_PATTERN}" \
     --build-config="${BUILD_CONFIG}" \
+    --included-files="${INCLUDED_FILES}" \
+    --ignored-files="${IGNORED_FILES}" \
     --service-account="${SERVICE_ACCOUNT}" \
     --include-logs-with-status \
     --require-approval
@@ -50,6 +54,8 @@ else
       --repo-name="${REPO_NAME}" \
       --branch-pattern="${BRANCH_PATTERN}" \
       --build-config="${BUILD_CONFIG}" \
+      --included-files="${INCLUDED_FILES}" \
+      --ignored-files="${IGNORED_FILES}" \
       --service-account="${SERVICE_ACCOUNT}" \
       --include-logs-with-status \
       --require-approval 2>&1
@@ -71,5 +77,7 @@ fi
 
 echo
 echo "Trigger ready. Any push to ${BRANCH_PATTERN} will start a build in PENDING_APPROVAL."
+echo "Included files: ${INCLUDED_FILES}"
+echo "Ignored files:  ${IGNORED_FILES}"
 echo "Approve deploy with:"
 echo "  gcloud beta builds approve <BUILD_ID> --project=${PROJECT_ID}"
