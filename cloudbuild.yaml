@@ -1,24 +1,47 @@
 steps:
-  - name: gcr.io/cloud-builders/docker
+  - id: precheck-files
+    name: python:3.12-slim
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        test -f deploy/cloudrun.env.yaml
+        test -f app/main.py
+        test -f requirements.txt
+
+  - id: precheck-python-compile
+    name: python:3.12-slim
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        python -m compileall app
+
+  - id: docker-build
+    name: gcr.io/cloud-builders/docker
     args:
       - build
       - -t
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA
+      - ${_IMAGE_URI}:$COMMIT_SHA
       - .
 
-  - name: gcr.io/cloud-builders/docker
+  - id: docker-push
+    name: gcr.io/cloud-builders/docker
     args:
       - push
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA
+      - ${_IMAGE_URI}:$COMMIT_SHA
 
-  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  - id: cloud-run-deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
     args:
       - run
       - deploy
       - ${_SERVICE_NAME}
       - --image
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA
+      - ${_IMAGE_URI}:$COMMIT_SHA
       - --region
       - ${_REGION}
       - --platform
@@ -28,11 +51,20 @@ steps:
       - --no-allow-unauthenticated
       - --env-vars-file
       - deploy/cloudrun.env.yaml
+      - --labels
+      - managed-by=cloud-build,repo=oura_navi_monitor
 
 substitutions:
   _SERVICE_NAME: oura-navi-monitor
   _REGION: us-central1
   _RUNTIME_SERVICE_ACCOUNT: lcs-agent@lcs-developer-483404.iam.gserviceaccount.com
+  _IMAGE_URI: us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/oura-navi-monitor
+
+timeout: 1800s
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: true
 
 images:
-  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA
+  - ${_IMAGE_URI}:$COMMIT_SHA

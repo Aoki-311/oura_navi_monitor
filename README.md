@@ -200,6 +200,38 @@ Manifest file: `deploy/cloudrun.service.yaml`
 
 Cloud Build CI/CD file: `cloudbuild.yaml`
 
+### 6.1 GitHub -> Cloud Build -> Cloud Run (Manual Approval Gate)
+
+GitHub repository:
+
+- `https://github.com/Aoki-311/oura_navi_monitor`
+
+Create/update the production trigger (manual approval required):
+
+```bash
+cd /Users/lee/Downloads/VScode/oura_navi_monitor
+./scripts/create_github_trigger.sh
+```
+
+Trigger behavior:
+
+- Push to `main` starts a build
+- Build enters `PENDING` state until an approver manually approves
+- After approval, Cloud Build deploys to Cloud Run
+
+Approve/reject pending builds:
+
+```bash
+cd /Users/lee/Downloads/VScode/oura_navi_monitor
+./scripts/approve_pending_build.sh                # list pending
+./scripts/approve_pending_build.sh <BUILD_ID>     # approve
+./scripts/approve_pending_build.sh <BUILD_ID> reject
+```
+
+If trigger creation reports `Repository mapping does not exist`, first connect the repo once in Cloud Build UI with a human admin account:
+
+- `https://console.cloud.google.com/cloud-build/triggers;region=global/connect?project=lcs-developer-483404`
+
 ## 7. Conservative Alert Baseline
 
 Implemented as initial baseline policies:
