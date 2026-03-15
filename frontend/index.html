@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OurA Navi モニタリングダッシュボード</title>
+    <link rel="icon" type="image/svg+xml" href="/dashboard-assets/favicon.svg" />
     <link rel="stylesheet" href="/dashboard-assets/styles.css" />
     <script src="/dashboard-assets/vendor/chart.umd.min.js" defer></script>
     <script src="/dashboard-assets/app.js" defer></script>
@@ -24,36 +25,44 @@
       <section class="cards" id="kpiCards"></section>
 
       <section class="grid2">
-        <article class="panel">
+        <article class="panel chartPanel">
           <div class="panelHead">
             <h2>リクエスト推移（PC / モバイル）</h2>
             <a id="exportUsage" class="btnLink" href="#">CSVダウンロード</a>
           </div>
-          <canvas id="usageChart"></canvas>
+          <div class="chartWrap">
+            <canvas id="usageChart"></canvas>
+          </div>
         </article>
-        <article class="panel">
+        <article class="panel chartPanel">
           <div class="panelHead">
             <h2>5xxエラー推移</h2>
             <a id="exportErrorsTrend" class="btnLink" href="#">CSVダウンロード</a>
           </div>
-          <canvas id="errorTrendChart"></canvas>
+          <div class="chartWrap">
+            <canvas id="errorTrendChart"></canvas>
+          </div>
         </article>
       </section>
 
       <section class="grid2">
-        <article class="panel">
+        <article class="panel chartPanel">
           <div class="panelHead">
             <h2>デバイス別品質指標</h2>
             <a id="exportDevices" class="btnLink" href="#">CSVダウンロード</a>
           </div>
-          <canvas id="deviceChart"></canvas>
+          <div class="chartWrap">
+            <canvas id="deviceChart"></canvas>
+          </div>
         </article>
-        <article class="panel">
+        <article class="panel chartPanel">
           <div class="panelHead">
             <h2>入力候補ステージ比率</h2>
             <a id="exportQsStages" class="btnLink" href="#">CSVダウンロード</a>
           </div>
-          <canvas id="qsStageChart"></canvas>
+          <div class="chartWrap">
+            <canvas id="qsStageChart"></canvas>
+          </div>
         </article>
       </section>
 

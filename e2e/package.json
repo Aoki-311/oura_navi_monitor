@@ -1,0 +1,13 @@
+{
+  "name": "oura-navi-monitor-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Playwright harness for dashboard stability checks",
+  "scripts": {
+    "test": "playwright test",
+    "test:chart-stability": "playwright test tests/chart-stability.spec.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.54.2"
+  }
+}

@@ -221,6 +221,8 @@ Default trigger file filters:
   - `deploy/**`
   - `scripts/**`
   - `sql/**`
+  - `tests/**`
+  - `e2e/**`
   - `Dockerfile`
   - `requirements.txt`
   - `cloudbuild.yaml`
@@ -230,7 +232,6 @@ Default trigger file filters:
   - `**/__pycache__/**`
   - `**/*.pyc`
   - `**/.DS_Store`
-  - `tests/**`
   - `docs/**`
   - `**/*.md`
 
@@ -301,3 +302,33 @@ For a strict analytics-grade funnel, add immutable event table ingestion in sour
 - Keep SA key out of runtime; rotate and delete temporary key after bootstrap.
 - Restrict access to allowlisted admins only.
 - Audit monitor access and message drilldown usage in Cloud Logging.
+
+## 10. Browser E2E Guardrail (Chart Stability)
+
+This project now includes a browser-level Playwright harness that targets:
+
+- Long refresh loops on `リクエスト推移（PC / モバイル）`
+- Chart instance leak prevention
+- Layout growth regression prevention (page height runaway)
+
+Run locally (auto-starts local backend):
+
+```bash
+cd /Users/lee/Downloads/VScode/oura_navi_monitor
+./scripts/run_e2e_chart_stability.sh
+```
+
+Run against deployed URL:
+
+```bash
+cd /Users/lee/Downloads/VScode/oura_navi_monitor
+MONITOR_E2E_BASE_URL="https://oura-navi-monitor-643644246736.us-central1.run.app" \
+MONITOR_E2E_ADMIN_EMAIL="2401145@tc.terumo.co.jp" \
+./scripts/run_e2e_chart_stability.sh
+```
+
+Files:
+
+- `e2e/playwright.config.js`
+- `e2e/tests/chart-stability.spec.js`
+- `scripts/run_e2e_chart_stability.sh`

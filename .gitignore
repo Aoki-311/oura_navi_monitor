@@ -12,3 +12,9 @@ credentials/
 *.log
 .pytest_cache/
 .DS_Store
+node_modules/
+e2e/node_modules/
+e2e/playwright-report/
+e2e/test-results/
+!e2e/package.json
+!e2e/package-lock.json

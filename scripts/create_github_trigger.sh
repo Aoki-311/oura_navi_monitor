@@ -3,15 +3,15 @@ set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-lcs-developer-483404}"
 TRIGGER_REGION="${TRIGGER_REGION:-us-central1}"
-TRIGGER_NAME="${TRIGGER_NAME:-oura-navi-monitor-main}"
+TRIGGER_NAME="${TRIGGER_NAME:-oura-navi-monitor}"
 TRIGGER_DESCRIPTION="${TRIGGER_DESCRIPTION:-CI/CD for oura_navi_monitor (manual approval required)}"
 REPO_OWNER="${REPO_OWNER:-Aoki-311}"
 REPO_NAME="${REPO_NAME:-oura_navi_monitor}"
 BRANCH_PATTERN="${BRANCH_PATTERN:-^main$}"
 BUILD_CONFIG="${BUILD_CONFIG:-cloudbuild.yaml}"
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-projects/${PROJECT_ID}/serviceAccounts/lcs-agent@lcs-developer-483404.iam.gserviceaccount.com}"
-INCLUDED_FILES="${INCLUDED_FILES:-app/**,frontend/**,deploy/**,scripts/**,sql/**,Dockerfile,requirements.txt,cloudbuild.yaml,.env.example}"
-IGNORED_FILES="${IGNORED_FILES:-**/.venv/**,**/__pycache__/**,**/*.pyc,**/.DS_Store,tests/**,docs/**,**/*.md}"
+INCLUDED_FILES="${INCLUDED_FILES:-app/**,frontend/**,deploy/**,scripts/**,sql/**,tests/**,e2e/**,Dockerfile,requirements.txt,cloudbuild.yaml,.env.example}"
+IGNORED_FILES="${IGNORED_FILES:-**/.venv/**,**/__pycache__/**,**/*.pyc,**/.DS_Store,docs/**,**/*.md}"
 
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found"; exit 1; }
 

@@ -2,6 +2,7 @@ const state = {
   days: 7,
   selectedUserId: "",
   selectedConversationId: "",
+  chartThemeApplied: false,
   charts: {
     usage: null,
     errorTrend: null,
@@ -17,6 +18,39 @@ const fmtPct = (v) => (typeof v === "number" && Number.isFinite(v) ? `${(v * 100
 
 function isChartReady() {
   return typeof window.Chart !== "undefined";
+}
+
+function cssVar(name, fallback) {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+function rgba(hex, alpha) {
+  const c = String(hex || "").replace("#", "").trim();
+  if (!/^[0-9a-fA-F]{6}$/.test(c)) return `rgba(30, 97, 219, ${alpha})`;
+  const r = Number.parseInt(c.slice(0, 2), 16);
+  const g = Number.parseInt(c.slice(2, 4), 16);
+  const b = Number.parseInt(c.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function ensureChartTheme() {
+  if (!isChartReady() || state.chartThemeApplied) return;
+  const text = cssVar("--text", "#152033");
+  const muted = cssVar("--muted", "#5d6e84");
+  const line = cssVar("--line", "#d8e2f1");
+  window.Chart.defaults.color = muted;
+  window.Chart.defaults.borderColor = line;
+  window.Chart.defaults.font.family = '"Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif';
+  window.Chart.defaults.plugins.legend.labels.usePointStyle = true;
+  window.Chart.defaults.plugins.legend.labels.boxHeight = 8;
+  window.Chart.defaults.plugins.legend.labels.boxWidth = 10;
+  window.Chart.defaults.plugins.tooltip.backgroundColor = "rgba(17, 24, 39, 0.92)";
+  window.Chart.defaults.plugins.tooltip.titleColor = "#ffffff";
+  window.Chart.defaults.plugins.tooltip.bodyColor = "#ffffff";
+  window.Chart.defaults.plugins.tooltip.borderColor = rgba(text.replace("#", ""), 0.18);
+  window.Chart.defaults.plugins.tooltip.borderWidth = 1;
+  state.chartThemeApplied = true;
 }
 
 function toast(message) {
@@ -47,13 +81,26 @@ function buildCards(overview, usage) {
     { label: "QS 平均候補数", value: fmtInt(overview.qs_avg_suggestion_count) },
   ];
 
-  $("kpiCards").innerHTML = cards
-    .map((c) => `<div class="card"><div class="label">${c.label}</div><div class="value">${c.value}</div></div>`)
-    .join("");
+  const root = $("kpiCards");
+  root.textContent = "";
+  for (const card of cards) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "card";
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = card.label;
+    const value = document.createElement("div");
+    value.className = "value";
+    value.textContent = String(card.value ?? "-");
+    wrapper.appendChild(label);
+    wrapper.appendChild(value);
+    root.appendChild(wrapper);
+  }
 }
 
 function resetChart(name, config) {
   if (!isChartReady()) return;
+  ensureChartTheme();
   if (state.charts[name]) {
     state.charts[name].destroy();
   }
@@ -61,6 +108,9 @@ function resetChart(name, config) {
 }
 
 function renderUsageChart(timeseries) {
+  const primary = cssVar("--primary", "#1e61db");
+  const accent = cssVar("--accent", "#02a678");
+  const neutral = "#94a3b8";
   const map = new Map();
   for (const row of timeseries || []) {
     const day = row.day;
@@ -75,44 +125,114 @@ function renderUsageChart(timeseries) {
   const desktop = labels.map((d) => map.get(d).desktop || 0);
   const mobile = labels.map((d) => map.get(d).mobile || 0);
   const unknown = labels.map((d) => map.get(d).unknown || 0);
+  const canvas = $("usageChart");
+  const ctx = canvas.getContext("2d");
+  const desktopFill = ctx ? (() => {
+    const g = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 320);
+    g.addColorStop(0, rgba(primary, 0.26));
+    g.addColorStop(1, rgba(primary, 0.02));
+    return g;
+  })() : rgba(primary, 0.16);
+  const mobileFill = ctx ? (() => {
+    const g = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 320);
+    g.addColorStop(0, rgba(accent, 0.22));
+    g.addColorStop(1, rgba(accent, 0.02));
+    return g;
+  })() : rgba(accent, 0.14);
 
   resetChart("usage", {
-    ctx: $("usageChart"),
+    ctx: canvas,
     options: {
       type: "line",
       data: {
-        labels,
+        labels: labels.length ? labels : ["データなし"],
         datasets: [
-          { label: "PC", data: desktop, borderColor: "#1664e2", backgroundColor: "#1664e2", tension: 0.2 },
-          { label: "モバイル", data: mobile, borderColor: "#00a56a", backgroundColor: "#00a56a", tension: 0.2 },
-          { label: "不明", data: unknown, borderColor: "#94a3b8", backgroundColor: "#94a3b8", tension: 0.2 },
+          {
+            label: "PC",
+            data: labels.length ? desktop : [0],
+            borderColor: primary,
+            backgroundColor: desktopFill,
+            fill: true,
+            borderWidth: 2.2,
+            tension: 0.28,
+            pointRadius: 2.2,
+            pointHoverRadius: 4,
+          },
+          {
+            label: "モバイル",
+            data: labels.length ? mobile : [0],
+            borderColor: accent,
+            backgroundColor: mobileFill,
+            fill: true,
+            borderWidth: 2.2,
+            tension: 0.28,
+            pointRadius: 2.2,
+            pointHoverRadius: 4,
+          },
+          {
+            label: "不明",
+            data: labels.length ? unknown : [0],
+            borderColor: neutral,
+            backgroundColor: "transparent",
+            fill: false,
+            borderDash: [5, 4],
+            borderWidth: 1.6,
+            tension: 0.24,
+            pointRadius: 1.8,
+            pointHoverRadius: 3.2,
+          },
         ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: { legend: { position: "bottom" } },
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom" },
+          tooltip: { intersect: false },
+        },
+        scales: {
+          x: { grid: { display: false } },
+          y: {
+            beginAtZero: true,
+            grid: { color: rgba("#8ea0bc", 0.2) },
+            ticks: { precision: 0 },
+          },
+        },
       },
     },
   });
 }
 
 function renderErrorTrendChart(trendRows) {
+  const danger = cssVar("--danger", "#d14343");
   const labels = (trendRows || []).map((r) => r.day);
   const values = (trendRows || []).map((r) => Number(r.error_5xx_count || 0));
+  const canvas = $("errorTrendChart");
+  const ctx = canvas.getContext("2d");
+  const fill = ctx ? (() => {
+    const g = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 320);
+    g.addColorStop(0, rgba(danger, 0.9));
+    g.addColorStop(1, rgba(danger, 0.45));
+    return g;
+  })() : danger;
 
   resetChart("errorTrend", {
-    ctx: $("errorTrendChart"),
+    ctx: canvas,
     options: {
       type: "bar",
       data: {
-        labels,
-        datasets: [{ label: "5xx", data: values, backgroundColor: "#d64545" }],
+        labels: labels.length ? labels : ["データなし"],
+        datasets: [{ label: "5xx", data: labels.length ? values : [0], backgroundColor: fill, borderRadius: 8 }],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         plugins: { legend: { position: "bottom" } },
+        scales: {
+          x: { grid: { display: false } },
+          y: { beginAtZero: true, ticks: { precision: 0 } },
+        },
       },
     },
   });
@@ -120,6 +240,8 @@ function renderErrorTrendChart(trendRows) {
 
 function renderDeviceChart(rows) {
   const deviceLabelMap = { desktop: "PC", mobile: "モバイル", unknown: "不明" };
+  const primary = cssVar("--primary", "#1e61db");
+  const danger = cssVar("--danger", "#d14343");
   const labels = (rows || []).map((r) => deviceLabelMap[r.device_class] || "不明");
   const req = (rows || []).map((r) => Number(r.request_count || 0));
   const errRate = (rows || []).map((r) => Number(r.error_5xx_rate || 0) * 100);
@@ -129,18 +251,35 @@ function renderDeviceChart(rows) {
     options: {
       type: "bar",
       data: {
-        labels,
+        labels: labels.length ? labels : ["データなし"],
         datasets: [
-          { label: "リクエスト数", data: req, yAxisID: "y", backgroundColor: "#1664e2" },
-          { label: "5xx エラー率(%)", data: errRate, yAxisID: "y1", type: "line", borderColor: "#d64545", backgroundColor: "#d64545", tension: 0.2 },
+          {
+            label: "リクエスト数",
+            data: labels.length ? req : [0],
+            yAxisID: "y",
+            backgroundColor: rgba(primary, 0.8),
+            borderRadius: 10,
+            maxBarThickness: 48,
+          },
+          {
+            label: "5xx エラー率(%)",
+            data: labels.length ? errRate : [0],
+            yAxisID: "y1",
+            type: "line",
+            borderColor: danger,
+            backgroundColor: danger,
+            tension: 0.2,
+            pointRadius: 3,
+          },
         ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
         scales: {
-          y: { position: "left" },
-          y1: { position: "right", grid: { drawOnChartArea: false } },
+          y: { position: "left", beginAtZero: true, ticks: { precision: 0 } },
+          y1: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false } },
         },
       },
     },
@@ -148,8 +287,13 @@ function renderDeviceChart(rows) {
 }
 
 function renderQsStageChart(rows) {
-  const labels = (rows || []).map((r) => r.stage || "unknown");
-  const values = (rows || []).map((r) => Number(r.count || 0));
+  const palette = ["#1e61db", "#02a678", "#f59e0b", "#d14343", "#7c3aed"];
+  let labels = (rows || []).map((r) => r.stage || "unknown");
+  let values = (rows || []).map((r) => Number(r.count || 0));
+  if (!labels.length) {
+    labels = ["データなし"];
+    values = [1];
+  }
 
   resetChart("qsStage", {
     ctx: $("qsStageChart"),
@@ -157,12 +301,18 @@ function renderQsStageChart(rows) {
       type: "doughnut",
       data: {
         labels,
-        datasets: [{ data: values, backgroundColor: ["#1664e2", "#f59e0b", "#00a56a", "#a855f7"] }],
+        datasets: [{
+          data: values,
+          backgroundColor: labels.map((_, i) => palette[i % palette.length]),
+          borderWidth: 2,
+          borderColor: "#ffffff",
+        }],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         plugins: { legend: { position: "bottom" } },
+        cutout: "64%",
       },
     },
   });
@@ -179,6 +329,14 @@ function setTableRows(tableId, rows, mapper) {
       tr.appendChild(td);
     }
     tbody.appendChild(tr);
+  }
+}
+
+function appendCells(tr, values) {
+  for (const value of values) {
+    const td = document.createElement("td");
+    td.textContent = String(value ?? "");
+    tr.appendChild(td);
   }
 }
 
@@ -265,7 +423,7 @@ async function loadUsers() {
 
     for (const row of rows) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${row.userId || ""}</td><td>${row.userEmail || ""}</td><td>${row.updatedAt || ""}</td>`;
+      appendCells(tr, [row.userId || "", row.userEmail || "", row.updatedAt || ""]);
       tr.addEventListener("click", () => {
         state.selectedUserId = row.userId || "";
         state.selectedConversationId = "";
@@ -298,7 +456,7 @@ async function loadConversations() {
 
     for (const row of rows) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${row.id || ""}</td><td>${row.title || ""}</td><td>${row.updatedAt || ""}</td>`;
+      appendCells(tr, [row.id || "", row.title || "", row.updatedAt || ""]);
       tr.addEventListener("click", () => {
         state.selectedConversationId = row.id || "";
         [...tbody.querySelectorAll("tr")].forEach((r) => r.classList.remove("selected"));

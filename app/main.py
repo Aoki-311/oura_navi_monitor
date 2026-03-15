@@ -56,6 +56,16 @@ def root() -> RedirectResponse:
     return RedirectResponse(url="/dashboard")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> RedirectResponse:
+    return RedirectResponse(url="/dashboard-assets/favicon.svg")
+
+
+@app.head("/favicon.ico", include_in_schema=False)
+def favicon_head() -> RedirectResponse:
+    return RedirectResponse(url="/dashboard-assets/favicon.svg")
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(_admin: AdminIdentity = Depends(require_admin)) -> HTMLResponse:
     file_path = frontend_dir / "index.html"

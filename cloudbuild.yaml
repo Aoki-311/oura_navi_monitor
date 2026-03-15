@@ -19,6 +19,15 @@ steps:
         set -euo pipefail
         python -m compileall app
 
+  - id: precheck-guardrail-tests
+    name: python:3.12-slim
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        python -m unittest discover -s tests -p "test_*.py"
+
   - id: docker-build
     name: gcr.io/cloud-builders/docker
     args:
