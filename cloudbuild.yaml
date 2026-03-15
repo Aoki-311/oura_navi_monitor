@@ -24,14 +24,14 @@ steps:
     args:
       - build
       - -t
-      - ${_IMAGE_URI}:$COMMIT_SHA
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA
       - .
 
   - id: docker-push
     name: gcr.io/cloud-builders/docker
     args:
       - push
-      - ${_IMAGE_URI}:$COMMIT_SHA
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA
 
   - id: cloud-run-deploy
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
@@ -41,7 +41,7 @@ steps:
       - deploy
       - ${_SERVICE_NAME}
       - --image
-      - ${_IMAGE_URI}:$COMMIT_SHA
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA
       - --region
       - ${_REGION}
       - --platform
@@ -58,7 +58,6 @@ substitutions:
   _SERVICE_NAME: oura-navi-monitor
   _REGION: us-central1
   _RUNTIME_SERVICE_ACCOUNT: lcs-agent@lcs-developer-483404.iam.gserviceaccount.com
-  _IMAGE_URI: us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/oura-navi-monitor
 
 timeout: 1800s
 
@@ -67,4 +66,4 @@ options:
   dynamicSubstitutions: true
 
 images:
-  - ${_IMAGE_URI}:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA
