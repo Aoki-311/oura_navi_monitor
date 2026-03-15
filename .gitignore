@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+.env
+.env.local
+credentials/
+*.json
+*.log
+.pytest_cache/
+.DS_Store

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OurA Navi モニタリングダッシュボード</title>
+    <link rel="stylesheet" href="/dashboard-assets/styles.css" />
+    <script src="/dashboard-assets/vendor/chart.umd.min.js" defer></script>
+    <script src="/dashboard-assets/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>OurA Navi モニター</h1>
+        <p class="sub">Cloud Run / Firestore 運用監視ダッシュボード</p>
+      </div>
+      <div class="toolbar">
+        <label>集計日数 <input id="days" type="number" min="1" max="180" value="7" /></label>
+        <button id="refreshAll">再読み込み</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="cards" id="kpiCards"></section>
+
+      <section class="grid2">
+        <article class="panel">
+          <div class="panelHead">
+            <h2>リクエスト推移（PC / モバイル）</h2>
+            <a id="exportUsage" class="btnLink" href="#">CSVダウンロード</a>
+          </div>
+          <canvas id="usageChart"></canvas>
+        </article>
+        <article class="panel">
+          <div class="panelHead">
+            <h2>5xxエラー推移</h2>
+            <a id="exportErrorsTrend" class="btnLink" href="#">CSVダウンロード</a>
+          </div>
+          <canvas id="errorTrendChart"></canvas>
+        </article>
+      </section>
+
+      <section class="grid2">
+        <article class="panel">
+          <div class="panelHead">
+            <h2>デバイス別品質指標</h2>
+            <a id="exportDevices" class="btnLink" href="#">CSVダウンロード</a>
+          </div>
+          <canvas id="deviceChart"></canvas>
+        </article>
+        <article class="panel">
+          <div class="panelHead">
+            <h2>入力候補ステージ比率</h2>
+            <a id="exportQsStages" class="btnLink" href="#">CSVダウンロード</a>
+          </div>
+          <canvas id="qsStageChart"></canvas>
+        </article>
+      </section>
+
+      <section class="grid2">
+        <article class="panel">
+          <div class="panelHead">
+            <h2>エラー発生エンドポイント上位</h2>
+            <a id="exportErrorsEndpoints" class="btnLink" href="#">CSVダウンロード</a>
+          </div>
+          <div class="tableWrap">
+            <table id="topEndpointsTable"><thead><tr><th>エンドポイント</th><th>5xx件数</th></tr></thead><tbody></tbody></table>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panelHead">
+            <h2>例外種別上位</h2>
+            <a id="exportErrorsTypes" class="btnLink" href="#">CSVダウンロード</a>
+          </div>
+          <div class="tableWrap">
+            <table id="topErrorsTable"><thead><tr><th>例外種別</th><th>件数</th></tr></thead><tbody></tbody></table>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid2">
+        <article class="panel">
+          <div class="panelHead">
+            <h2>入力候補フォールバック内訳</h2>
+            <a id="exportQsFallbacks" class="btnLink" href="#">CSVダウンロード</a>
+          </div>
+          <div class="tableWrap">
+            <table id="qsFallbackTable"><thead><tr><th>フォールバック</th><th>理由</th><th>件数</th></tr></thead><tbody></tbody></table>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panelHead">
+            <h2>入力候補学習指標</h2>
+            <a id="exportQsFacts" class="btnLink" href="#">CSVダウンロード</a>
+          </div>
+          <div class="tableWrap">
+            <table id="qsFactsTable"><thead><tr><th>指標</th><th>値</th></tr></thead><tbody></tbody></table>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panelHead splitHead">
+          <h2>ユーザー / 会話 / メッセージ検索</h2>
+          <div class="row">
+            <a id="exportUsers" class="btnLink" href="#">ユーザーCSV</a>
+            <a id="exportConversations" class="btnLink disabled" href="#">会話CSV</a>
+            <a id="exportMessages" class="btnLink disabled" href="#">メッセージCSV</a>
+          </div>
+        </div>
+
+        <div class="grid3">
+          <div>
+            <div class="row">
+              <input id="userSearch" placeholder="ユーザーID / メール / サブジェクトで検索" />
+              <button id="loadUsers">ユーザー検索</button>
+            </div>
+            <div class="tableWrap tall">
+              <table id="usersTable"><thead><tr><th>ユーザーID</th><th>メール</th><th>最終更新</th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+
+          <div>
+            <div class="row">
+              <input id="convSearch" placeholder="タイトル / モード / プレビューで検索" />
+              <button id="loadConversations">会話検索</button>
+            </div>
+            <div class="tableWrap tall">
+              <table id="conversationsTable"><thead><tr><th>会話ID</th><th>タイトル</th><th>最終更新</th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+
+          <div>
+            <div class="row">
+              <span id="messageMeta" class="muted">会話が未選択です</span>
+              <button id="loadMessages">メッセージ取得</button>
+            </div>
+            <div class="tableWrap tall">
+              <table id="messagesTable"><thead><tr><th>時刻</th><th>役割</th><th>本文</th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast"></div>
+  </body>
+</html>

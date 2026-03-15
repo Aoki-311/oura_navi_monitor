@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OurA Navi モニター</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 20px; background:#f8fafc; color:#0f172a; }
+      h1 { margin: 0 0 8px; }
+      .muted { color:#475569; font-size: 13px; margin-bottom: 16px; }
+      .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+      .card { background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:12px; }
+      .kpi { font-size:24px; font-weight:700; margin: 6px 0; }
+      table { width:100%; border-collapse: collapse; font-size: 13px; }
+      th, td { border-bottom:1px solid #e2e8f0; text-align:left; padding:6px 4px; }
+      .section { margin-top: 14px; }
+      .toolbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; }
+      input { padding: 6px 8px; }
+      button { padding: 6px 10px; cursor:pointer; }
+      pre { overflow:auto; background:#0b1020; color:#e2e8f0; padding:10px; border-radius:8px; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>OurA-Navi モニター</h1>
+    <div class="muted">利用状況・障害傾向・デバイス比較・入力候補品質・会話詳細確認のための管理画面です。</div>
+
+    <div class="toolbar">
+      <label>集計日数 <input id="days" type="number" min="1" max="365" value="7" /></label>
+      <button id="reload">再読み込み</button>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div>リクエスト数</div>
+        <div id="kpi-requests" class="kpi">-</div>
+      </div>
+      <div class="card">
+        <div>5xx エラー率</div>
+        <div id="kpi-5xx" class="kpi">-</div>
+      </div>
+      <div class="card">
+        <div>P95 レイテンシ</div>
+        <div id="kpi-p95" class="kpi">-</div>
+      </div>
+      <div class="card">
+        <div>入力候補安定生成率</div>
+        <div id="kpi-qs" class="kpi">-</div>
+      </div>
+      <div class="card">
+        <div>日次/週次アクティブユーザー（DAU/WAU）</div>
+        <div id="kpi-dauwau" class="kpi">-</div>
+      </div>
+      <div class="card">
+        <div>会話数 / メッセージ数</div>
+        <div id="kpi-cm" class="kpi">-</div>
+      </div>
+    </div>
+
+    <div class="section card">
+      <h3>デバイス別指標</h3>
+      <table id="tbl-devices"><thead><tr><th>デバイス</th><th>リクエスト</th><th>5xx</th><th>5xx率</th><th>P95 ms</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <div class="section card">
+      <h3>入力候補ステージ</h3>
+      <table id="tbl-qs"><thead><tr><th>ステージ</th><th>件数</th><th>平均レイテンシ</th><th>平均候補数</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <div class="section card">
+      <h3>ユーザー</h3>
+      <div class="toolbar">
+        <label>上限件数 <input id="user-limit" type="number" min="1" max="500" value="50" /></label>
+        <button id="load-users">ユーザー取得</button>
+      </div>
+      <table id="tbl-users"><thead><tr><th>ユーザーID</th><th>メール</th><th>最終更新</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <div class="section card">
+      <h3>会話ドリルダウン</h3>
+      <div class="toolbar">
+        <input id="drill-user" placeholder="ユーザーID" />
+        <input id="drill-conv" placeholder="会話ID" />
+        <button id="drill-load">メッセージ取得</button>
+      </div>
+      <pre id="drill-output">データは未取得です。</pre>
+    </div>
+
+    <script>
+      const fmtNum = (v) => (typeof v === 'number' && Number.isFinite(v) ? v.toLocaleString() : '-');
+      const fmtPct = (v) => (typeof v === 'number' && Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : '-');
+
+      async function getJson(url) {
+        const res = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
+        if (!res.ok) throw new Error(`${url} => ${res.status}`);
+        return res.json();
+      }
+
+      function renderRows(tableId, rows, mapper) {
+        const tbody = document.querySelector(`${tableId} tbody`);
+        tbody.innerHTML = '';
+        rows.forEach((row) => {
+          const tr = document.createElement('tr');
+          mapper(row).forEach((val) => {
+            const td = document.createElement('td');
+            td.textContent = String(val ?? '');
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+      }
+
+      async function reloadDashboard() {
+        const days = Number(document.getElementById('days').value || 7);
+        const overview = await getJson(`/api/metrics/overview?days=${days}`);
+        const devices = await getJson(`/api/metrics/devices?days=${days}`);
+        const qs = await getJson(`/api/metrics/query-suggest?days=${days}`);
+
+        const ov = overview.overview || {};
+        const usage = overview.usage || {};
+
+        document.getElementById('kpi-requests').textContent = fmtNum(ov.request_count);
+        document.getElementById('kpi-5xx').textContent = fmtPct(ov.error_5xx_rate);
+        document.getElementById('kpi-p95').textContent = fmtNum(ov.request_p95_latency_ms);
+        document.getElementById('kpi-qs').textContent = fmtPct(ov.qs_stable_rate);
+        document.getElementById('kpi-dauwau').textContent = `${fmtNum(usage.dau)} / ${fmtNum(usage.wau)}`;
+        document.getElementById('kpi-cm').textContent = `${fmtNum(usage.conversationCount)} / ${fmtNum(usage.messageCount)}`;
+
+        const deviceLabel = (raw) => {
+          if (raw === 'desktop') return 'PC';
+          if (raw === 'mobile') return 'モバイル';
+          return '不明';
+        };
+
+        renderRows('#tbl-devices', devices.devices || [], (row) => [
+          deviceLabel(row.device_class),
+          fmtNum(row.request_count),
+          fmtNum(row.error_5xx_count),
+          fmtPct(row.error_5xx_rate),
+          fmtNum(row.p95_latency_ms),
+        ]);
+
+        renderRows('#tbl-qs', (qs.logs && qs.logs.stages) || [], (row) => [
+          row.stage,
+          fmtNum(row.count),
+          fmtNum(row.avg_latency_ms),
+          fmtNum(row.avg_suggestion_count),
+        ]);
+      }
+
+      async function loadUsers() {
+        const limit = Number(document.getElementById('user-limit').value || 50);
+        const users = await getJson(`/api/history/users?limit=${limit}`);
+        renderRows('#tbl-users', users.users || [], (row) => [
+          row.userId,
+          row.userEmail,
+          row.updatedAt,
+        ]);
+      }
+
+      async function loadConversationMessages() {
+        const user = document.getElementById('drill-user').value.trim();
+        const conv = document.getElementById('drill-conv').value.trim();
+        if (!user || !conv) return;
+        const out = document.getElementById('drill-output');
+        out.textContent = '読み込み中です...';
+        try {
+          const payload = await getJson(`/api/history/users/${encodeURIComponent(user)}/conversations/${encodeURIComponent(conv)}?limit=2000`);
+          out.textContent = JSON.stringify(payload, null, 2);
+        } catch (err) {
+          out.textContent = `取得に失敗しました: ${String(err)}`;
+        }
+      }
+
+      document.getElementById('reload').addEventListener('click', () => {
+        reloadDashboard().catch((err) => alert(String(err)));
+      });
+      document.getElementById('load-users').addEventListener('click', () => {
+        loadUsers().catch((err) => alert(String(err)));
+      });
+      document.getElementById('drill-load').addEventListener('click', () => {
+        loadConversationMessages().catch((err) => alert(String(err)));
+      });
+
+      reloadDashboard().catch((err) => console.error(err));
+    </script>
+  </body>
+</html>

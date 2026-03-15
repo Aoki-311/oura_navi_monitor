@@ -1,0 +1,54 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: oura-navi-monitor
+  namespace: "643644246736"
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "10"
+    spec:
+      serviceAccountName: lcs-agent@lcs-developer-483404.iam.gserviceaccount.com
+      containers:
+        - image: us-central1-docker.pkg.dev/lcs-developer-483404/cloud-run-source-deploy/oura-navi-monitor:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: MONITOR_PROJECT_ID
+              value: lcs-developer-483404
+            - name: MONITOR_REGION
+              value: us-central1
+            - name: MONITOR_SOURCE_SERVICE
+              value: lcs-rag-app
+            - name: MONITOR_RUNTIME_SERVICE_ACCOUNT
+              value: lcs-agent@lcs-developer-483404.iam.gserviceaccount.com
+            - name: MONITOR_BQ_DATASET
+              value: oura_navi_monitor
+            - name: MONITOR_BQ_LOCATION
+              value: US
+            - name: MONITOR_FIRESTORE_DATABASE
+              value: lcs-user-data
+            - name: MONITOR_FIRESTORE_CHAT_COLLECTION
+              value: chat_users
+            - name: MONITOR_ADMIN_ALLOWLIST
+              value: 2401145@tc.terumo.co.jp,2304371@tc.terumo.co.jp,0800781@tc.terumo.co.jp
+            - name: MONITOR_IAP_STRICT
+              value: "true"
+            - name: MONITOR_ALLOW_UNVERIFIED_LOCAL
+              value: "false"
+            - name: MONITOR_CORS_ALLOWED_ORIGINS
+              value: ""
+            - name: MONITOR_DEFAULT_DAYS
+              value: "7"
+            - name: MONITOR_RETENTION_DAYS
+              value: "180"
+            - name: MONITOR_MAX_USERS_SCAN
+              value: "800"
+            - name: MONITOR_TIMEZONE
+              value: Asia/Tokyo
+            - name: MONITOR_LOG_LEVEL
+              value: INFO
