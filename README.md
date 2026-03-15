@@ -253,6 +253,8 @@ If trigger creation reports `Repository mapping does not exist`, first connect t
 
 - `https://console.cloud.google.com/cloud-build/triggers;region=global/connect?project=lcs-developer-483404`
 
+Recommended trigger region for this project: `us-central1`
+
 ## 7. Conservative Alert Baseline
 
 Implemented as initial baseline policies:

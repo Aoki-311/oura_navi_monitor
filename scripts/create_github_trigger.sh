@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-lcs-developer-483404}"
-TRIGGER_REGION="${TRIGGER_REGION:-global}" # 1st-gen GitHub trigger region
+TRIGGER_REGION="${TRIGGER_REGION:-us-central1}"
 TRIGGER_NAME="${TRIGGER_NAME:-oura-navi-monitor-main}"
 TRIGGER_DESCRIPTION="${TRIGGER_DESCRIPTION:-CI/CD for oura_navi_monitor (manual approval required)}"
 REPO_OWNER="${REPO_OWNER:-Aoki-311}"
@@ -68,7 +68,7 @@ else
       echo
       echo "Repository mapping is missing."
       echo "Open this URL once with a human admin account, connect ${REPO_OWNER}/${REPO_NAME}, then rerun this script:"
-      echo "https://console.cloud.google.com/cloud-build/triggers;region=${TRIGGER_REGION}/connect?project=${PROJECT_ID}"
+      echo "https://console.cloud.google.com/cloud-build/triggers;region=global/connect?project=${PROJECT_ID}"
     fi
     exit "${code}"
   fi

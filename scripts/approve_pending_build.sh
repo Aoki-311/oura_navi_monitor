@@ -2,16 +2,19 @@
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-lcs-developer-483404}"
+BUILD_REGION="${BUILD_REGION:-us-central1}"
 BUILD_ID="${1:-}"
 
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found"; exit 1; }
 
 gcloud config set project "${PROJECT_ID}" >/dev/null
+gcloud config set builds/region "${BUILD_REGION}" >/dev/null
 
 if [[ -z "${BUILD_ID}" ]]; then
   echo "Pending approval builds:"
   gcloud beta builds list \
     --project="${PROJECT_ID}" \
+    --region="${BUILD_REGION}" \
     --filter='status=PENDING' \
     --format='table(id,status,createTime,substitutions.TRIGGER_NAME)' || true
   echo
