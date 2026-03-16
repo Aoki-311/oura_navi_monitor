@@ -39,6 +39,27 @@
         <div class="cardsRow cardsRowSecondary" id="kpiCardsSecondary"></div>
       </section>
 
+      <section class="panel metricGuide" id="metricGuide">
+        <div class="panelHead">
+          <h2>指標の見方（リクエスト口径）</h2>
+        </div>
+        <div class="metricGuideGrid">
+          <article class="metricGuideItem">
+            <h3>総リクエスト</h3>
+            <p>対象期間内に Cloud Run が受信した HTTP リクエストの総数です。</p>
+          </article>
+          <article class="metricGuideItem">
+            <h3>コア業務リクエスト</h3>
+            <p>業務の主要操作に関する API 呼び出しです（現在: <code>/v2/ask</code>、<code>/v2/conversations</code> 系）。</p>
+          </article>
+          <article class="metricGuideItem">
+            <h3>システムリクエスト</h3>
+            <p>ページ読み込み、入力候補、履歴再取得、再試行などの補助的なリクエストです。</p>
+          </article>
+        </div>
+        <p class="metricGuideNote">※ 「システムリクエスト」は利用体験の維持に必要な通信を含みます。メッセージ送信数とは一致しません。</p>
+      </section>
+
       <section class="grid2">
         <article class="panel chartPanel">
           <div class="panelHead">
@@ -51,6 +72,18 @@
         </article>
         <article class="panel chartPanel">
           <div class="panelHead">
+            <h2>システムリクエスト推移（PC / モバイル）</h2>
+            <a class="btnLink" href="#topEndpointsTable">詳細を見る</a>
+          </div>
+          <div class="chartWrap">
+            <canvas id="systemUsageChart"></canvas>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid2">
+        <article class="panel chartPanel">
+          <div class="panelHead">
             <h2>5xxエラー推移</h2>
             <a id="exportErrorsTrend" class="btnLink" href="#">CSVダウンロード</a>
           </div>
@@ -58,9 +91,6 @@
             <canvas id="errorTrendChart"></canvas>
           </div>
         </article>
-      </section>
-
-      <section class="grid2">
         <article class="panel chartPanel">
           <div class="panelHead">
             <h2>デバイス別品質指標</h2>
@@ -70,15 +100,16 @@
             <canvas id="deviceChart"></canvas>
           </div>
         </article>
-        <article class="panel chartPanel">
-          <div class="panelHead">
-            <h2>入力候補ステージ比率</h2>
-            <a id="exportQsStages" class="btnLink" href="#">CSVダウンロード</a>
-          </div>
-          <div class="chartWrap">
-            <canvas id="qsStageChart"></canvas>
-          </div>
-        </article>
+      </section>
+
+      <section class="panel chartPanel">
+        <div class="panelHead">
+          <h2>入力候補ステージ比率</h2>
+          <a id="exportQsStages" class="btnLink" href="#">CSVダウンロード</a>
+        </div>
+        <div class="chartWrap">
+          <canvas id="qsStageChart"></canvas>
+        </div>
       </section>
 
       <section class="grid2">

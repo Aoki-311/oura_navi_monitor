@@ -8,6 +8,8 @@ function buildUsageRows(days = 14) {
       day,
       device_class: "desktop",
       request_count: 80 + i,
+      core_request_count: 32 + Math.floor(i / 2),
+      system_request_count: 48 + i - Math.floor(i / 2),
       error_5xx_count: i % 3,
       error_5xx_rate: (i % 3) / (80 + i),
       p95_latency_ms: 180 + i * 2,
@@ -16,6 +18,8 @@ function buildUsageRows(days = 14) {
       day,
       device_class: "mobile",
       request_count: 45 + i,
+      core_request_count: 16 + Math.floor(i / 3),
+      system_request_count: 29 + i - Math.floor(i / 3),
       error_5xx_count: i % 2,
       error_5xx_rate: (i % 2) / (45 + i),
       p95_latency_ms: 210 + i * 2,
@@ -29,6 +33,8 @@ async function mockDashboardApis(page) {
     days: 7,
     overview: {
       request_count: 2400,
+      core_request_count: 980,
+      system_request_count: 1420,
       error_5xx_count: 22,
       error_5xx_rate: 0.009,
       request_p95_latency_ms: 250,
@@ -142,14 +148,14 @@ test("dashboard long-refresh remains stable (layout/charts)", async ({ page }) =
     };
   });
 
-  expect(initial.canvasCount).toBe(4);
-  expect(initial.chartWrapHeights.length).toBe(4);
+  expect(initial.canvasCount).toBe(5);
+  expect(initial.chartWrapHeights.length).toBe(5);
   for (const h of initial.chartWrapHeights) {
     expect(h).toBeGreaterThan(230);
     expect(h).toBeLessThan(420);
   }
   if (initial.chartInstances !== null) {
-    expect(initial.chartInstances).toBeLessThanOrEqual(4);
+    expect(initial.chartInstances).toBeLessThanOrEqual(5);
   }
 
   for (let i = 0; i < 40; i += 1) {
@@ -172,14 +178,14 @@ test("dashboard long-refresh remains stable (layout/charts)", async ({ page }) =
     };
   });
 
-  expect(after.canvasCount).toBe(4);
-  expect(after.chartWrapHeights.length).toBe(4);
+  expect(after.canvasCount).toBe(5);
+  expect(after.chartWrapHeights.length).toBe(5);
   for (const h of after.chartWrapHeights) {
     expect(h).toBeGreaterThan(230);
     expect(h).toBeLessThan(420);
   }
   expect(after.scrollHeight).toBeLessThanOrEqual(initial.scrollHeight + 240);
   if (after.chartInstances !== null) {
-    expect(after.chartInstances).toBeLessThanOrEqual(4);
+    expect(after.chartInstances).toBeLessThanOrEqual(5);
   }
 });

@@ -92,5 +92,6 @@ test("dashboard keeps rendering when one metrics module fails", async ({ page })
   await expect(page.locator("#kpiCardsSecondary .card")).toHaveCount(4);
   await expect(page.locator("#topEndpointsTable tbody tr")).toContainText("/api/metrics/usage");
   await expect(page.locator("#usageChart")).toBeVisible();
+  await expect(page.locator("#systemUsageChart")).toBeVisible();
   await expect(page.locator("#toast")).toContainText("一部データの取得に失敗しました");
 });

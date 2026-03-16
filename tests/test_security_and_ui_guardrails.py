@@ -15,15 +15,20 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
 
     def test_chart_wrap_exists_for_all_primary_charts(self) -> None:
         html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
-        self.assertGreaterEqual(html.count('class="chartWrap"'), 4)
+        self.assertGreaterEqual(html.count('class="chartWrap"'), 5)
         self.assertIn('id="kpiCardsPrimary"', html)
         self.assertIn('id="kpiCardsSecondary"', html)
         self.assertIn('data-preset="today"', html)
         self.assertIn('id="startAt"', html)
         self.assertIn('id="endAt"', html)
+        self.assertIn('id="systemUsageChart"', html)
+        self.assertIn("システムリクエスト推移", html)
+        self.assertIn('id="metricGuide"', html)
+        self.assertIn("指標の見方（リクエスト口径）", html)
         css = (ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
         self.assertIn(".chartWrap {", css)
         self.assertIn("height: clamp(", css)
+        self.assertIn(".metricGuideGrid {", css)
 
     def test_favicon_routes_and_assets_present(self) -> None:
         main_py = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
@@ -58,6 +63,8 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("Promise.allSettled(", js)
         self.assertIn("一部データの取得に失敗しました", js)
         self.assertIn("DASHBOARD_FETCH_TIMEOUT_MS", js)
+        self.assertIn("renderSystemUsageChart", js)
+        self.assertIn("core_request_count", js)
 
 if __name__ == "__main__":
     unittest.main()

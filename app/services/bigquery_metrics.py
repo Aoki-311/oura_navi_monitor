@@ -96,6 +96,8 @@ restore AS (
 )
 SELECT
   (SELECT COUNT(*) FROM req) AS request_count,
+  (SELECT COUNT(*) FROM req WHERE REGEXP_CONTAINS(path, r'^/v2/(ask|conversations)(/|$)')) AS core_request_count,
+  (SELECT COUNT(*) FROM req WHERE NOT REGEXP_CONTAINS(path, r'^/v2/(ask|conversations)(/|$)')) AS system_request_count,
   (SELECT COUNT(*) FROM req WHERE status >= 500) AS error_5xx_count,
   (SELECT SAFE_DIVIDE(COUNTIF(status >= 500), COUNT(*)) FROM req) AS error_5xx_rate,
   (SELECT APPROX_QUANTILES(latency_ms, 100)[OFFSET(95)] FROM req WHERE latency_ms IS NOT NULL) AS request_p95_latency_ms,
@@ -135,6 +137,7 @@ grid AS (
 req AS (
   SELECT
     DATE(timestamp, @tz) AS bucket_day,
+    COALESCE(REGEXP_EXTRACT(CAST(httpRequest.requestUrl AS STRING), r'https?://[^/]+(/[^? ]*)'), '/unknown') AS path,
     CASE
       WHEN REGEXP_CONTAINS(LOWER(CAST(httpRequest.userAgent AS STRING)), r'(iphone|android|mobile|ipad)') THEN 'mobile'
       WHEN CAST(httpRequest.userAgent AS STRING) IS NULL OR CAST(httpRequest.userAgent AS STRING) = '' THEN 'unknown'
@@ -153,6 +156,8 @@ agg AS (
     bucket_day,
     device_class,
     COUNT(*) AS request_count,
+    COUNTIF(REGEXP_CONTAINS(path, r'^/v2/(ask|conversations)(/|$)')) AS core_request_count,
+    COUNTIF(NOT REGEXP_CONTAINS(path, r'^/v2/(ask|conversations)(/|$)')) AS system_request_count,
     COUNTIF(status >= 500) AS error_5xx_count,
     SAFE_DIVIDE(COUNTIF(status >= 500), COUNT(*)) AS error_5xx_rate,
     APPROX_QUANTILES(latency_ms, 100)[OFFSET(95)] AS p95_latency_ms
@@ -164,6 +169,8 @@ SELECT
   FORMAT_DATE('%m-%d', g.bucket_day) AS bucket_label,
   d.device_class,
   COALESCE(a.request_count, 0) AS request_count,
+  COALESCE(a.core_request_count, 0) AS core_request_count,
+  COALESCE(a.system_request_count, 0) AS system_request_count,
   COALESCE(a.error_5xx_count, 0) AS error_5xx_count,
   COALESCE(a.error_5xx_rate, 0.0) AS error_5xx_rate,
   COALESCE(a.p95_latency_ms, 0.0) AS p95_latency_ms
@@ -203,6 +210,7 @@ req AS (
   SELECT
     DATETIME_TRUNC(DATETIME(timestamp, @tz), HOUR)
     + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(timestamp, @tz)), @bucket_minutes) * @bucket_minutes) MINUTE AS bucket_local,
+    COALESCE(REGEXP_EXTRACT(CAST(httpRequest.requestUrl AS STRING), r'https?://[^/]+(/[^? ]*)'), '/unknown') AS path,
     CASE
       WHEN REGEXP_CONTAINS(LOWER(CAST(httpRequest.userAgent AS STRING)), r'(iphone|android|mobile|ipad)') THEN 'mobile'
       WHEN CAST(httpRequest.userAgent AS STRING) IS NULL OR CAST(httpRequest.userAgent AS STRING) = '' THEN 'unknown'
@@ -221,6 +229,8 @@ agg AS (
     bucket_local,
     device_class,
     COUNT(*) AS request_count,
+    COUNTIF(REGEXP_CONTAINS(path, r'^/v2/(ask|conversations)(/|$)')) AS core_request_count,
+    COUNTIF(NOT REGEXP_CONTAINS(path, r'^/v2/(ask|conversations)(/|$)')) AS system_request_count,
     COUNTIF(status >= 500) AS error_5xx_count,
     SAFE_DIVIDE(COUNTIF(status >= 500), COUNT(*)) AS error_5xx_rate,
     APPROX_QUANTILES(latency_ms, 100)[OFFSET(95)] AS p95_latency_ms
@@ -232,6 +242,8 @@ SELECT
   FORMAT_DATETIME(@label_format, g.bucket_local) AS bucket_label,
   d.device_class,
   COALESCE(a.request_count, 0) AS request_count,
+  COALESCE(a.core_request_count, 0) AS core_request_count,
+  COALESCE(a.system_request_count, 0) AS system_request_count,
   COALESCE(a.error_5xx_count, 0) AS error_5xx_count,
   COALESCE(a.error_5xx_rate, 0.0) AS error_5xx_rate,
   COALESCE(a.p95_latency_ms, 0.0) AS p95_latency_ms

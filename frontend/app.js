@@ -11,6 +11,7 @@ const state = {
   chartThemeApplied: false,
   charts: {
     usage: null,
+    systemUsage: null,
     errorTrend: null,
     device: null,
     qsStage: null,
@@ -97,7 +98,10 @@ function buildCards(overview, usage) {
   const primary = [
     { label: "DAU", value: fmtInt(usage.dau) },
     { label: "WAU", value: fmtInt(usage.wau) },
-    { label: "リクエスト数", value: fmtInt(overview.request_count) },
+    {
+      label: "リクエスト数（総数 / コア業務）",
+      value: `${fmtInt(overview.request_count)} / ${fmtInt(overview.core_request_count)}`,
+    },
     { label: "会話数 / メッセージ数", value: `${fmtInt(usage.conversationCount)} / ${fmtInt(usage.messageCount)}` },
     { label: "初回回答平均時間", value: fmtMs(overview.first_answer_avg_ms) },
     { label: "回答強化平均時間", value: fmtMs(overview.enhance_answer_avg_ms) },
@@ -194,89 +198,97 @@ function resetChart(name, config) {
   state.charts[name] = new Chart(config.ctx, config.options);
 }
 
-function renderUsageChart(timeseries) {
-  const primary = cssVar("--primary", "#1e61db");
-  const accent = cssVar("--accent", "#02a678");
-  const neutral = "#94a3b8";
-  const map = new Map();
+function normalizeUsageSeries(timeseries) {
+  const out = new Map();
   for (const row of timeseries || []) {
     const key = row.bucket_key || row.bucketKey || row.day || "";
     if (!key) continue;
-    if (!map.has(key)) {
-      map.set(key, {
+    if (!out.has(key)) {
+      out.set(key, {
         label: row.bucket_label || row.bucketLabel || key,
-        desktop: 0,
-        mobile: 0,
-        unknown: 0,
+        desktop: { total: 0, core: 0, system: 0 },
+        mobile: { total: 0, core: 0, system: 0 },
+        unknown: { total: 0, core: 0, system: 0 },
       });
     }
-    const slot = map.get(key);
+    const slot = out.get(key);
     if (row.bucket_label || row.bucketLabel) {
       slot.label = row.bucket_label || row.bucketLabel;
     }
-    slot[row.device_class || "unknown"] = Number(row.request_count || 0);
+    const device = row.device_class || "unknown";
+    if (!slot[device]) {
+      slot[device] = { total: 0, core: 0, system: 0 };
+    }
+    const total = Number(row.request_count || 0);
+    const core = Number(row.core_request_count || 0);
+    const explicitSystem = Number(row.system_request_count);
+    const system = Number.isFinite(explicitSystem) ? explicitSystem : Math.max(0, total - core);
+    slot[device].total = Number.isFinite(total) ? total : 0;
+    slot[device].core = Number.isFinite(core) ? core : 0;
+    slot[device].system = Number.isFinite(system) ? system : 0;
   }
+  return out;
+}
 
+function renderUsageChart(timeseries) {
+  const primary = cssVar("--primary", "#1e61db");
+  const accent = cssVar("--accent", "#02a678");
+  const map = normalizeUsageSeries(timeseries);
   const keys = [...map.keys()];
   const labels = keys.map((k) => map.get(k).label || k);
-  const desktop = keys.map((k) => map.get(k).desktop || 0);
-  const mobile = keys.map((k) => map.get(k).mobile || 0);
-  const unknown = keys.map((k) => map.get(k).unknown || 0);
-  const canvas = $("usageChart");
-  const ctx = canvas.getContext("2d");
-  const desktopFill = ctx ? (() => {
-    const g = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 320);
-    g.addColorStop(0, rgba(primary, 0.26));
-    g.addColorStop(1, rgba(primary, 0.02));
-    return g;
-  })() : rgba(primary, 0.16);
-  const mobileFill = ctx ? (() => {
-    const g = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 320);
-    g.addColorStop(0, rgba(accent, 0.22));
-    g.addColorStop(1, rgba(accent, 0.02));
-    return g;
-  })() : rgba(accent, 0.14);
+  const desktopTotal = keys.map((k) => map.get(k).desktop.total || 0);
+  const desktopCore = keys.map((k) => map.get(k).desktop.core || 0);
+  const mobileTotal = keys.map((k) => map.get(k).mobile.total || 0);
+  const mobileCore = keys.map((k) => map.get(k).mobile.core || 0);
 
   resetChart("usage", {
-    ctx: canvas,
+    ctx: $("usageChart"),
     options: {
       type: "line",
       data: {
         labels: labels.length ? labels : ["データなし"],
         datasets: [
           {
-            label: "PC",
-            data: labels.length ? desktop : [0],
+            label: "PC（総リクエスト）",
+            data: labels.length ? desktopTotal : [0],
             borderColor: primary,
-            backgroundColor: desktopFill,
-            fill: true,
-            borderWidth: 2.2,
+            backgroundColor: rgba(primary, 0.14),
+            fill: false,
+            borderWidth: 2.3,
             tension: 0.28,
             pointRadius: 2.2,
-            pointHoverRadius: 4,
           },
           {
-            label: "モバイル",
-            data: labels.length ? mobile : [0],
-            borderColor: accent,
-            backgroundColor: mobileFill,
-            fill: true,
-            borderWidth: 2.2,
-            tension: 0.28,
-            pointRadius: 2.2,
-            pointHoverRadius: 4,
-          },
-          {
-            label: "不明",
-            data: labels.length ? unknown : [0],
-            borderColor: neutral,
+            label: "PC（コア業務）",
+            data: labels.length ? desktopCore : [0],
+            borderColor: primary,
             backgroundColor: "transparent",
             fill: false,
-            borderDash: [5, 4],
-            borderWidth: 1.6,
+            borderWidth: 2,
+            borderDash: [6, 4],
             tension: 0.24,
             pointRadius: 1.8,
-            pointHoverRadius: 3.2,
+          },
+          {
+            label: "モバイル（総リクエスト）",
+            data: labels.length ? mobileTotal : [0],
+            borderColor: accent,
+            backgroundColor: rgba(accent, 0.14),
+            fill: false,
+            borderWidth: 2.3,
+            tension: 0.28,
+            pointRadius: 2.2,
+          },
+          {
+            label: "モバイル（コア業務）",
+            data: labels.length ? mobileCore : [0],
+            borderColor: accent,
+            backgroundColor: "transparent",
+            fill: false,
+            borderWidth: 2,
+            borderDash: [6, 4],
+            tension: 0.24,
+            pointRadius: 1.8,
           },
         ],
       },
@@ -290,11 +302,72 @@ function renderUsageChart(timeseries) {
         },
         scales: {
           x: { grid: { display: false } },
-          y: {
-            beginAtZero: true,
-            grid: { color: rgba("#8ea0bc", 0.2) },
-            ticks: { precision: 0 },
+          y: { beginAtZero: true, ticks: { precision: 0 } },
+        },
+      },
+    },
+  });
+}
+
+function renderSystemUsageChart(timeseries) {
+  const primary = cssVar("--primary", "#1e61db");
+  const accent = cssVar("--accent", "#02a678");
+  const neutral = "#94a3b8";
+  const map = normalizeUsageSeries(timeseries);
+  const keys = [...map.keys()];
+  const labels = keys.map((k) => map.get(k).label || k);
+  const desktopSystem = keys.map((k) => map.get(k).desktop.system || 0);
+  const mobileSystem = keys.map((k) => map.get(k).mobile.system || 0);
+  const unknownSystem = keys.map((k) => map.get(k).unknown.system || 0);
+
+  resetChart("systemUsage", {
+    ctx: $("systemUsageChart"),
+    options: {
+      type: "line",
+      data: {
+        labels: labels.length ? labels : ["データなし"],
+        datasets: [
+          {
+            label: "PC（システム）",
+            data: labels.length ? desktopSystem : [0],
+            borderColor: primary,
+            backgroundColor: rgba(primary, 0.16),
+            fill: true,
+            borderWidth: 2.2,
+            tension: 0.24,
+            pointRadius: 2,
           },
+          {
+            label: "モバイル（システム）",
+            data: labels.length ? mobileSystem : [0],
+            borderColor: accent,
+            backgroundColor: rgba(accent, 0.12),
+            fill: true,
+            borderWidth: 2.2,
+            tension: 0.24,
+            pointRadius: 2,
+          },
+          {
+            label: "不明（システム）",
+            data: labels.length ? unknownSystem : [0],
+            borderColor: neutral,
+            backgroundColor: "transparent",
+            fill: false,
+            borderWidth: 1.6,
+            borderDash: [5, 4],
+            tension: 0.2,
+            pointRadius: 1.6,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: { legend: { position: "bottom" } },
+        scales: {
+          x: { grid: { display: false } },
+          y: { beginAtZero: true, ticks: { precision: 0 } },
         },
       },
     },
@@ -544,6 +617,7 @@ async function reloadDashboard() {
 
     buildCards(overview.overview || {}, overview.usage || {});
     renderUsageChart(usage.timeseries || []);
+    renderSystemUsageChart(usage.timeseries || []);
     renderErrorTrendChart(errors.trend || []);
     renderDeviceChart(devices.devices || []);
     renderQsStageChart((querySuggest.logs || {}).stages || []);
