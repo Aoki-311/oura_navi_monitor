@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 E2E_DIR="${ROOT_DIR}/e2e"
 BASE_URL="${MONITOR_E2E_BASE_URL:-http://127.0.0.1:8099}"
 ADMIN_EMAIL="${MONITOR_E2E_ADMIN_EMAIL:-2401145@tc.terumo.co.jp}"
+TEST_TARGET="${MONITOR_E2E_TEST_TARGET:-tests}"
 
 command -v npm >/dev/null 2>&1 || { echo "npm not found"; exit 1; }
 
@@ -40,10 +41,10 @@ else
   echo "[3/4] Use external base URL: ${BASE_URL}"
 fi
 
-echo "[4/4] Run chart stability e2e"
+echo "[4/4] Run e2e suite (${TEST_TARGET})"
 cd "${E2E_DIR}"
 MONITOR_E2E_BASE_URL="${BASE_URL}" \
 MONITOR_E2E_ADMIN_EMAIL="${ADMIN_EMAIL}" \
-npx playwright test tests/chart-stability.spec.js
+npx playwright test "${TEST_TARGET}"
 
-echo "E2E chart stability test passed."
+echo "E2E suite passed."

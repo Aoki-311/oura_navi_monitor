@@ -42,5 +42,22 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn('start: str = Query(default="")', export_py)
         self.assertIn('end: str = Query(default="")', export_py)
 
+    def test_bigquery_time_bucket_sql_uses_generate_array(self) -> None:
+        metrics = (ROOT / "app" / "services" / "bigquery_metrics.py").read_text(encoding="utf-8")
+        self.assertNotIn("GENERATE_DATETIME_ARRAY", metrics)
+        self.assertIn("GENERATE_ARRAY(", metrics)
+        self.assertNotIn("),\nWITH grid AS", metrics)
+
+    def test_firestore_history_uses_keyword_filter_api(self) -> None:
+        history = (ROOT / "app" / "services" / "firestore_history.py").read_text(encoding="utf-8")
+        self.assertIn("FieldFilter", history)
+        self.assertIn(".where(filter=FieldFilter(", history)
+
+    def test_dashboard_frontend_uses_partial_failure_tolerant_loading(self) -> None:
+        js = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("Promise.allSettled(", js)
+        self.assertIn("一部データの取得に失敗しました", js)
+        self.assertIn("DASHBOARD_FETCH_TIMEOUT_MS", js)
+
 if __name__ == "__main__":
     unittest.main()

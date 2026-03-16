@@ -181,17 +181,23 @@ WITH devices AS (
   SELECT 'mobile' UNION ALL
   SELECT 'unknown'
 ),
+bounds AS (
+  SELECT
+    DATETIME_TRUNC(DATETIME(@start_ts, @tz), HOUR)
+    + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(@start_ts, @tz)), @bucket_minutes) * @bucket_minutes) MINUTE AS bucket_start_local,
+    DATETIME_TRUNC(DATETIME(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz), HOUR)
+    + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)), @bucket_minutes) * @bucket_minutes) MINUTE AS bucket_end_local
+),
 grid AS (
-  SELECT bucket_local
-  FROM UNNEST(
-    GENERATE_DATETIME_ARRAY(
-      DATETIME_TRUNC(DATETIME(@start_ts, @tz), HOUR)
-      + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(@start_ts, @tz)), @bucket_minutes) * @bucket_minutes) MINUTE,
-      DATETIME_TRUNC(DATETIME(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz), HOUR)
-      + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)), @bucket_minutes) * @bucket_minutes) MINUTE,
-      INTERVAL @bucket_minutes MINUTE
+  SELECT DATETIME_ADD(bucket_start_local, INTERVAL offset_minutes MINUTE) AS bucket_local
+  FROM bounds,
+  UNNEST(
+    GENERATE_ARRAY(
+      0,
+      DATETIME_DIFF(bucket_end_local, bucket_start_local, MINUTE),
+      @bucket_minutes
     )
-  ) AS bucket_local
+  ) AS offset_minutes
 ),
 req AS (
   SELECT
@@ -277,17 +283,23 @@ ORDER BY g.bucket_day ASC
         else:
             label_format = "%H:%M" if window.duration_seconds <= 24 * 60 * 60 else "%m-%d %H:%M"
             trend_sql = f"""
-WITH grid AS (
-  SELECT bucket_local
-  FROM UNNEST(
-    GENERATE_DATETIME_ARRAY(
-      DATETIME_TRUNC(DATETIME(@start_ts, @tz), HOUR)
-      + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(@start_ts, @tz)), @bucket_minutes) * @bucket_minutes) MINUTE,
-      DATETIME_TRUNC(DATETIME(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz), HOUR)
-      + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)), @bucket_minutes) * @bucket_minutes) MINUTE,
-      INTERVAL @bucket_minutes MINUTE
+WITH bounds AS (
+  SELECT
+    DATETIME_TRUNC(DATETIME(@start_ts, @tz), HOUR)
+    + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(@start_ts, @tz)), @bucket_minutes) * @bucket_minutes) MINUTE AS bucket_start_local,
+    DATETIME_TRUNC(DATETIME(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz), HOUR)
+    + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)), @bucket_minutes) * @bucket_minutes) MINUTE AS bucket_end_local
+),
+grid AS (
+  SELECT DATETIME_ADD(bucket_start_local, INTERVAL offset_minutes MINUTE) AS bucket_local
+  FROM bounds,
+  UNNEST(
+    GENERATE_ARRAY(
+      0,
+      DATETIME_DIFF(bucket_end_local, bucket_start_local, MINUTE),
+      @bucket_minutes
     )
-  ) AS bucket_local
+  ) AS offset_minutes
 ),
 agg AS (
   SELECT

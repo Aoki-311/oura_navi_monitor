@@ -22,6 +22,7 @@ const $ = (id) => document.getElementById(id);
 const fmtInt = (v) => (typeof v === "number" && Number.isFinite(v) ? v.toLocaleString() : "-");
 const fmtPct = (v) => (typeof v === "number" && Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : "-");
 const fmtMs = (v) => (typeof v === "number" && Number.isFinite(v) ? `${Math.round(v).toLocaleString()} ms` : "-");
+const DASHBOARD_FETCH_TIMEOUT_MS = 15000;
 
 function isChartReady() {
   return typeof window.Chart !== "undefined";
@@ -67,13 +68,29 @@ function toast(message) {
   setTimeout(() => el.classList.remove("show"), 2200);
 }
 
+function describeError(error) {
+  if (error instanceof Error) return error.message;
+  return String(error || "unknown error");
+}
+
 async function getJson(path) {
-  const res = await fetch(path, { credentials: "include" });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status} ${path} ${text.slice(0, 180)}`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DASHBOARD_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(path, { credentials: "include", signal: controller.signal }).catch((error) => {
+      if (error && error.name === "AbortError") {
+        throw new Error(`timeout ${path}`);
+      }
+      throw error;
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`${res.status} ${path} ${text.slice(0, 180)}`);
+    }
+    return res.json();
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return res.json();
 }
 
 function buildCards(overview, usage) {
@@ -401,7 +418,18 @@ function renderQsStageChart(rows) {
 function setTableRows(tableId, rows, mapper) {
   const tbody = document.querySelector(`#${tableId} tbody`);
   tbody.innerHTML = "";
-  for (const row of rows || []) {
+  const list = rows || [];
+  if (!list.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = document.querySelectorAll(`#${tableId} thead th`).length || 1;
+    td.textContent = "データなし";
+    td.classList.add("muted");
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const row of list) {
     const tr = document.createElement("tr");
     for (const cell of mapper(row)) {
       const td = document.createElement("td");
@@ -462,13 +490,57 @@ async function reloadDashboard() {
 
   try {
     const rangeQuery = buildFilterQueryString();
-    const [overview, usage, errors, devices, querySuggest] = await Promise.all([
-      getJson(`/api/metrics/overview?${rangeQuery}`),
-      getJson(`/api/metrics/usage?${rangeQuery}`),
-      getJson(`/api/metrics/errors?${rangeQuery}`),
-      getJson(`/api/metrics/devices?${rangeQuery}`),
-      getJson(`/api/metrics/query-suggest?${rangeQuery}`),
-    ]);
+    const modules = [
+      {
+        key: "overview",
+        label: "概要",
+        path: `/api/metrics/overview?${rangeQuery}`,
+        fallback: { overview: {}, usage: {} },
+      },
+      {
+        key: "usage",
+        label: "リクエスト推移",
+        path: `/api/metrics/usage?${rangeQuery}`,
+        fallback: { timeseries: [] },
+      },
+      {
+        key: "errors",
+        label: "エラー分析",
+        path: `/api/metrics/errors?${rangeQuery}`,
+        fallback: { trend: [], topEndpoints: [], topErrors: [] },
+      },
+      {
+        key: "devices",
+        label: "デバイス分析",
+        path: `/api/metrics/devices?${rangeQuery}`,
+        fallback: { devices: [] },
+      },
+      {
+        key: "querySuggest",
+        label: "入力候補分析",
+        path: `/api/metrics/query-suggest?${rangeQuery}`,
+        fallback: { logs: { stages: [], fallbackSources: [] }, facts: {} },
+      },
+    ];
+    const settled = await Promise.allSettled(modules.map((module) => getJson(module.path)));
+    const payloads = {};
+    const failures = [];
+    settled.forEach((result, index) => {
+      const module = modules[index];
+      if (result.status === "fulfilled") {
+        payloads[module.key] = result.value;
+        return;
+      }
+      payloads[module.key] = module.fallback;
+      failures.push(module.label);
+      console.error(`module load failed: ${module.key}`, result.reason);
+    });
+
+    const overview = payloads.overview || { overview: {}, usage: {} };
+    const usage = payloads.usage || { timeseries: [] };
+    const errors = payloads.errors || { trend: [], topEndpoints: [], topErrors: [] };
+    const devices = payloads.devices || { devices: [] };
+    const querySuggest = payloads.querySuggest || { logs: { stages: [], fallbackSources: [] }, facts: {} };
 
     buildCards(overview.overview || {}, overview.usage || {});
     renderUsageChart(usage.timeseries || []);
@@ -485,9 +557,13 @@ async function reloadDashboard() {
     setTableRows("qsFactsTable", factRows, (r) => [r.metric, r.value]);
 
     updateExportLinks();
+    if (failures.length) {
+      const labels = failures.join("、");
+      toast(`一部データの取得に失敗しました（${labels}）。表示可能な範囲で更新しました。`);
+    }
   } catch (err) {
     console.error(err);
-    toast(`読み込みに失敗しました: ${String(err)}`);
+    toast(`読み込みに失敗しました: ${describeError(err)}`);
   }
 }
 

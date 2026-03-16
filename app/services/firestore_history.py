@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.settings import Settings
 from app.time_window import MetricsTimeWindow
@@ -68,9 +69,9 @@ class FirestoreHistoryService:
         def _count_for_value(value: str) -> int:
             query = (
                 self._client.collection_group("messages")
-                .where("feedback", "==", value)
-                .where("timestamp", ">=", start_iso)
-                .where("timestamp", "<", end_iso)
+                .where(filter=FieldFilter("feedback", "==", value))
+                .where(filter=FieldFilter("timestamp", ">=", start_iso))
+                .where(filter=FieldFilter("timestamp", "<", end_iso))
             )
             count = 0
             for doc in query.stream():
