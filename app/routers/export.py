@@ -12,7 +12,7 @@ from app.security.auth import AdminIdentity, require_admin
 from app.services.bigquery_metrics import BigQueryMetricsService
 from app.services.firestore_history import FirestoreHistoryService
 from app.settings import Settings, get_settings
-from app.time_window import MetricsTimeWindow, resolve_time_window
+from app.time_window import MetricsTimeWindow, TimeWindowValidationError, resolve_time_window
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
@@ -25,13 +25,16 @@ def _build_window(
     start: str,
     end: str,
 ) -> MetricsTimeWindow:
-    return resolve_time_window(
-        settings=settings,
-        days=days,
-        preset=preset,
-        start=start,
-        end=end,
-    )
+    try:
+        return resolve_time_window(
+            settings=settings,
+            days=days,
+            preset=preset,
+            start=start,
+            end=end,
+        )
+    except TimeWindowValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _rows_to_csv(rows: Iterable[Dict[str, Any]]) -> str:

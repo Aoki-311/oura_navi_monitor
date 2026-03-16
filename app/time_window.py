@@ -5,8 +5,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
-from fastapi import HTTPException
-
 PresetType = Literal["today", "yesterday", "last_30m", "last_1h", "last_6h", "last_12h"]
 SourceType = Literal["days", "preset", "custom"]
 
@@ -15,6 +13,10 @@ class TimeWindowSettings(Protocol):
     monitor_timezone: str
     monitor_retention_days: int
     monitor_default_days: int
+
+
+class TimeWindowValidationError(ValueError):
+    pass
 
 _PRESET_SET = {
     "today",
@@ -90,7 +92,7 @@ def resolve_time_window(
     raw_end = str(end or "").strip()
 
     if cleaned_preset and cleaned_preset not in _PRESET_SET:
-        raise HTTPException(status_code=422, detail=f"unsupported preset: {cleaned_preset}")
+        raise TimeWindowValidationError(f"unsupported preset: {cleaned_preset}")
 
     default_days = max(1, min(int(days or settings.monitor_default_days), settings.monitor_retention_days))
 
@@ -103,7 +105,7 @@ def resolve_time_window(
             start_utc = _parse_iso_datetime(raw_start, tz=tz) if raw_start else (now_utc - timedelta(days=default_days))
             end_utc = _parse_iso_datetime(raw_end, tz=tz) if raw_end else now_utc
         except Exception as exc:  # pragma: no cover - error path tested via caller
-            raise HTTPException(status_code=422, detail=f"invalid custom datetime: {exc}") from exc
+            raise TimeWindowValidationError(f"invalid custom datetime: {exc}") from exc
     elif cleaned_preset:
         source = "preset"
         selected_preset = cleaned_preset
@@ -152,7 +154,7 @@ def resolve_time_window(
         end_utc = now_utc
 
     if end_utc <= start_utc:
-        raise HTTPException(status_code=422, detail="end must be later than start")
+        raise TimeWindowValidationError("end must be later than start")
 
     retention_floor = now_utc - timedelta(days=settings.monitor_retention_days)
     if start_utc < retention_floor:

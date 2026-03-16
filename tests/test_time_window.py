@@ -5,9 +5,7 @@ from datetime import datetime, timedelta, timezone
 import unittest
 from zoneinfo import ZoneInfo
 
-from fastapi import HTTPException
-
-from app.time_window import resolve_time_window
+from app.time_window import TimeWindowValidationError, resolve_time_window
 
 
 @dataclass
@@ -66,7 +64,7 @@ class TimeWindowResolveTest(unittest.TestCase):
 
     def test_invalid_preset_raises(self) -> None:
         settings = _FakeSettings()
-        with self.assertRaises(HTTPException):
+        with self.assertRaises(TimeWindowValidationError):
             resolve_time_window(
                 settings=settings,
                 days=7,
@@ -77,7 +75,7 @@ class TimeWindowResolveTest(unittest.TestCase):
 
     def test_end_earlier_than_start_raises(self) -> None:
         settings = _FakeSettings()
-        with self.assertRaises(HTTPException):
+        with self.assertRaises(TimeWindowValidationError):
             resolve_time_window(
                 settings=settings,
                 days=7,
