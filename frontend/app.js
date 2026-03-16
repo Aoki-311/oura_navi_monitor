@@ -1,5 +1,11 @@
 const state = {
   days: 7,
+  filter: {
+    mode: "preset",
+    preset: "today",
+    start: "",
+    end: "",
+  },
   selectedUserId: "",
   selectedConversationId: "",
   chartThemeApplied: false,
@@ -15,6 +21,7 @@ const $ = (id) => document.getElementById(id);
 
 const fmtInt = (v) => (typeof v === "number" && Number.isFinite(v) ? v.toLocaleString() : "-");
 const fmtPct = (v) => (typeof v === "number" && Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : "-");
+const fmtMs = (v) => (typeof v === "number" && Number.isFinite(v) ? `${Math.round(v).toLocaleString()} ms` : "-");
 
 function isChartReady() {
   return typeof window.Chart !== "undefined";
@@ -70,32 +77,95 @@ async function getJson(path) {
 }
 
 function buildCards(overview, usage) {
-  const cards = [
+  const primary = [
+    { label: "DAU", value: fmtInt(usage.dau) },
+    { label: "WAU", value: fmtInt(usage.wau) },
     { label: "リクエスト数", value: fmtInt(overview.request_count) },
-    { label: "5xx エラー率", value: fmtPct(overview.error_5xx_rate) },
-    { label: "P95 レイテンシ(ms)", value: fmtInt(overview.request_p95_latency_ms) },
-    { label: "入力候補安定生成率", value: fmtPct(overview.qs_stable_rate) },
-    { label: "日次/週次アクティブユーザー（DAU/WAU）", value: `${fmtInt(usage.dau)} / ${fmtInt(usage.wau)}` },
     { label: "会話数 / メッセージ数", value: `${fmtInt(usage.conversationCount)} / ${fmtInt(usage.messageCount)}` },
-    { label: "履歴復元成功率", value: fmtPct(overview.restore_success_rate) },
-    { label: "QS 平均候補数", value: fmtInt(overview.qs_avg_suggestion_count) },
+    { label: "初回回答平均時間", value: fmtMs(overview.first_answer_avg_ms) },
+    { label: "回答強化平均時間", value: fmtMs(overview.enhance_answer_avg_ms) },
   ];
 
-  const root = $("kpiCards");
-  root.textContent = "";
-  for (const card of cards) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "card";
-    const label = document.createElement("div");
-    label.className = "label";
-    label.textContent = card.label;
-    const value = document.createElement("div");
-    value.className = "value";
-    value.textContent = String(card.value ?? "-");
-    wrapper.appendChild(label);
-    wrapper.appendChild(value);
-    root.appendChild(wrapper);
+  const secondary = [
+    { label: "入力候補安定生成率", value: fmtPct(overview.qs_stable_rate) },
+    { label: "回答フィードバックいいね率", value: fmtPct(usage.feedbackLikeRate) },
+    { label: "5xx エラー率", value: fmtPct(overview.error_5xx_rate) },
+    { label: "P95 レイテンシ", value: fmtMs(overview.request_p95_latency_ms) },
+  ];
+
+  const renderCards = (rootId, cards) => {
+    const root = $(rootId);
+    root.textContent = "";
+    for (const card of cards) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "card";
+      const label = document.createElement("div");
+      label.className = "label";
+      label.textContent = card.label;
+      const value = document.createElement("div");
+      value.className = "value";
+      value.textContent = String(card.value ?? "-");
+      wrapper.appendChild(label);
+      wrapper.appendChild(value);
+      root.appendChild(wrapper);
+    }
+  };
+
+  renderCards("kpiCardsPrimary", primary);
+  renderCards("kpiCardsSecondary", secondary);
+}
+
+function buildFilterQueryString() {
+  const params = new URLSearchParams();
+  if (state.filter.mode === "custom") {
+    if (state.filter.start) params.set("start", state.filter.start);
+    if (state.filter.end) params.set("end", state.filter.end);
+  } else if (state.filter.mode === "preset" && state.filter.preset) {
+    params.set("preset", state.filter.preset);
+  } else {
+    params.set("days", String(state.days || 7));
   }
+  return params.toString();
+}
+
+function markActivePresetButton() {
+  document.querySelectorAll(".presetBtn").forEach((btn) => {
+    const selected = btn.dataset.preset === state.filter.preset && state.filter.mode === "preset";
+    btn.classList.toggle("active", selected);
+  });
+}
+
+function applyPresetFilter(preset) {
+  state.filter.mode = "preset";
+  state.filter.preset = preset;
+  state.filter.start = "";
+  state.filter.end = "";
+  $("startAt").value = "";
+  $("endAt").value = "";
+  markActivePresetButton();
+}
+
+function applyCustomFilter() {
+  const start = $("startAt").value.trim();
+  const end = $("endAt").value.trim();
+  if (!start || !end) {
+    toast("カスタム期間では開始と終了の両方を指定してください。");
+    return false;
+  }
+  if (end <= start) {
+    toast("終了は開始より後の時刻を指定してください。");
+    return false;
+  }
+  state.filter.mode = "custom";
+  state.filter.preset = "";
+  state.filter.start = start;
+  state.filter.end = end;
+  markActivePresetButton();
+  return true;
+}
+
+function initFilterUi() {
+  markActivePresetButton();
 }
 
 function resetChart(name, config) {
@@ -113,18 +183,28 @@ function renderUsageChart(timeseries) {
   const neutral = "#94a3b8";
   const map = new Map();
   for (const row of timeseries || []) {
-    const day = row.day;
-    if (!map.has(day)) {
-      map.set(day, { desktop: 0, mobile: 0, unknown: 0 });
+    const key = row.bucket_key || row.bucketKey || row.day || "";
+    if (!key) continue;
+    if (!map.has(key)) {
+      map.set(key, {
+        label: row.bucket_label || row.bucketLabel || key,
+        desktop: 0,
+        mobile: 0,
+        unknown: 0,
+      });
     }
-    const slot = map.get(day);
+    const slot = map.get(key);
+    if (row.bucket_label || row.bucketLabel) {
+      slot.label = row.bucket_label || row.bucketLabel;
+    }
     slot[row.device_class || "unknown"] = Number(row.request_count || 0);
   }
 
-  const labels = [...map.keys()];
-  const desktop = labels.map((d) => map.get(d).desktop || 0);
-  const mobile = labels.map((d) => map.get(d).mobile || 0);
-  const unknown = labels.map((d) => map.get(d).unknown || 0);
+  const keys = [...map.keys()];
+  const labels = keys.map((k) => map.get(k).label || k);
+  const desktop = keys.map((k) => map.get(k).desktop || 0);
+  const mobile = keys.map((k) => map.get(k).mobile || 0);
+  const unknown = keys.map((k) => map.get(k).unknown || 0);
   const canvas = $("usageChart");
   const ctx = canvas.getContext("2d");
   const desktopFill = ctx ? (() => {
@@ -206,7 +286,7 @@ function renderUsageChart(timeseries) {
 
 function renderErrorTrendChart(trendRows) {
   const danger = cssVar("--danger", "#d14343");
-  const labels = (trendRows || []).map((r) => r.day);
+  const labels = (trendRows || []).map((r) => r.bucket_label || r.bucketLabel || r.day);
   const values = (trendRows || []).map((r) => Number(r.error_5xx_count || 0));
   const canvas = $("errorTrendChart");
   const ctx = canvas.getContext("2d");
@@ -341,15 +421,15 @@ function appendCells(tr, values) {
 }
 
 function updateExportLinks() {
-  const d = encodeURIComponent(String(state.days));
-  $("exportUsage").href = `/api/export/usage.csv?days=${d}`;
-  $("exportErrorsTrend").href = `/api/export/errors/trend.csv?days=${d}`;
-  $("exportErrorsEndpoints").href = `/api/export/errors/endpoints.csv?days=${d}`;
-  $("exportErrorsTypes").href = `/api/export/errors/types.csv?days=${d}`;
-  $("exportDevices").href = `/api/export/devices.csv?days=${d}`;
-  $("exportQsStages").href = `/api/export/query-suggest/stages.csv?days=${d}`;
-  $("exportQsFallbacks").href = `/api/export/query-suggest/fallbacks.csv?days=${d}`;
-  $("exportQsFacts").href = `/api/export/query-suggest/facts.csv?days=${d}`;
+  const rangeQuery = buildFilterQueryString();
+  $("exportUsage").href = `/api/export/usage.csv?${rangeQuery}`;
+  $("exportErrorsTrend").href = `/api/export/errors/trend.csv?${rangeQuery}`;
+  $("exportErrorsEndpoints").href = `/api/export/errors/endpoints.csv?${rangeQuery}`;
+  $("exportErrorsTypes").href = `/api/export/errors/types.csv?${rangeQuery}`;
+  $("exportDevices").href = `/api/export/devices.csv?${rangeQuery}`;
+  $("exportQsStages").href = `/api/export/query-suggest/stages.csv?${rangeQuery}`;
+  $("exportQsFallbacks").href = `/api/export/query-suggest/fallbacks.csv?${rangeQuery}`;
+  $("exportQsFacts").href = `/api/export/query-suggest/facts.csv?${rangeQuery}`;
 
   const userQ = encodeURIComponent($("userSearch").value.trim());
   $("exportUsers").href = `/api/export/users.csv?limit=500&q=${userQ}`;
@@ -375,21 +455,19 @@ function updateExportLinks() {
 }
 
 async function reloadDashboard() {
-  state.days = Math.max(1, Math.min(180, Number($("days").value || 7)));
-  $("days").value = String(state.days);
-
   if (!isChartReady()) {
     toast("グラフ描画ライブラリの読み込みに失敗しました。管理者へご連絡ください。");
     return;
   }
 
   try {
+    const rangeQuery = buildFilterQueryString();
     const [overview, usage, errors, devices, querySuggest] = await Promise.all([
-      getJson(`/api/metrics/overview?days=${state.days}`),
-      getJson(`/api/metrics/usage?days=${state.days}`),
-      getJson(`/api/metrics/errors?days=${state.days}`),
-      getJson(`/api/metrics/devices?days=${state.days}`),
-      getJson(`/api/metrics/query-suggest?days=${state.days}`),
+      getJson(`/api/metrics/overview?${rangeQuery}`),
+      getJson(`/api/metrics/usage?${rangeQuery}`),
+      getJson(`/api/metrics/errors?${rangeQuery}`),
+      getJson(`/api/metrics/devices?${rangeQuery}`),
+      getJson(`/api/metrics/query-suggest?${rangeQuery}`),
     ]);
 
     buildCards(overview.overview || {}, overview.usage || {});
@@ -489,13 +567,20 @@ async function loadMessages() {
 
 function bindEvents() {
   $("refreshAll").addEventListener("click", () => reloadDashboard());
+  document.querySelectorAll(".presetBtn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      applyPresetFilter(btn.dataset.preset || "today");
+      reloadDashboard();
+    });
+  });
+  $("applyCustom").addEventListener("click", () => {
+    if (applyCustomFilter()) {
+      reloadDashboard();
+    }
+  });
   $("loadUsers").addEventListener("click", () => loadUsers());
   $("loadConversations").addEventListener("click", () => loadConversations());
   $("loadMessages").addEventListener("click", () => loadMessages());
-
-  $("days").addEventListener("change", () => {
-    updateExportLinks();
-  });
 
   $("userSearch").addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadUsers();
@@ -514,6 +599,7 @@ function bindEvents() {
   });
 }
 
+initFilterUi();
 bindEvents();
 reloadDashboard();
 loadUsers();

@@ -12,14 +12,26 @@ from app.security.auth import AdminIdentity, require_admin
 from app.services.bigquery_metrics import BigQueryMetricsService
 from app.services.firestore_history import FirestoreHistoryService
 from app.settings import Settings, get_settings
+from app.time_window import MetricsTimeWindow, resolve_time_window
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
 
-def _sanitize_days(days: int, settings: Settings) -> int:
-    if days <= 0:
-        return settings.monitor_default_days
-    return min(days, settings.monitor_retention_days)
+def _build_window(
+    *,
+    settings: Settings,
+    days: int,
+    preset: str,
+    start: str,
+    end: str,
+) -> MetricsTimeWindow:
+    return resolve_time_window(
+        settings=settings,
+        days=days,
+        preset=preset,
+        start=start,
+        end=end,
+    )
 
 
 def _rows_to_csv(rows: Iterable[Dict[str, Any]]) -> str:
@@ -55,121 +67,145 @@ def _csv_response(filename: str, rows: Iterable[Dict[str, Any]]) -> Response:
 @router.get("/usage.csv")
 def export_usage_csv(
     days: int = Query(default=30, ge=1, le=365),
+    preset: str = Query(default=""),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
     _admin: AdminIdentity = Depends(require_admin),
     settings: Settings = Depends(get_settings),
     bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
 ) -> Response:
-    window = _sanitize_days(days, settings)
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
     try:
-        rows = bq.get_usage_timeseries(days=window)
+        rows = bq.get_usage_timeseries(window=window)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"usage export failed: {exc}") from exc
-    return _csv_response(f"usage_{window}d.csv", rows)
+    return _csv_response(f"usage_{window.requested_days}d.csv", rows)
 
 
 @router.get("/errors/trend.csv")
 def export_errors_trend_csv(
     days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default=""),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
     _admin: AdminIdentity = Depends(require_admin),
     settings: Settings = Depends(get_settings),
     bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
 ) -> Response:
-    window = _sanitize_days(days, settings)
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
     try:
-        report = bq.get_error_report(days=window)
+        report = bq.get_error_report(window=window)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"errors trend export failed: {exc}") from exc
-    return _csv_response(f"errors_trend_{window}d.csv", report.get("trend", []))
+    return _csv_response(f"errors_trend_{window.requested_days}d.csv", report.get("trend", []))
 
 
 @router.get("/errors/endpoints.csv")
 def export_errors_endpoints_csv(
     days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default=""),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
     _admin: AdminIdentity = Depends(require_admin),
     settings: Settings = Depends(get_settings),
     bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
 ) -> Response:
-    window = _sanitize_days(days, settings)
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
     try:
-        report = bq.get_error_report(days=window)
+        report = bq.get_error_report(window=window)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"errors endpoint export failed: {exc}") from exc
-    return _csv_response(f"errors_endpoints_{window}d.csv", report.get("topEndpoints", []))
+    return _csv_response(f"errors_endpoints_{window.requested_days}d.csv", report.get("topEndpoints", []))
 
 
 @router.get("/errors/types.csv")
 def export_errors_types_csv(
     days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default=""),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
     _admin: AdminIdentity = Depends(require_admin),
     settings: Settings = Depends(get_settings),
     bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
 ) -> Response:
-    window = _sanitize_days(days, settings)
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
     try:
-        report = bq.get_error_report(days=window)
+        report = bq.get_error_report(window=window)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"errors type export failed: {exc}") from exc
-    return _csv_response(f"errors_types_{window}d.csv", report.get("topErrors", []))
+    return _csv_response(f"errors_types_{window.requested_days}d.csv", report.get("topErrors", []))
 
 
 @router.get("/devices.csv")
 def export_devices_csv(
     days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default=""),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
     _admin: AdminIdentity = Depends(require_admin),
     settings: Settings = Depends(get_settings),
     bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
 ) -> Response:
-    window = _sanitize_days(days, settings)
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
     try:
-        rows = bq.get_device_report(days=window)
+        rows = bq.get_device_report(window=window)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"devices export failed: {exc}") from exc
-    return _csv_response(f"devices_{window}d.csv", rows)
+    return _csv_response(f"devices_{window.requested_days}d.csv", rows)
 
 
 @router.get("/query-suggest/stages.csv")
 def export_qs_stages_csv(
     days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default=""),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
     _admin: AdminIdentity = Depends(require_admin),
     settings: Settings = Depends(get_settings),
     bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
 ) -> Response:
-    window = _sanitize_days(days, settings)
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
     try:
-        report = bq.get_query_suggest_report(days=window)
+        report = bq.get_query_suggest_report(window=window)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"query-suggest stage export failed: {exc}") from exc
-    return _csv_response(f"query_suggest_stages_{window}d.csv", report.get("stages", []))
+    return _csv_response(f"query_suggest_stages_{window.requested_days}d.csv", report.get("stages", []))
 
 
 @router.get("/query-suggest/fallbacks.csv")
 def export_qs_fallbacks_csv(
     days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default=""),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
     _admin: AdminIdentity = Depends(require_admin),
     settings: Settings = Depends(get_settings),
     bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
 ) -> Response:
-    window = _sanitize_days(days, settings)
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
     try:
-        report = bq.get_query_suggest_report(days=window)
+        report = bq.get_query_suggest_report(window=window)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"query-suggest fallback export failed: {exc}") from exc
-    return _csv_response(f"query_suggest_fallbacks_{window}d.csv", report.get("fallbackSources", []))
+    return _csv_response(f"query_suggest_fallbacks_{window.requested_days}d.csv", report.get("fallbackSources", []))
 
 
 @router.get("/query-suggest/facts.csv")
 def export_qs_facts_csv(
     days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default=""),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
     _admin: AdminIdentity = Depends(require_admin),
     settings: Settings = Depends(get_settings),
     fs: FirestoreHistoryService = Depends(get_firestore_history_service),
 ) -> Response:
-    window = _sanitize_days(days, settings)
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
     try:
-        facts = fs.aggregate_query_suggest_facts(days=window)
+        facts = fs.aggregate_query_suggest_facts(window=window)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"query-suggest facts export failed: {exc}") from exc
-    return _csv_response(f"query_suggest_facts_{window}d.csv", [facts])
+    return _csv_response(f"query_suggest_facts_{window.requested_days}d.csv", [facts])
 
 
 @router.get("/users.csv")

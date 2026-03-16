@@ -39,6 +39,12 @@ body {
   backdrop-filter: blur(8px);
 }
 
+.toolbar {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
 h1 {
   margin: 0;
   font-size: 22px;
@@ -62,6 +68,24 @@ main {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.cardsStack {
+  display: grid;
+  gap: 10px;
+}
+
+.cardsRow {
+  display: grid;
+  gap: 10px;
+}
+
+.cardsRowPrimary {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.cardsRowSecondary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .card {
@@ -127,11 +151,48 @@ h2 {
   gap: 12px;
 }
 
-.toolbar,
 .row {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.presetGroup {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.presetBtn {
+  border: 1px solid #c9d9f8;
+  background: #f5f9ff;
+  color: #1f3d6d;
+  box-shadow: none;
+  padding: 6px 10px;
+  font-weight: 600;
+}
+
+.presetBtn.active {
+  background: linear-gradient(180deg, #2d73ee 0%, #1e61db 100%);
+  color: #fff;
+  border-color: #1f61da;
+}
+
+.customRange {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.customRange label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 input,
@@ -265,10 +326,25 @@ tr.selected {
     grid-template-columns: 1fr;
   }
 
+  .cardsRowPrimary,
+  .cardsRowSecondary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .topbar {
     position: static;
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .toolbar {
+    justify-items: start;
+    width: 100%;
+  }
+
+  .presetGroup,
+  .customRange {
+    justify-content: flex-start;
   }
 
   .chartWrap {

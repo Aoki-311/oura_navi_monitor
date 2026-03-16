@@ -16,13 +16,28 @@
         <p class="sub">Cloud Run / Firestore 運用監視ダッシュボード</p>
       </div>
       <div class="toolbar">
-        <label>集計日数 <input id="days" type="number" min="1" max="180" value="7" /></label>
+        <div class="presetGroup" id="presetGroup">
+          <button type="button" class="presetBtn active" data-preset="today">今日</button>
+          <button type="button" class="presetBtn" data-preset="yesterday">昨日</button>
+          <button type="button" class="presetBtn" data-preset="last_30m">直近30分</button>
+          <button type="button" class="presetBtn" data-preset="last_1h">直近1時間</button>
+          <button type="button" class="presetBtn" data-preset="last_6h">直近6時間</button>
+          <button type="button" class="presetBtn" data-preset="last_12h">直近12時間</button>
+        </div>
+        <div class="customRange">
+          <label>開始 <input id="startAt" type="datetime-local" /></label>
+          <label>終了 <input id="endAt" type="datetime-local" /></label>
+          <button id="applyCustom" type="button">期間適用</button>
+        </div>
         <button id="refreshAll">再読み込み</button>
       </div>
     </header>
 
     <main>
-      <section class="cards" id="kpiCards"></section>
+      <section class="cardsStack">
+        <div class="cardsRow cardsRowPrimary" id="kpiCardsPrimary"></div>
+        <div class="cardsRow cardsRowSecondary" id="kpiCardsSecondary"></div>
+      </section>
 
       <section class="grid2">
         <article class="panel chartPanel">
