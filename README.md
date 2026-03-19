@@ -296,6 +296,138 @@ Current implementation combines:
 
 For a strict analytics-grade funnel, add immutable event table ingestion in source service.
 
+## 8.1 Cloud Log / Firestore 字段字典（字段名-含义-PII-保留期-查询入口）
+
+以下口径基于当前代码与部署默认值：
+
+- Cloud Run 日志监控主查入口：BigQuery `oura_navi_monitor` 数据集（Logging Sink 导入）
+- BigQuery 日志保留：`MONITOR_RETENTION_DAYS=180`（当前默认）
+- Firestore 聊天 TTL：`CHAT_RETENTION_DAYS=90`（收藏会话可不设 `expireAt`）
+- Firestore 隐藏会话保留：`CHAT_HIDDEN_RETENTION_DAYS=365`
+- 备注：Firestore TTL 需要在 GCP 侧已启用对应 TTL 字段规则后才会按期清理
+
+### A. Cloud Log（请求结构化日志，BigQuery: `run_googleapis_com_requests`）
+
+| 字段名 | 含义 | 是否 PII | 保留期 | 查询入口 |
+| --- | --- | --- | --- | --- |
+| `timestamp` | 请求发生时间（UTC） | 否 | 180天（BigQuery Sink） | BigQuery `run_googleapis_com_requests` |
+| `resource.type` | 资源类型（固定 `cloud_run_revision`） | 否 | 同上 | BigQuery / Logging Explorer |
+| `resource.labels.service_name` | Cloud Run 服务名（如 `lcs-rag-app`） | 否 | 同上 | BigQuery / Logging Explorer |
+| `httpRequest.requestMethod` | HTTP 方法（GET/POST 等） | 否 | 同上 | BigQuery |
+| `httpRequest.requestUrl` | 完整 URL（含 path 和 query） | 低（可能含业务参数） | 同上 | BigQuery |
+| `path(派生)` | 从 `requestUrl` 抽取的接口路径（如 `/v2/ask`） | 否 | 同上 | Monitor API (`/api/metrics/*`) |
+| `httpRequest.status` | 响应状态码 | 否 | 同上 | BigQuery / Monitor API |
+| `httpRequest.latency` | 请求耗时（原始字符串） | 否 | 同上 | BigQuery |
+| `latency_ms(派生)` | 耗时毫秒（用于 P95/均值） | 否 | 同上 | Monitor API |
+| `httpRequest.userAgent` | 终端 UA（用于 PC/手机分类） | 中（设备指纹风险） | 同上 | BigQuery / Monitor API |
+| `device_class(派生)` | `desktop/mobile/unknown` | 否 | 同上 | Monitor API (`/api/metrics/devices`,`/api/metrics/usage`) |
+| `core_request_count(派生)` | 核心业务请求数（`/v2/ask`,`/v2/conversations*`） | 否 | 同上 | Monitor API (`overview`,`usage`) |
+| `system_request_count(派生)` | 系统请求数（非核心请求） | 否 | 同上 | Monitor API (`overview`,`usage`) |
+
+### B. Cloud Log（应用文本日志，BigQuery: `run_googleapis_com_stdout`/`stderr`）
+
+| 字段名 | 含义 | 是否 PII | 保留期 | 查询入口 |
+| --- | --- | --- | --- | --- |
+| `textPayload` | 应用输出日志原文 | 可能（取决于日志内容） | 180天（BigQuery Sink） | BigQuery `run_googleapis_com_stdout/stderr` |
+| `query_suggest_result.stage` | 输入预测阶段（`stable/degraded`） | 否 | 同上 | `/api/metrics/query-suggest` |
+| `query_suggest_result.latency_ms` | 输入预测耗时 | 否 | 同上 | `/api/metrics/query-suggest`,`/api/metrics/overview` |
+| `query_suggest_result.suggestion_count` | 单次返回候选数量 | 否 | 同上 | 同上 |
+| `query_suggest_refine_degraded.fallback` | 降级时 fallback 来源 | 否 | 同上 | `/api/metrics/query-suggest` |
+| `query_suggest_refine_degraded.reason` | 降级原因 | 否 | 同上 | 同上 |
+| `chat_sync_telemetry.event` | 历史召回/同步事件（`restore_*` 等） | 否 | 同上 | `/api/metrics/overview` |
+| `chat_sync_telemetry.user_id` | 用户标识（subject） | 是 | 同上 | BigQuery（建议仅管理员） |
+| `chat_sync_telemetry.conversation_id` | 会话 ID | 中 | 同上 | BigQuery |
+| `ask_audit_json.trace_id` | 请求链路追踪 ID | 否 | 同上 | Logging Explorer / BigQuery |
+| `ask_audit_json.query_hash` | query 哈希（非明文） | 低 | 同上 | Logging Explorer / BigQuery |
+| `ask_audit_json.intent` | 意图判定结果 | 否 | 同上 | 同上 |
+| `ask_audit_json.hit_count` | 检索命中数 | 否 | 同上 | 同上 |
+| `ask_audit_json.stores_queried` | 命中的检索源集合 | 否 | 同上 | 同上 |
+| `web_mode_direct_dispatch` | 触发 Web 模式的路由事件 | 否 | 同上 | Logging Explorer |
+
+### C. Firestore（聊天主数据，库：`chat_users`）
+
+#### C-1. User Root: `chat_users/{userId}`
+
+| 字段名 | 含义 | 是否 PII | 保留期 | 查询入口 |
+| --- | --- | --- | --- | --- |
+| `userId`（文档 ID） | 用户唯一标识（通常是 subject） | 是 | 跟随账号生命周期 | Firestore Console / `/api/history/users` |
+| `userEmail` | 用户邮箱 | 是 | 同上 | 同上 |
+| `subject` | IAP subject | 是 | 同上 | 同上 |
+| `identitySource` | 身份来源（IAP/header） | 中 | 同上 | 同上 |
+| `identityVerified` | 身份是否校验通过 | 否 | 同上 | 同上 |
+| `activeConversationId` | 当前激活会话 ID | 中 | 同上 | Firestore Console |
+| `updatedAt` | 用户最后活动时间 | 中 | 同上 | Firestore / `/api/history/users` |
+| `lastSeenAt` | 最近可见活动时间 | 中 | 同上 | 同上 |
+
+#### C-2. Conversation: `chat_users/{userId}/conversations/{conversationId}`
+
+| 字段名 | 含义 | 是否 PII | 保留期 | 查询入口 |
+| --- | --- | --- | --- | --- |
+| `id` | 会话 ID | 中 | 活跃会话90天TTL（收藏可长期） | Firestore / `/api/history/users/{userId}/conversations` |
+| `title` | 会话标题 | 可能（用户输入衍生） | 同上 | 同上 |
+| `titleSource` | 标题来源（`auto/manual`） | 否 | 同上 | 同上 |
+| `mode` | 会话默认模式（`internal/websearch/...`） | 否 | 同上 | 同上 |
+| `visibility` | `active/hidden` | 否 | hidden 分支默认365天 | 同上 |
+| `deletedAt` | 软删除时间 | 中 | hidden 默认365天 | 同上 |
+| `deletedBy` | 删除操作者 | 是 | 同上 | Firestore Console |
+| `deleteReason` | 删除原因 | 可能 | 同上 | Firestore Console |
+| `hiddenExpireAt` | hidden 数据过期时间 | 否 | 到期清理 | Firestore Console |
+| `expireAt` | TTL 过期时间 | 否 | 到期清理 | Firestore Console |
+| `createdAt` | 创建时间 | 否 | 同会话 | 同上 |
+| `updatedAt` | 更新时间 | 否 | 同会话 | 同上 |
+| `isFavorite` | 是否收藏 | 否 | 收藏可不设 TTL | 同上 |
+| `pinnedAt` | 置顶时间 | 否 | 同会话 | 同上 |
+| `lastMessagePreview` | 最后一条消息预览 | 可能（文本摘要） | 同会话 | 同上 |
+| `messageCount` | 消息数 | 否 | 同会话 | 同上 |
+| `integrityState` | 数据完整性（`ok/empty/empty_shell/unknown`） | 否 | 同会话 | 同上 |
+| `revision` | 会话版本号 | 否 | 同会话 | 同上 |
+| `syncToken` | 同步令牌 | 否 | 同会话 | 同上 |
+| `querySuggestRuntimeSummary` | 输入预测汇总快照 | 可能（含建议文本） | 同会话 | Firestore Console |
+| `followupRuntimeSummary` | 连续追问状态汇总 | 可能（含摘要） | 同会话 | Firestore Console |
+
+#### C-3. Message: `chat_users/{userId}/conversations/{conversationId}/messages/{messageId}`
+
+| 字段名 | 含义 | 是否 PII | 保留期 | 查询入口 |
+| --- | --- | --- | --- | --- |
+| `id` | 消息 ID | 中 | 默认90天TTL | Firestore / `/api/history/.../{conversationId}` |
+| `role` | `user/assistant` | 否 | 同上 | 同上 |
+| `content` | 消息全文（用户 query / AI 回复） | 是（高） | 同上 | 同上（管理员） |
+| `timestamp` | 消息时间 | 中 | 同上 | 同上 |
+| `status` | 生成状态（`streaming/done/error/...`） | 否 | 同上 | 同上 |
+| `errorMessage` | 错误信息 | 可能 | 同上 | 同上 |
+| `feedback` | 用户反馈（`good/bad/none`） | 低 | 同上 | 同上 |
+| `grounded` | 引用/证据结构 | 可能 | 同上 | Firestore Console |
+| `attachmentNames` | 附件名 | 可能 | 同上 | 同上 |
+| `attachmentFileIds` | 附件文件 ID | 中 | 同上 | 同上 |
+| `modeAtSend` | 该条发送时实际模式 | 否 | 同上 | Firestore Console |
+| `chatFlowType` | `new_chat/continued_chat` | 否 | 同上 | Firestore Console |
+| `conversationIdAtSend` | 发送时会话 ID | 中 | 同上 | Firestore Console |
+| `turnId` | 当前轮次 ID | 否 | 同上 | Firestore Console |
+| `parentTurnId` | 父轮次 ID（追问链） | 否 | 同上 | Firestore Console |
+| `clientOrigin` | 客户端来源标记 | 低 | 同上 | Firestore Console |
+| `syncToken` | 消息同步令牌 | 否 | 同上 | Firestore Console |
+| `expireAt` | TTL 过期时间 | 否 | 到期清理 | Firestore Console |
+
+#### C-4. Runtime（会话运行态）
+
+| 字段名 | 含义 | 是否 PII | 保留期 | 查询入口 |
+| --- | --- | --- | --- | --- |
+| `runtime/query_suggest.entries[].payload.suggestions[].text` | 候选句文本 | 是（可能含产品/用户语义） | 随会话 | Firestore Console |
+| `runtime/query_suggest.entries[].payload.meta.stage` | 候选阶段（stable/degraded） | 否 | 随会话 | Firestore Console |
+| `runtime/query_suggest.feedbackProfile.*` | 展现/点击/采纳聚合计数 | 否 | 随会话 | Firestore / 监控聚合 |
+| `runtime/query_suggest.suggestionFacts[]` | 候选学习事实（impression/click/adoption/edit） | 低-中 | 随会话 | Firestore / `/api/metrics/query-suggest`（聚合） |
+| `runtime/followup.snapshots[]` | 连续追问快照（摘要、实体、facet） | 可能 | 随会话 | Firestore Console |
+| `runtime/followup.lastPlan.*` | 最近追问计划（anchor/query/policy） | 可能 | 随会话 | Firestore Console |
+
+### D. 推荐查询入口清单
+
+| 目标 | 推荐入口 |
+| --- | --- |
+| 请求量/错误率/P95/PC vs 手机 | `/api/metrics/overview`,`/api/metrics/usage`,`/api/metrics/devices` |
+| query-suggest 稳定率/降级来源 | `/api/metrics/query-suggest` |
+| 用户-会话-消息全文排查 | `/api/history/users` -> `/api/history/users/{userId}/conversations` -> `/api/history/users/{userId}/conversations/{conversationId}` |
+| 原始日志深排查 | BigQuery `run_googleapis_com_requests/stdout/stderr` 或 Cloud Logging Explorer |
+
 ## 9. Suggested Operations Policy
 
 - Keep monitor service isolated and read-only against production data sources.
