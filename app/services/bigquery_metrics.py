@@ -466,3 +466,252 @@ ORDER BY count DESC
             "stages": self._run_query(stage_sql, params),
             "fallbackSources": self._run_query(fallback_sql, params),
         }
+
+    def get_followup_open_aggregates(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
+        sql = f"""
+WITH src AS (
+  SELECT SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^followup_open_result_json=(.*)$")) AS payload
+  FROM {self._stdout_table()}
+  WHERE resource.type = 'cloud_run_revision'
+    AND resource.labels.service_name = @service_name
+    AND timestamp >= @start_ts
+    AND timestamp < @end_ts
+    AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^followup_open_result_json=")
+),
+events AS (
+  SELECT
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.event'), ''), 'unknown')) AS event_name,
+    COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), 'unknown') AS user_id,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_email'), ''), '')) AS user_email
+  FROM src
+  WHERE payload IS NOT NULL
+)
+SELECT
+  event_name,
+  user_id,
+  user_email,
+  COUNT(*) AS event_count
+FROM events
+GROUP BY event_name, user_id, user_email
+"""
+        rows = self._run_query(sql, self._window_params(window)[:3])
+        recognized_total = 0
+        success_total = 0
+        by_user: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            user_id = str(row.get("user_id") or "").strip() or "unknown"
+            user_email = str(row.get("user_email") or "").strip().lower()
+            event_name = str(row.get("event_name") or "").strip().lower()
+            count = int(row.get("event_count") or 0)
+            key = f"{user_id}::{user_email}"
+            slot = by_user.setdefault(
+                key,
+                {
+                    "userId": user_id,
+                    "userEmail": user_email,
+                    "recognizedCount": 0,
+                    "successCount": 0,
+                    "successRate": None,
+                },
+            )
+            if event_name == "recognized":
+                recognized_total += count
+                slot["recognizedCount"] += count
+            elif event_name == "success":
+                success_total += count
+                slot["successCount"] += count
+        users: List[Dict[str, Any]] = []
+        for slot in by_user.values():
+            recognized = int(slot.get("recognizedCount") or 0)
+            success = int(slot.get("successCount") or 0)
+            slot["successRate"] = (success / recognized) if recognized > 0 else None
+            users.append(slot)
+        users.sort(key=lambda item: int(item.get("recognizedCount") or 0), reverse=True)
+        return {
+            "recognizedCount": recognized_total,
+            "successCount": success_total,
+            "successRate": (success_total / recognized_total) if recognized_total > 0 else None,
+            "users": users,
+        }
+
+    def get_request_user_aggregates(self, *, window: MetricsTimeWindow) -> List[Dict[str, Any]]:
+        sql = f"""
+WITH src AS (
+  SELECT SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^request_user_metric_json=(.*)$")) AS payload
+  FROM {self._stdout_table()}
+  WHERE resource.type = 'cloud_run_revision'
+    AND resource.labels.service_name = @service_name
+    AND timestamp >= @start_ts
+    AND timestamp < @end_ts
+    AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^request_user_metric_json=")
+),
+events AS (
+  SELECT
+    COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), 'unknown') AS user_id,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_email'), ''), '')) AS user_email,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.device_class'), ''), 'unknown')) AS device_class,
+    COALESCE(SAFE_CAST(JSON_VALUE(payload, '$.is_core') AS BOOL), FALSE) AS is_core
+  FROM src
+  WHERE payload IS NOT NULL
+)
+SELECT
+  user_id,
+  user_email,
+  COUNT(*) AS request_count,
+  COUNTIF(is_core) AS core_request_count,
+  COUNTIF(NOT is_core) AS system_request_count,
+  COUNTIF(device_class = 'desktop') AS desktop_request_count,
+  COUNTIF(device_class = 'mobile') AS mobile_request_count,
+  COUNTIF(device_class = 'unknown') AS unknown_request_count
+FROM events
+GROUP BY user_id, user_email
+ORDER BY request_count DESC
+"""
+        return self._run_query(sql, self._window_params(window)[:3])
+
+    def get_request_user_timeseries(self, *, window: MetricsTimeWindow, user_key: str) -> List[Dict[str, Any]]:
+        lookup = str(user_key or "").strip()
+        if not lookup:
+            return []
+        lookup_lower = lookup.lower()
+
+        if window.is_day_bucket:
+            sql = f"""
+WITH devices AS (
+  SELECT 'desktop' AS device_class UNION ALL
+  SELECT 'mobile' UNION ALL
+  SELECT 'unknown'
+),
+grid AS (
+  SELECT bucket_day
+  FROM UNNEST(
+    GENERATE_DATE_ARRAY(
+      DATE(@start_ts, @tz),
+      DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz),
+      INTERVAL 1 DAY
+    )
+  ) AS bucket_day
+),
+events AS (
+  SELECT
+    DATE(timestamp, @tz) AS bucket_day,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.device_class'), ''), 'unknown')) AS device_class,
+    COALESCE(SAFE_CAST(JSON_VALUE(payload, '$.is_core') AS BOOL), FALSE) AS is_core
+  FROM (
+    SELECT
+      timestamp,
+      SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^request_user_metric_json=(.*)$")) AS payload
+    FROM {self._stdout_table()}
+    WHERE resource.type = 'cloud_run_revision'
+      AND resource.labels.service_name = @service_name
+      AND timestamp >= @start_ts
+      AND timestamp < @end_ts
+      AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^request_user_metric_json=")
+  )
+  WHERE payload IS NOT NULL
+    AND (
+      LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_email'), ''), '')) = @user_key
+    )
+),
+agg AS (
+  SELECT
+    bucket_day,
+    device_class,
+    COUNT(*) AS request_count,
+    COUNTIF(is_core) AS core_request_count
+  FROM events
+  GROUP BY bucket_day, device_class
+)
+SELECT
+  FORMAT_DATE('%Y-%m-%d', g.bucket_day) AS bucket_key,
+  FORMAT_DATE('%m-%d', g.bucket_day) AS bucket_label,
+  d.device_class,
+  COALESCE(a.request_count, 0) AS request_count,
+  COALESCE(a.core_request_count, 0) AS core_request_count,
+  GREATEST(COALESCE(a.request_count, 0) - COALESCE(a.core_request_count, 0), 0) AS system_request_count
+FROM grid g
+CROSS JOIN devices d
+LEFT JOIN agg a ON a.bucket_day = g.bucket_day AND a.device_class = d.device_class
+ORDER BY g.bucket_day ASC, d.device_class ASC
+"""
+            params = self._window_params(window) + [
+                bigquery.ScalarQueryParameter("user_key", "STRING", lookup_lower),
+            ]
+            return self._run_query(sql, params)
+
+        label_format = "%H:%M" if window.duration_seconds <= 24 * 60 * 60 else "%m-%d %H:%M"
+        sql = f"""
+WITH devices AS (
+  SELECT 'desktop' AS device_class UNION ALL
+  SELECT 'mobile' UNION ALL
+  SELECT 'unknown'
+),
+bounds AS (
+  SELECT
+    DATETIME_TRUNC(DATETIME(@start_ts, @tz), HOUR)
+    + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(@start_ts, @tz)), @bucket_minutes) * @bucket_minutes) MINUTE AS bucket_start_local,
+    DATETIME_TRUNC(DATETIME(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz), HOUR)
+    + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)), @bucket_minutes) * @bucket_minutes) MINUTE AS bucket_end_local
+),
+grid AS (
+  SELECT DATETIME_ADD(bucket_start_local, INTERVAL offset_minutes MINUTE) AS bucket_local
+  FROM bounds,
+  UNNEST(
+    GENERATE_ARRAY(
+      0,
+      DATETIME_DIFF(bucket_end_local, bucket_start_local, MINUTE),
+      @bucket_minutes
+    )
+  ) AS offset_minutes
+),
+events AS (
+  SELECT
+    DATETIME_TRUNC(DATETIME(timestamp, @tz), HOUR)
+    + INTERVAL (DIV(EXTRACT(MINUTE FROM DATETIME(timestamp, @tz)), @bucket_minutes) * @bucket_minutes) MINUTE AS bucket_local,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.device_class'), ''), 'unknown')) AS device_class,
+    COALESCE(SAFE_CAST(JSON_VALUE(payload, '$.is_core') AS BOOL), FALSE) AS is_core
+  FROM (
+    SELECT
+      timestamp,
+      SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^request_user_metric_json=(.*)$")) AS payload
+    FROM {self._stdout_table()}
+    WHERE resource.type = 'cloud_run_revision'
+      AND resource.labels.service_name = @service_name
+      AND timestamp >= @start_ts
+      AND timestamp < @end_ts
+      AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^request_user_metric_json=")
+  )
+  WHERE payload IS NOT NULL
+    AND (
+      LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_email'), ''), '')) = @user_key
+    )
+),
+agg AS (
+  SELECT
+    bucket_local,
+    device_class,
+    COUNT(*) AS request_count,
+    COUNTIF(is_core) AS core_request_count
+  FROM events
+  GROUP BY bucket_local, device_class
+)
+SELECT
+  FORMAT_DATETIME('%Y-%m-%d %H:%M', g.bucket_local) AS bucket_key,
+  FORMAT_DATETIME(@label_format, g.bucket_local) AS bucket_label,
+  d.device_class,
+  COALESCE(a.request_count, 0) AS request_count,
+  COALESCE(a.core_request_count, 0) AS core_request_count,
+  GREATEST(COALESCE(a.request_count, 0) - COALESCE(a.core_request_count, 0), 0) AS system_request_count
+FROM grid g
+CROSS JOIN devices d
+LEFT JOIN agg a ON a.bucket_local = g.bucket_local AND a.device_class = d.device_class
+ORDER BY g.bucket_local ASC, d.device_class ASC
+"""
+        params = self._window_params(window) + [
+            bigquery.ScalarQueryParameter("bucket_minutes", "INT64", int(window.bucket_minutes)),
+            bigquery.ScalarQueryParameter("label_format", "STRING", label_format),
+            bigquery.ScalarQueryParameter("user_key", "STRING", lookup_lower),
+        ]
+        return self._run_query(sql, params)

@@ -213,46 +213,42 @@ def export_qs_facts_csv(
 
 @router.get("/users.csv")
 def export_users_csv(
-    limit: int = Query(default=500, ge=1, le=500),
-    q: str = Query(default=""),
+    user_id: str = Query(...),
+    include_hidden: bool = Query(default=True),
     _admin: AdminIdentity = Depends(require_admin),
     fs: FirestoreHistoryService = Depends(get_firestore_history_service),
 ) -> Response:
     try:
-        rows = fs.list_users(limit=limit, q=q)
+        rows = fs.export_user_conversation_messages(user_id=user_id, include_hidden=include_hidden)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"users export failed: {exc}") from exc
-    return _csv_response("users.csv", rows)
+    return _csv_response(f"user_sessions_messages_{user_id}.csv", rows)
 
 
 @router.get("/conversations.csv")
 def export_conversations_csv(
     user_id: str = Query(...),
-    include_hidden: bool = Query(default=False),
-    limit: int = Query(default=500, ge=1, le=500),
-    q: str = Query(default=""),
+    conversation_id: str = Query(...),
     _admin: AdminIdentity = Depends(require_admin),
     fs: FirestoreHistoryService = Depends(get_firestore_history_service),
 ) -> Response:
     try:
-        rows = fs.list_user_conversations(user_id=user_id, include_hidden=include_hidden, limit=limit, q=q)
+        rows = fs.export_conversation_messages(user_id=user_id, conversation_id=conversation_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"conversations export failed: {exc}") from exc
-    return _csv_response(f"conversations_{user_id}.csv", rows)
+    return _csv_response(f"conversation_messages_{conversation_id}.csv", rows)
 
 
 @router.get("/messages.csv")
 def export_messages_csv(
     user_id: str = Query(...),
     conversation_id: str = Query(...),
-    limit: int = Query(default=2000, ge=1, le=2000),
     _admin: AdminIdentity = Depends(require_admin),
-    fs: FirestoreHistoryService = Depends(get_firestore_history_service),
 ) -> Response:
-    try:
-        payload = fs.get_conversation_messages(user_id=user_id, conversation_id=conversation_id, limit=limit)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"messages export failed: {exc}") from exc
-    if payload is None:
-        raise HTTPException(status_code=404, detail="conversation not found")
-    return _csv_response(f"messages_{conversation_id}.csv", payload.get("messages", []))
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "messages.csv is deprecated; use conversations.csv with "
+            "user_id and conversation_id to export all messages in the conversation"
+        ),
+    )

@@ -1,29 +1,184 @@
 const state = {
-  days: 7,
   filter: {
     mode: "preset",
     preset: "today",
     start: "",
     end: "",
   },
-  selectedUserId: "",
-  selectedConversationId: "",
-  chartThemeApplied: false,
+  selectedHistoryUserId: "",
+  selectedHistoryConversationId: "",
+  analyticsUserQuery: "",
   charts: {
-    usage: null,
-    systemUsage: null,
-    errorTrend: null,
-    device: null,
-    qsStage: null,
+    requestTrend: null,
+    coreRequestTrend: null,
+    deviceQuality: null,
+    modeDistribution: null,
+    questionFlow: null,
+    favoriteRatio: null,
+    integrityRisk: null,
+    citationCoverage: null,
+    userRequestTrend: null,
+    userModeDistribution: null,
   },
 };
 
+const DASHBOARD_FETCH_TIMEOUT_MS = 18000;
 const $ = (id) => document.getElementById(id);
 
-const fmtInt = (v) => (typeof v === "number" && Number.isFinite(v) ? v.toLocaleString() : "-");
-const fmtPct = (v) => (typeof v === "number" && Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : "-");
-const fmtMs = (v) => (typeof v === "number" && Number.isFinite(v) ? `${Math.round(v).toLocaleString()} ms` : "-");
-const DASHBOARD_FETCH_TIMEOUT_MS = 15000;
+const HELP = {
+  dau: {
+    tech: "24時間以内に更新があった一意ユーザー数。",
+    biz: "今日、実際に利用したユーザー人数。",
+  },
+  wau: {
+    tech: "直近7日以内に更新があった一意ユーザー数。",
+    biz: "週次の実利用ユーザー規模。",
+  },
+  activeUsersInWindow: {
+    tech: "選択期間内で更新イベントを持つ一意ユーザー数。",
+    biz: "この期間に動いたユーザー人数。",
+  },
+  activeSessionStickiness: {
+    tech: "メッセージ総数 / 活性会話総数（ウィンドウ内）。",
+    biz: "1会話あたり会話継続の深さ。",
+  },
+  conversationMessageVolume: {
+    tech: "会話総数とメッセージ総数の同時表示。",
+    biz: "利用量の全体ボリューム。",
+  },
+  firstAnswerAvgMs: {
+    tech: "`/v2/ask` 系成功リクエストの平均レイテンシ。",
+    biz: "初回回答までの平均待ち時間。",
+  },
+  enhanceAnswerAvgMs: {
+    tech: "`/v2/ask/enhance_full` 系成功リクエストの平均レイテンシ。",
+    biz: "回答強化処理の平均待ち時間。",
+  },
+  followupOpenSuccessRate: {
+    tech: "S/R、S=追問チェーン成功数、R=追問認識数。",
+    biz: "追問と判定後に文脈継続できた割合。",
+  },
+  feedbackLikeRate: {
+    tech: "高評価フィードバック件数 / 全フィードバック件数。",
+    biz: "回答満足度の概況。",
+  },
+  querySuggestStableRate: {
+    tech: "入力候補結果ログにおける安定ステージ比率。",
+    biz: "入力候補が安定生成できている割合。",
+  },
+  querySuggestAvgLatencyMs: {
+    tech: "入力候補ログの平均応答時間（ミリ秒）。",
+    biz: "候補表示の体感速度。",
+  },
+  messageFailureRate: {
+    tech: "エラー状態またはエラーメッセージ付きメッセージの比率。",
+    biz: "会話途中で失敗したメッセージの割合。",
+  },
+  citationCoverageRate: {
+    tech: "根拠情報付きアシスタントメッセージ数 / アシスタント全件数。",
+    biz: "回答に根拠が付いている割合。",
+  },
+  restoreSuccessRate: {
+    tech: "履歴復元成功イベント合計 / 復元関連イベント総数。",
+    biz: "履歴同期の復元成功率。",
+  },
+  requestCore: {
+    tech: "総リクエスト数とコア業務リクエスト数を併記。",
+    biz: "業務処理トラフィックの規模感。",
+  },
+  error5xxRate: {
+    tech: "5xx 件数 / 総リクエスト件数。",
+    biz: "サーバー障害の発生率。",
+  },
+  requestP95LatencyMs: {
+    tech: "HTTP レイテンシ分布の95パーセンタイル。",
+    biz: "遅い体験側の代表値。",
+  },
+  requestTrend: {
+    tech: "時間バケットごとのリクエスト数をパソコン/モバイルで分解。",
+    biz: "アクセス量の時間推移。",
+  },
+  coreRequestTrend: {
+    tech: "時間バケットごとのコア業務リクエスト推移。",
+    biz: "主要機能の利用推移。",
+  },
+  deviceQuality: {
+    tech: "端末区分別の件数と5xx率を同時表示。",
+    biz: "パソコンとモバイルの品質差。",
+  },
+  modeDistribution: {
+    tech: "送信時モードを基準としたモード別件数分布。",
+    biz: "どのモードが使われているか。",
+  },
+  questionFlow: {
+    tech: "ユーザーメッセージの新規質問と追問の構成比。",
+    biz: "新規質問と追問の利用比率。",
+  },
+  favoriteConversation: {
+    tech: "お気に入り会話数 / 会話総数。",
+    biz: "保存価値がある会話の割合。",
+  },
+  integrityRisk: {
+    tech: "整合性状態がリスク判定の会話比率。",
+    biz: "会話整合性リスクの割合。",
+  },
+  citationCoverage: {
+    tech: "根拠付きアシスタントメッセージ比率を可視化。",
+    biz: "回答の根拠提示レベル。",
+  },
+  topEndpoints: {
+    tech: "5xx 発生件数の多いエンドポイント上位。",
+    biz: "障害影響が大きいAPI箇所。",
+  },
+  topMessageErrors: {
+    tech: "メッセージ単位のエラー理由上位。",
+    biz: "現場で多い失敗理由。",
+  },
+  userRequestTrend: {
+    tech: "選択ユーザーのリクエスト推移（端末分解）。",
+    biz: "個別ユーザーの利用リズム。",
+  },
+  userModeDistribution: {
+    tech: "選択ユーザーのモード利用分布。",
+    biz: "個別ユーザーの操作傾向。",
+  },
+};
+
+function fmtInt(value) {
+  return Number.isFinite(Number(value)) ? Number(value).toLocaleString() : "-";
+}
+
+function fmtPct(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `${(num * 100).toFixed(2)}%` : "-";
+}
+
+function fmtMs(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `${Math.round(num).toLocaleString()} ミリ秒` : "-";
+}
+
+function fmtRatio(value, digits = 2) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num.toFixed(digits) : "-";
+}
+
+function fmtJst(value) {
+  const text = String(value || "").trim();
+  if (!text) return "-";
+  const dt = new Date(text);
+  if (Number.isNaN(dt.getTime())) return text;
+  return dt.toLocaleString("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
 
 function isChartReady() {
   return typeof window.Chart !== "undefined";
@@ -36,104 +191,34 @@ function cssVar(name, fallback) {
 
 function rgba(hex, alpha) {
   const c = String(hex || "").replace("#", "").trim();
-  if (!/^[0-9a-fA-F]{6}$/.test(c)) return `rgba(30, 97, 219, ${alpha})`;
+  if (!/^[0-9a-fA-F]{6}$/.test(c)) return `rgba(13, 106, 223, ${alpha})`;
   const r = Number.parseInt(c.slice(0, 2), 16);
   const g = Number.parseInt(c.slice(2, 4), 16);
   const b = Number.parseInt(c.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-function ensureChartTheme() {
-  if (!isChartReady() || state.chartThemeApplied) return;
-  const text = cssVar("--text", "#152033");
-  const muted = cssVar("--muted", "#5d6e84");
-  const line = cssVar("--line", "#d8e2f1");
-  window.Chart.defaults.color = muted;
-  window.Chart.defaults.borderColor = line;
-  window.Chart.defaults.font.family = '"Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif';
-  window.Chart.defaults.plugins.legend.labels.usePointStyle = true;
-  window.Chart.defaults.plugins.legend.labels.boxHeight = 8;
-  window.Chart.defaults.plugins.legend.labels.boxWidth = 10;
-  window.Chart.defaults.plugins.tooltip.backgroundColor = "rgba(17, 24, 39, 0.92)";
-  window.Chart.defaults.plugins.tooltip.titleColor = "#ffffff";
-  window.Chart.defaults.plugins.tooltip.bodyColor = "#ffffff";
-  window.Chart.defaults.plugins.tooltip.borderColor = rgba(text.replace("#", ""), 0.18);
-  window.Chart.defaults.plugins.tooltip.borderWidth = 1;
-  state.chartThemeApplied = true;
-}
-
 function toast(message) {
   const el = $("toast");
-  el.textContent = message;
+  if (!el) return;
+  el.textContent = String(message || "");
   el.classList.add("show");
   setTimeout(() => el.classList.remove("show"), 2200);
-}
-
-function describeError(error) {
-  if (error instanceof Error) return error.message;
-  return String(error || "unknown error");
 }
 
 async function getJson(path) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), DASHBOARD_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(path, { credentials: "include", signal: controller.signal }).catch((error) => {
-      if (error && error.name === "AbortError") {
-        throw new Error(`timeout ${path}`);
-      }
-      throw error;
-    });
+    const res = await fetch(path, { credentials: "include", signal: controller.signal });
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`${res.status} ${path} ${text.slice(0, 180)}`);
     }
-    return res.json();
+    return await res.json();
   } finally {
     clearTimeout(timeoutId);
   }
-}
-
-function buildCards(overview, usage) {
-  const primary = [
-    { label: "DAU", value: fmtInt(usage.dau) },
-    { label: "WAU", value: fmtInt(usage.wau) },
-    {
-      label: "リクエスト数（総数 / コア業務）",
-      value: `${fmtInt(overview.request_count)} / ${fmtInt(overview.core_request_count)}`,
-    },
-    { label: "会話数 / メッセージ数", value: `${fmtInt(usage.conversationCount)} / ${fmtInt(usage.messageCount)}` },
-    { label: "初回回答平均時間", value: fmtMs(overview.first_answer_avg_ms) },
-    { label: "回答強化平均時間", value: fmtMs(overview.enhance_answer_avg_ms) },
-  ];
-
-  const secondary = [
-    { label: "入力候補安定生成率", value: fmtPct(overview.qs_stable_rate) },
-    { label: "回答フィードバックいいね率", value: fmtPct(usage.feedbackLikeRate) },
-    { label: "5xx エラー率", value: fmtPct(overview.error_5xx_rate) },
-    { label: "P95 レイテンシ", value: fmtMs(overview.request_p95_latency_ms) },
-  ];
-
-  const renderCards = (rootId, cards) => {
-    const root = $(rootId);
-    root.textContent = "";
-    for (const card of cards) {
-      const wrapper = document.createElement("div");
-      wrapper.className = "card";
-      const label = document.createElement("div");
-      label.className = "label";
-      label.textContent = card.label;
-      const value = document.createElement("div");
-      value.className = "value";
-      value.textContent = String(card.value ?? "-");
-      wrapper.appendChild(label);
-      wrapper.appendChild(value);
-      root.appendChild(wrapper);
-    }
-  };
-
-  renderCards("kpiCardsPrimary", primary);
-  renderCards("kpiCardsSecondary", secondary);
 }
 
 function buildFilterQueryString() {
@@ -143,15 +228,16 @@ function buildFilterQueryString() {
     if (state.filter.end) params.set("end", state.filter.end);
   } else if (state.filter.mode === "preset" && state.filter.preset) {
     params.set("preset", state.filter.preset);
-  } else {
-    params.set("days", String(state.days || 7));
+  }
+  if (state.analyticsUserQuery.trim()) {
+    params.set("user", state.analyticsUserQuery.trim());
   }
   return params.toString();
 }
 
 function markActivePresetButton() {
   document.querySelectorAll(".presetBtn").forEach((btn) => {
-    const selected = btn.dataset.preset === state.filter.preset && state.filter.mode === "preset";
+    const selected = state.filter.mode === "preset" && btn.dataset.preset === state.filter.preset;
     btn.classList.toggle("active", selected);
   });
 }
@@ -170,11 +256,11 @@ function applyCustomFilter() {
   const start = $("startAt").value.trim();
   const end = $("endAt").value.trim();
   if (!start || !end) {
-    toast("カスタム期間では開始と終了の両方を指定してください。");
+    toast("開始と終了を入力してください。");
     return false;
   }
   if (end <= start) {
-    toast("終了は開始より後の時刻を指定してください。");
+    toast("終了時刻は開始時刻より後にしてください。");
     return false;
   }
   state.filter.mode = "custom";
@@ -185,12 +271,23 @@ function applyCustomFilter() {
   return true;
 }
 
-function initFilterUi() {
-  markActivePresetButton();
+function ensureChartTheme() {
+  if (!isChartReady()) return;
+  const line = cssVar("--line", "#d0deee");
+  const muted = cssVar("--muted", "#5f738d");
+  window.Chart.defaults.color = muted;
+  window.Chart.defaults.borderColor = line;
+  window.Chart.defaults.font.family = '"M PLUS 1p","Zen Kaku Gothic New","Noto Sans JP",sans-serif';
+  window.Chart.defaults.plugins.legend.labels.usePointStyle = true;
+  window.Chart.defaults.plugins.legend.labels.boxWidth = 10;
+  window.Chart.defaults.plugins.tooltip.backgroundColor = "rgba(17, 29, 46, 0.94)";
+  window.Chart.defaults.plugins.tooltip.titleColor = "#ffffff";
+  window.Chart.defaults.plugins.tooltip.bodyColor = "#ffffff";
+  window.Chart.defaults.plugins.tooltip.borderWidth = 1;
+  window.Chart.defaults.plugins.tooltip.borderColor = "rgba(255,255,255,0.12)";
 }
 
 function resetChart(name, config) {
-  if (!isChartReady()) return;
   ensureChartTheme();
   if (state.charts[name]) {
     state.charts[name].destroy();
@@ -198,108 +295,156 @@ function resetChart(name, config) {
   state.charts[name] = new Chart(config.ctx, config.options);
 }
 
+function metricTitleHtml(title, key) {
+  const help = HELP[key] || { tech: "定義未設定", biz: "定義未設定" };
+  return `${title}<span class="metricTip">ⓘ<span class="tipBody"><span>技術説明：${help.tech}</span><span>業務説明：${help.biz}</span></span></span>`;
+}
+
+function displayMode(mode) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  const map = {
+    internal: "社内",
+    websearch: "ウェブ検索",
+    deepthinking: "深掘り",
+    standard: "標準",
+    unknown: "不明",
+  };
+  return map[normalized] || (normalized ? normalized : "不明");
+}
+
+function displayRole(role) {
+  const normalized = String(role || "").trim().toLowerCase();
+  const map = {
+    user: "ユーザー",
+    assistant: "アシスタント",
+    system: "システム",
+  };
+  return map[normalized] || (normalized ? normalized : "");
+}
+
+function displayStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  const map = {
+    success: "成功",
+    done: "完了",
+    completed: "完了",
+    pending: "処理中",
+    running: "処理中",
+    processing: "処理中",
+    error: "エラー",
+    failed: "失敗",
+    timeout: "タイムアウト",
+    canceled: "キャンセル",
+    cancelled: "キャンセル",
+  };
+  return map[normalized] || (normalized ? normalized : "");
+}
+
+function setMetricTitle(id, title, key) {
+  const el = $(id);
+  if (!el) return;
+  el.innerHTML = metricTitleHtml(title, key);
+}
+
+function initMetricTitles() {
+  setMetricTitle("titleRequestTrend", "リクエスト推移（パソコン/モバイル）", "requestTrend");
+  setMetricTitle("titleCoreRequestTrend", "コアリクエスト推移（パソコン/モバイル）", "coreRequestTrend");
+  setMetricTitle("titleDeviceQuality", "デバイス品質比較", "deviceQuality");
+  setMetricTitle("titleModeDistribution", "モード利用分布", "modeDistribution");
+  setMetricTitle("titleQuestionFlow", "新規質問と追問の構成", "questionFlow");
+  setMetricTitle("titleFavoriteRatio", "お気に入り会話占有率", "favoriteConversation");
+  setMetricTitle("titleIntegrityRisk", "会話整合性リスク率", "integrityRisk");
+  setMetricTitle("titleCitationCoverage", "引用カバレッジ率", "citationCoverage");
+  setMetricTitle("titleTopEndpoints", "エラー発生エンドポイント上位", "topEndpoints");
+  setMetricTitle("titleTopMessageErrors", "エラー理由 上位N（メッセージ級）", "topMessageErrors");
+  setMetricTitle("titleUserRequestTrend", "単一ユーザーのリクエスト推移", "userRequestTrend");
+  setMetricTitle("titleUserModeDistribution", "単一ユーザーのモード利用分布", "userModeDistribution");
+}
+
+function buildSummaryCards(summary) {
+  const cards = [
+    { key: "dau", label: "DAU", value: fmtInt(summary.dau) },
+    { key: "wau", label: "WAU", value: fmtInt(summary.wau) },
+    { key: "activeUsersInWindow", label: "ウィンドウ活性ユーザー", value: fmtInt(summary.activeUsersInWindow) },
+    { key: "activeSessionStickiness", label: "活性会話粘着度", value: fmtRatio(summary.activeSessionStickiness, 2) },
+    {
+      key: "conversationMessageVolume",
+      label: "会話総量 / メッセージ総量",
+      value: `${fmtInt(summary.conversationCount)} / ${fmtInt(summary.messageCount)}`,
+    },
+    { key: "firstAnswerAvgMs", label: "初回回答平均時間", value: fmtMs(summary.firstAnswerAvgMs) },
+    { key: "enhanceAnswerAvgMs", label: "回答強化平均時間", value: fmtMs(summary.enhanceAnswerAvgMs) },
+    { key: "followupOpenSuccessRate", label: "追問開通成功率", value: fmtPct(summary.followupOpenSuccessRate) },
+    { key: "feedbackLikeRate", label: "いいね率", value: fmtPct(summary.feedbackLikeRate) },
+    { key: "querySuggestStableRate", label: "入力候補安定率", value: fmtPct(summary.querySuggestStableRate) },
+    { key: "querySuggestAvgLatencyMs", label: "入力候補平均時間", value: fmtMs(summary.querySuggestAvgLatencyMs) },
+    { key: "messageFailureRate", label: "メッセージ失敗率", value: fmtPct(summary.messageFailureRate) },
+    { key: "citationCoverageRate", label: "引用カバレッジ率", value: fmtPct(summary.citationCoverageRate) },
+    { key: "restoreSuccessRate", label: "同期復元成功率", value: fmtPct(summary.restoreSuccessRate) },
+    {
+      key: "requestCore",
+      label: "総/コアリクエスト",
+      value: `${fmtInt(summary.requestCount)} / ${fmtInt(summary.coreRequestCount)}`,
+    },
+    { key: "error5xxRate", label: "5xxエラー率", value: fmtPct(summary.error5xxRate) },
+    { key: "requestP95LatencyMs", label: "要求P95遅延", value: fmtMs(summary.requestP95LatencyMs) },
+  ];
+
+  const root = $("kpiCardsPrimary");
+  root.innerHTML = "";
+  cards.forEach((card) => {
+    const article = document.createElement("article");
+    article.className = "summaryCard";
+    article.innerHTML = `
+      <div class="label">${metricTitleHtml(card.label, card.key)}</div>
+      <div class="value">${card.value}</div>
+    `;
+    root.appendChild(article);
+  });
+}
+
 function normalizeUsageSeries(timeseries) {
-  const out = new Map();
+  const map = new Map();
   for (const row of timeseries || []) {
-    const key = row.bucket_key || row.bucketKey || row.day || "";
+    const key = row.bucket_key || row.bucketKey || "";
     if (!key) continue;
-    if (!out.has(key)) {
-      out.set(key, {
+    if (!map.has(key)) {
+      map.set(key, {
         label: row.bucket_label || row.bucketLabel || key,
         desktop: { total: 0, core: 0, system: 0 },
         mobile: { total: 0, core: 0, system: 0 },
         unknown: { total: 0, core: 0, system: 0 },
       });
     }
-    const slot = out.get(key);
-    if (row.bucket_label || row.bucketLabel) {
-      slot.label = row.bucket_label || row.bucketLabel;
-    }
+    const slot = map.get(key);
     const device = row.device_class || "unknown";
     if (!slot[device]) {
       slot[device] = { total: 0, core: 0, system: 0 };
     }
     const total = Number(row.request_count || 0);
     const core = Number(row.core_request_count || 0);
-    const explicitSystem = Number(row.system_request_count);
-    const system = Number.isFinite(explicitSystem) ? explicitSystem : Math.max(0, total - core);
+    const system = Number(row.system_request_count || Math.max(0, total - core));
     slot[device].total = Number.isFinite(total) ? total : 0;
     slot[device].core = Number.isFinite(core) ? core : 0;
     slot[device].system = Number.isFinite(system) ? system : 0;
   }
-  return out;
+  return map;
 }
 
-function renderUsageChart(timeseries) {
-  const primary = cssVar("--primary", "#1e61db");
-  const accent = cssVar("--accent", "#02a678");
-  const map = normalizeUsageSeries(timeseries);
-  const keys = [...map.keys()];
-  const labels = keys.map((k) => map.get(k).label || k);
-  const desktopTotal = keys.map((k) => map.get(k).desktop.total || 0);
-  const desktopCore = keys.map((k) => map.get(k).desktop.core || 0);
-  const mobileTotal = keys.map((k) => map.get(k).mobile.total || 0);
-  const mobileCore = keys.map((k) => map.get(k).mobile.core || 0);
-
-  resetChart("usage", {
-    ctx: $("usageChart"),
+function renderLineChart(name, canvasId, labels, datasets) {
+  resetChart(name, {
+    ctx: $(canvasId),
     options: {
       type: "line",
       data: {
         labels: labels.length ? labels : ["データなし"],
-        datasets: [
-          {
-            label: "PC（総リクエスト）",
-            data: labels.length ? desktopTotal : [0],
-            borderColor: primary,
-            backgroundColor: rgba(primary, 0.14),
-            fill: false,
-            borderWidth: 2.3,
-            tension: 0.28,
-            pointRadius: 2.2,
-          },
-          {
-            label: "PC（コア業務）",
-            data: labels.length ? desktopCore : [0],
-            borderColor: primary,
-            backgroundColor: "transparent",
-            fill: false,
-            borderWidth: 2,
-            borderDash: [6, 4],
-            tension: 0.24,
-            pointRadius: 1.8,
-          },
-          {
-            label: "モバイル（総リクエスト）",
-            data: labels.length ? mobileTotal : [0],
-            borderColor: accent,
-            backgroundColor: rgba(accent, 0.14),
-            fill: false,
-            borderWidth: 2.3,
-            tension: 0.28,
-            pointRadius: 2.2,
-          },
-          {
-            label: "モバイル（コア業務）",
-            data: labels.length ? mobileCore : [0],
-            borderColor: accent,
-            backgroundColor: "transparent",
-            fill: false,
-            borderWidth: 2,
-            borderDash: [6, 4],
-            tension: 0.24,
-            pointRadius: 1.8,
-          },
-        ],
+        datasets: labels.length ? datasets : datasets.map((d) => ({ ...d, data: [0] })),
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { position: "bottom" },
-          tooltip: { intersect: false },
-        },
+        plugins: { legend: { position: "bottom" } },
         scales: {
           x: { grid: { display: false } },
           y: { beginAtZero: true, ticks: { precision: 0 } },
@@ -307,138 +452,92 @@ function renderUsageChart(timeseries) {
       },
     },
   });
+}
+
+function renderRequestTrend(timeseries, chartName, canvasId, valueKey = "total") {
+  const primary = cssVar("--primary", "#0d6adf");
+  const mint = cssVar("--mint", "#00a88f");
+  const neutral = "#7f93ad";
+  const map = normalizeUsageSeries(timeseries);
+  const keys = [...map.keys()];
+  const labels = keys.map((k) => map.get(k).label || k);
+  const desktop = keys.map((k) => map.get(k).desktop[valueKey] || 0);
+  const mobile = keys.map((k) => map.get(k).mobile[valueKey] || 0);
+  const unknown = keys.map((k) => map.get(k).unknown[valueKey] || 0);
+
+  renderLineChart(chartName, canvasId, labels, [
+    {
+      label: "パソコン",
+      data: desktop,
+      borderColor: primary,
+      backgroundColor: rgba(primary, 0.14),
+      borderWidth: 2.4,
+      tension: 0.26,
+      fill: false,
+      pointRadius: 2,
+    },
+    {
+      label: "モバイル",
+      data: mobile,
+      borderColor: mint,
+      backgroundColor: rgba(mint, 0.14),
+      borderWidth: 2.4,
+      tension: 0.26,
+      fill: false,
+      pointRadius: 2,
+    },
+    {
+      label: "不明",
+      data: unknown,
+      borderColor: neutral,
+      backgroundColor: "transparent",
+      borderWidth: 1.6,
+      borderDash: [6, 4],
+      tension: 0.2,
+      fill: false,
+      pointRadius: 1.6,
+    },
+  ]);
 }
 
 function renderSystemUsageChart(timeseries) {
-  const primary = cssVar("--primary", "#1e61db");
-  const accent = cssVar("--accent", "#02a678");
-  const neutral = "#94a3b8";
-  const map = normalizeUsageSeries(timeseries);
-  const keys = [...map.keys()];
-  const labels = keys.map((k) => map.get(k).label || k);
-  const desktopSystem = keys.map((k) => map.get(k).desktop.system || 0);
-  const mobileSystem = keys.map((k) => map.get(k).mobile.system || 0);
-  const unknownSystem = keys.map((k) => map.get(k).unknown.system || 0);
-
-  resetChart("systemUsage", {
-    ctx: $("systemUsageChart"),
-    options: {
-      type: "line",
-      data: {
-        labels: labels.length ? labels : ["データなし"],
-        datasets: [
-          {
-            label: "PC（システム）",
-            data: labels.length ? desktopSystem : [0],
-            borderColor: primary,
-            backgroundColor: rgba(primary, 0.16),
-            fill: true,
-            borderWidth: 2.2,
-            tension: 0.24,
-            pointRadius: 2,
-          },
-          {
-            label: "モバイル（システム）",
-            data: labels.length ? mobileSystem : [0],
-            borderColor: accent,
-            backgroundColor: rgba(accent, 0.12),
-            fill: true,
-            borderWidth: 2.2,
-            tension: 0.24,
-            pointRadius: 2,
-          },
-          {
-            label: "不明（システム）",
-            data: labels.length ? unknownSystem : [0],
-            borderColor: neutral,
-            backgroundColor: "transparent",
-            fill: false,
-            borderWidth: 1.6,
-            borderDash: [5, 4],
-            tension: 0.2,
-            pointRadius: 1.6,
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: { legend: { position: "bottom" } },
-        scales: {
-          x: { grid: { display: false } },
-          y: { beginAtZero: true, ticks: { precision: 0 } },
-        },
-      },
-    },
-  });
+  renderRequestTrend(timeseries, "coreRequestTrend", "coreRequestTrendChart", "system");
 }
 
-function renderErrorTrendChart(trendRows) {
-  const danger = cssVar("--danger", "#d14343");
-  const labels = (trendRows || []).map((r) => r.bucket_label || r.bucketLabel || r.day);
-  const values = (trendRows || []).map((r) => Number(r.error_5xx_count || 0));
-  const canvas = $("errorTrendChart");
-  const ctx = canvas.getContext("2d");
-  const fill = ctx ? (() => {
-    const g = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 320);
-    g.addColorStop(0, rgba(danger, 0.9));
-    g.addColorStop(1, rgba(danger, 0.45));
-    return g;
-  })() : danger;
-
-  resetChart("errorTrend", {
-    ctx: canvas,
-    options: {
-      type: "bar",
-      data: {
-        labels: labels.length ? labels : ["データなし"],
-        datasets: [{ label: "5xx", data: labels.length ? values : [0], backgroundColor: fill, borderRadius: 8 }],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { position: "bottom" } },
-        scales: {
-          x: { grid: { display: false } },
-          y: { beginAtZero: true, ticks: { precision: 0 } },
-        },
-      },
-    },
+function renderDeviceQuality(rows) {
+  const primary = cssVar("--primary", "#0d6adf");
+  const danger = cssVar("--danger", "#d14a4a");
+  const labels = (rows || []).map((row) => {
+    if (row.device_class === "desktop") return "パソコン";
+    if (row.device_class === "mobile") return "モバイル";
+    return "不明";
   });
-}
+  const counts = (rows || []).map((row) => Number(row.request_count || 0));
+  const errorRates = (rows || []).map((row) => Number(row.error_5xx_rate || 0) * 100);
 
-function renderDeviceChart(rows) {
-  const deviceLabelMap = { desktop: "PC", mobile: "モバイル", unknown: "不明" };
-  const primary = cssVar("--primary", "#1e61db");
-  const danger = cssVar("--danger", "#d14343");
-  const labels = (rows || []).map((r) => deviceLabelMap[r.device_class] || "不明");
-  const req = (rows || []).map((r) => Number(r.request_count || 0));
-  const errRate = (rows || []).map((r) => Number(r.error_5xx_rate || 0) * 100);
-
-  resetChart("device", {
-    ctx: $("deviceChart"),
+  resetChart("deviceQuality", {
+    ctx: $("deviceQualityChart"),
     options: {
       type: "bar",
       data: {
         labels: labels.length ? labels : ["データなし"],
         datasets: [
           {
-            label: "リクエスト数",
-            data: labels.length ? req : [0],
+            label: "リクエスト件数",
+            data: labels.length ? counts : [0],
             yAxisID: "y",
-            backgroundColor: rgba(primary, 0.8),
+            backgroundColor: rgba(primary, 0.82),
             borderRadius: 10,
-            maxBarThickness: 48,
+            maxBarThickness: 54,
           },
           {
-            label: "5xx エラー率(%)",
-            data: labels.length ? errRate : [0],
-            yAxisID: "y1",
+            label: "5xx率(%)",
+            data: labels.length ? errorRates : [0],
             type: "line",
+            yAxisID: "y1",
             borderColor: danger,
             backgroundColor: danger,
-            tension: 0.2,
+            tension: 0.22,
             pointRadius: 3,
           },
         ],
@@ -448,48 +547,60 @@ function renderDeviceChart(rows) {
         maintainAspectRatio: false,
         interaction: { mode: "index", intersect: false },
         scales: {
-          y: { position: "left", beginAtZero: true, ticks: { precision: 0 } },
-          y1: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false } },
+          y: { beginAtZero: true, position: "left", ticks: { precision: 0 } },
+          y1: { beginAtZero: true, position: "right", grid: { drawOnChartArea: false } },
         },
       },
     },
   });
 }
 
-function renderQsStageChart(rows) {
-  const palette = ["#1e61db", "#02a678", "#f59e0b", "#d14343", "#7c3aed"];
-  let labels = (rows || []).map((r) => r.stage || "unknown");
-  let values = (rows || []).map((r) => Number(r.count || 0));
-  if (!labels.length) {
-    labels = ["データなし"];
-    values = [1];
-  }
-
-  resetChart("qsStage", {
-    ctx: $("qsStageChart"),
+function renderDoughnutChart(name, canvasId, labels, values, colors) {
+  resetChart(name, {
+    ctx: $(canvasId),
     options: {
       type: "doughnut",
       data: {
-        labels,
-        datasets: [{
-          data: values,
-          backgroundColor: labels.map((_, i) => palette[i % palette.length]),
-          borderWidth: 2,
-          borderColor: "#ffffff",
-        }],
+        labels: labels.length ? labels : ["データなし"],
+        datasets: [
+          {
+            data: labels.length ? values : [1],
+            backgroundColor: labels.length ? colors : ["#dbe7f6"],
+            borderWidth: 2,
+            borderColor: "#ffffff",
+          },
+        ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         plugins: { legend: { position: "bottom" } },
-        cutout: "64%",
+        cutout: "62%",
       },
     },
   });
 }
 
+function renderModeDistribution(rows, chartName, canvasId) {
+  const labels = [];
+  const values = [];
+  for (const row of rows || []) {
+    const mode = String(row.mode || "unknown").toLowerCase();
+    labels.push(displayMode(mode));
+    values.push(Number(row.count || 0));
+  }
+  renderDoughnutChart(
+    chartName,
+    canvasId,
+    labels,
+    values,
+    ["#0d6adf", "#00a88f", "#9e6dd6", "#f0a11f", "#8ea0b8"]
+  );
+}
+
 function setTableRows(tableId, rows, mapper) {
   const tbody = document.querySelector(`#${tableId} tbody`);
+  if (!tbody) return;
   tbody.innerHTML = "";
   const list = rows || [];
   if (!list.length) {
@@ -497,259 +608,421 @@ function setTableRows(tableId, rows, mapper) {
     const td = document.createElement("td");
     td.colSpan = document.querySelectorAll(`#${tableId} thead th`).length || 1;
     td.textContent = "データなし";
-    td.classList.add("muted");
+    td.className = "muted";
     tr.appendChild(td);
     tbody.appendChild(tr);
     return;
   }
-  for (const row of list) {
+
+  list.forEach((row) => {
     const tr = document.createElement("tr");
-    for (const cell of mapper(row)) {
+    const cells = mapper(row);
+    cells.forEach((cell) => {
       const td = document.createElement("td");
-      td.textContent = cell;
+      td.textContent = String(cell ?? "");
       tr.appendChild(td);
-    }
+    });
     tbody.appendChild(tr);
-  }
+  });
 }
 
-function appendCells(tr, values) {
-  for (const value of values) {
-    const td = document.createElement("td");
-    td.textContent = String(value ?? "");
-    tr.appendChild(td);
+function renderGlobalCharts(payload) {
+  const charts = payload.charts || {};
+  renderRequestTrend(charts.requestTrend || [], "requestTrend", "requestTrendChart", "total");
+  renderRequestTrend(charts.coreRequestTrend || [], "coreRequestTrend", "coreRequestTrendChart", "core");
+  renderDeviceQuality(charts.deviceQuality || []);
+  renderModeDistribution(charts.modeDistribution || [], "modeDistribution", "modeDistributionChart");
+
+  const qFlow = charts.questionFlow || {};
+  renderDoughnutChart(
+    "questionFlow",
+    "questionFlowChart",
+    ["新規質問", "追問"],
+    [Number(qFlow.newQuestionCount || 0), Number(qFlow.followupCount || 0)],
+    ["#0d6adf", "#00a88f"]
+  );
+
+  const fav = charts.favoriteConversation || {};
+  renderDoughnutChart(
+    "favoriteRatio",
+    "favoriteRatioChart",
+    ["お気に入り", "非お気に入り"],
+    [Number(fav.count || 0), Math.max(0, Number(fav.total || 0) - Number(fav.count || 0))],
+    ["#00a88f", "#d0dceb"]
+  );
+
+  const risk = charts.integrityRisk || {};
+  renderDoughnutChart(
+    "integrityRisk",
+    "integrityRiskChart",
+    ["リスク", "健全"],
+    [Number(risk.count || 0), Math.max(0, Number(risk.total || 0) - Number(risk.count || 0))],
+    ["#d14a4a", "#cad8eb"]
+  );
+
+  const citation = charts.citationCoverage || {};
+  renderDoughnutChart(
+    "citationCoverage",
+    "citationCoverageChart",
+    ["引用あり", "引用なし"],
+    [
+      Number(citation.covered || 0),
+      Math.max(0, Number(citation.assistantTotal || 0) - Number(citation.covered || 0)),
+    ],
+    ["#0d6adf", "#d3dfef"]
+  );
+
+  setTableRows("topEndpointsTable", charts.topErrorEndpoints || [], (row) => [
+    row.endpoint || "",
+    fmtInt(row.error_5xx_count),
+  ]);
+  setTableRows("topMessageErrorsTable", charts.topMessageErrors || [], (row) => [
+    row.errorReason || "不明",
+    fmtInt(row.count),
+  ]);
+}
+
+function renderUserMetricCards(selectedUser) {
+  const root = $("userMetricCards");
+  root.innerHTML = "";
+  if (!selectedUser) {
+    const card = document.createElement("article");
+    card.className = "summaryCard";
+    card.innerHTML = `<div class="label">ユーザー未選択</div><div class="value">-</div>`;
+    root.appendChild(card);
+    return;
   }
+
+  const cards = [
+    {
+      key: "activeSessionStickiness",
+      label: "活性会話粘着度",
+      value: fmtRatio(selectedUser.activeSessionStickiness, 2),
+    },
+    {
+      key: "conversationMessageVolume",
+      label: "会話総量 / メッセージ総量",
+      value: `${fmtInt(selectedUser.conversationCount)} / ${fmtInt(selectedUser.messageCount)}`,
+    },
+    {
+      key: "feedbackLikeRate",
+      label: "いいね率",
+      value: fmtPct(selectedUser.feedbackLikeRate),
+    },
+    {
+      key: "requestCore",
+      label: "総/コアリクエスト",
+      value: `${fmtInt(selectedUser.totalRequestCount)} / ${fmtInt(selectedUser.coreRequestCount)}`,
+    },
+    {
+      key: "deviceQuality",
+      label: "端末利用比率（パソコン/モバイル）",
+      value: `${fmtPct(selectedUser.desktopRequestRate)} / ${fmtPct(selectedUser.mobileRequestRate)}`,
+    },
+    {
+      key: "questionFlow",
+      label: "新規質問と追問",
+      value: `${fmtInt(selectedUser.newQuestionCount)} / ${fmtInt(selectedUser.followupCount)}`,
+    },
+    {
+      key: "followupOpenSuccessRate",
+      label: "追問開通成功率",
+      value: fmtPct(selectedUser.followupOpenSuccessRate),
+    },
+    {
+      key: "citationCoverageRate",
+      label: "引用カバレッジ率",
+      value: fmtPct(selectedUser.citationCoverageRate),
+    },
+  ];
+
+  cards.forEach((card) => {
+    const article = document.createElement("article");
+    article.className = "summaryCard";
+    article.innerHTML = `
+      <div class="label">${metricTitleHtml(card.label, card.key)}</div>
+      <div class="value">${card.value}</div>
+    `;
+    root.appendChild(article);
+  });
+}
+
+function renderUserTable(users) {
+  const tbody = document.querySelector("#userMetricsTable tbody");
+  if (!tbody) return;
+  tbody.innerHTML = "";
+
+  const rows = users || [];
+  if (!rows.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 8;
+    td.className = "muted";
+    td.textContent = "データなし";
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    return;
+  }
+
+  rows.forEach((row) => {
+    const tr = document.createElement("tr");
+    const values = [
+      row.userId || "",
+      row.userEmail || "",
+      `${fmtInt(row.conversationCount)} / ${fmtInt(row.messageCount)}`,
+      fmtRatio(row.activeSessionStickiness, 2),
+      fmtPct(row.feedbackLikeRate),
+      `${fmtInt(row.totalRequestCount)} / ${fmtInt(row.coreRequestCount)}`,
+      fmtPct(row.followupOpenSuccessRate),
+      fmtPct(row.citationCoverageRate),
+    ];
+    values.forEach((value) => {
+      const td = document.createElement("td");
+      td.textContent = String(value ?? "");
+      tr.appendChild(td);
+    });
+    tr.addEventListener("click", () => {
+      state.analyticsUserQuery = String(row.userId || row.userEmail || "");
+      $("analyticsUserSearch").value = state.analyticsUserQuery;
+      switchTab("user");
+      reloadDashboard();
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+function renderSelectedUser(payload) {
+  const selected = payload.selectedUser || null;
+  const timeseries = payload.selectedUserTimeseries || [];
+  const labelEl = $("selectedAnalyticsUserLabel");
+
+  if (!selected) {
+    labelEl.textContent = "単一ユーザー未選択";
+    renderUserMetricCards(null);
+    renderRequestTrend([], "userRequestTrend", "userRequestTrendChart", "total");
+    renderModeDistribution([], "userModeDistribution", "userModeDistributionChart");
+    return;
+  }
+
+  labelEl.textContent = `対象: ${selected.userEmail || ""} (${selected.userId || ""})`;
+  renderUserMetricCards(selected);
+  renderRequestTrend(timeseries, "userRequestTrend", "userRequestTrendChart", "total");
+  renderModeDistribution(selected.modeDistribution || [], "userModeDistribution", "userModeDistributionChart");
+}
+
+function updateSummaryWindow(payload) {
+  const windowPayload = payload.window || {};
+  const start = fmtJst(windowPayload.start || "");
+  const end = fmtJst(windowPayload.end || "");
+  $("summaryWindowLabel").textContent = `${start} - ${end}`;
 }
 
 function updateExportLinks() {
-  const rangeQuery = buildFilterQueryString();
-  $("exportUsage").href = `/api/export/usage.csv?${rangeQuery}`;
-  $("exportErrorsTrend").href = `/api/export/errors/trend.csv?${rangeQuery}`;
-  $("exportErrorsEndpoints").href = `/api/export/errors/endpoints.csv?${rangeQuery}`;
-  $("exportErrorsTypes").href = `/api/export/errors/types.csv?${rangeQuery}`;
-  $("exportDevices").href = `/api/export/devices.csv?${rangeQuery}`;
-  $("exportQsStages").href = `/api/export/query-suggest/stages.csv?${rangeQuery}`;
-  $("exportQsFallbacks").href = `/api/export/query-suggest/fallbacks.csv?${rangeQuery}`;
-  $("exportQsFacts").href = `/api/export/query-suggest/facts.csv?${rangeQuery}`;
+  const exportUsers = $("exportUsers");
+  const exportConversations = $("exportConversations");
 
-  const userQ = encodeURIComponent($("userSearch").value.trim());
-  $("exportUsers").href = `/api/export/users.csv?limit=500&q=${userQ}`;
-
-  if (state.selectedUserId) {
-    const convQ = encodeURIComponent($("convSearch").value.trim());
-    const href = `/api/export/conversations.csv?user_id=${encodeURIComponent(state.selectedUserId)}&limit=500&q=${convQ}`;
-    $("exportConversations").href = href;
-    $("exportConversations").classList.remove("disabled");
+  if (state.selectedHistoryUserId) {
+    exportUsers.href = `/api/export/users.csv?user_id=${encodeURIComponent(state.selectedHistoryUserId)}&include_hidden=true`;
+    exportUsers.classList.remove("disabled");
   } else {
-    $("exportConversations").href = "#";
-    $("exportConversations").classList.add("disabled");
+    exportUsers.href = "#";
+    exportUsers.classList.add("disabled");
   }
 
-  if (state.selectedUserId && state.selectedConversationId) {
-    const href = `/api/export/messages.csv?user_id=${encodeURIComponent(state.selectedUserId)}&conversation_id=${encodeURIComponent(state.selectedConversationId)}&limit=2000`;
-    $("exportMessages").href = href;
-    $("exportMessages").classList.remove("disabled");
+  if (state.selectedHistoryUserId && state.selectedHistoryConversationId) {
+    exportConversations.href = `/api/export/conversations.csv?user_id=${encodeURIComponent(state.selectedHistoryUserId)}&conversation_id=${encodeURIComponent(state.selectedHistoryConversationId)}`;
+    exportConversations.classList.remove("disabled");
   } else {
-    $("exportMessages").href = "#";
-    $("exportMessages").classList.add("disabled");
+    exportConversations.href = "#";
+    exportConversations.classList.add("disabled");
   }
+}
+
+function switchTab(tab) {
+  const global = tab === "global";
+  $("tabGlobal").classList.toggle("active", global);
+  $("tabUser").classList.toggle("active", !global);
+  $("paneGlobal").classList.toggle("active", global);
+  $("paneUser").classList.toggle("active", !global);
 }
 
 async function reloadDashboard() {
   if (!isChartReady()) {
-    toast("グラフ描画ライブラリの読み込みに失敗しました。管理者へご連絡ください。");
+    toast("グラフライブラリの読み込みに失敗しました。");
     return;
   }
 
   try {
-    const rangeQuery = buildFilterQueryString();
-    const modules = [
-      {
-        key: "overview",
-        label: "概要",
-        path: `/api/metrics/overview?${rangeQuery}`,
-        fallback: { overview: {}, usage: {} },
-      },
-      {
-        key: "usage",
-        label: "リクエスト推移",
-        path: `/api/metrics/usage?${rangeQuery}`,
-        fallback: { timeseries: [] },
-      },
-      {
-        key: "errors",
-        label: "エラー分析",
-        path: `/api/metrics/errors?${rangeQuery}`,
-        fallback: { trend: [], topEndpoints: [], topErrors: [] },
-      },
-      {
-        key: "devices",
-        label: "デバイス分析",
-        path: `/api/metrics/devices?${rangeQuery}`,
-        fallback: { devices: [] },
-      },
-      {
-        key: "querySuggest",
-        label: "入力候補分析",
-        path: `/api/metrics/query-suggest?${rangeQuery}`,
-        fallback: { logs: { stages: [], fallbackSources: [] }, facts: {} },
-      },
-    ];
-    const settled = await Promise.allSettled(modules.map((module) => getJson(module.path)));
-    const payloads = {};
-    const failures = [];
-    settled.forEach((result, index) => {
-      const module = modules[index];
-      if (result.status === "fulfilled") {
-        payloads[module.key] = result.value;
-        return;
-      }
-      payloads[module.key] = module.fallback;
-      failures.push(module.label);
-      console.error(`module load failed: ${module.key}`, result.reason);
-    });
-
-    const overview = payloads.overview || { overview: {}, usage: {} };
-    const usage = payloads.usage || { timeseries: [] };
-    const errors = payloads.errors || { trend: [], topEndpoints: [], topErrors: [] };
-    const devices = payloads.devices || { devices: [] };
-    const querySuggest = payloads.querySuggest || { logs: { stages: [], fallbackSources: [] }, facts: {} };
-
-    buildCards(overview.overview || {}, overview.usage || {});
-    renderUsageChart(usage.timeseries || []);
-    renderSystemUsageChart(usage.timeseries || []);
-    renderErrorTrendChart(errors.trend || []);
-    renderDeviceChart(devices.devices || []);
-    renderQsStageChart((querySuggest.logs || {}).stages || []);
-
-    setTableRows("topEndpointsTable", errors.topEndpoints || [], (r) => [r.endpoint || "", fmtInt(r.error_5xx_count)]);
-    setTableRows("topErrorsTable", errors.topErrors || [], (r) => [r.error_type || "", fmtInt(r.count)]);
-    setTableRows("qsFallbackTable", (querySuggest.logs || {}).fallbackSources || [], (r) => [r.fallback_source || "", r.reason || "", fmtInt(r.count)]);
-
-    const facts = querySuggest.facts || {};
-    const factRows = Object.entries(facts).map(([k, v]) => ({ metric: k, value: typeof v === "number" ? (k.toLowerCase().includes("rate") ? fmtPct(v) : fmtInt(v)) : String(v) }));
-    setTableRows("qsFactsTable", factRows, (r) => [r.metric, r.value]);
-
-    updateExportLinks();
-    if (failures.length) {
-      const labels = failures.join("、");
-      toast(`一部データの取得に失敗しました（${labels}）。表示可能な範囲で更新しました。`);
+    const query = buildFilterQueryString();
+    const settled = await Promise.allSettled([getJson(`/api/metrics/dashboard?${query}`)]);
+    if (settled[0].status !== "fulfilled") {
+      throw settled[0].reason;
     }
-  } catch (err) {
-    console.error(err);
-    toast(`読み込みに失敗しました: ${describeError(err)}`);
+    const payload = settled[0].value;
+    buildSummaryCards(payload.summary || {});
+    updateSummaryWindow(payload);
+    renderGlobalCharts(payload);
+    renderUserTable(payload.users || []);
+    renderSelectedUser(payload);
+  } catch (error) {
+    console.error(error);
+    toast("一部データの取得に失敗しました。");
+    toast(`ダッシュボード取得失敗: ${String(error)}`);
   }
+}
+
+function appendCells(tr, values) {
+  values.forEach((value) => {
+    const td = document.createElement("td");
+    td.textContent = String(value ?? "");
+    tr.appendChild(td);
+  });
 }
 
 async function loadUsers() {
   try {
     const q = encodeURIComponent($("userSearch").value.trim());
-    const payload = await getJson(`/api/history/users?limit=200&q=${q}`);
+    const payload = await getJson(`/api/history/users?limit=250&q=${q}`);
     const rows = payload.users || [];
     const tbody = document.querySelector("#usersTable tbody");
     tbody.innerHTML = "";
 
-    for (const row of rows) {
+    rows.forEach((row) => {
       const tr = document.createElement("tr");
-      appendCells(tr, [row.userId || "", row.userEmail || "", row.updatedAt || ""]);
+      appendCells(tr, [row.userId || "", row.userEmail || "", row.updatedAtJst || fmtJst(row.updatedAt || "")]);
       tr.addEventListener("click", () => {
-        state.selectedUserId = row.userId || "";
-        state.selectedConversationId = "";
-        [...tbody.querySelectorAll("tr")].forEach((r) => r.classList.remove("selected"));
+        state.selectedHistoryUserId = row.userId || "";
+        state.selectedHistoryConversationId = "";
+        [...tbody.querySelectorAll("tr")].forEach((item) => item.classList.remove("selected"));
         tr.classList.add("selected");
-        $("messageMeta").textContent = `選択中ユーザー: ${state.selectedUserId}`;
+        $("messageMeta").textContent = `選択ユーザー: ${state.selectedHistoryUserId}`;
         updateExportLinks();
         loadConversations();
       });
       tbody.appendChild(tr);
-    }
+    });
+
     updateExportLinks();
-  } catch (err) {
-    toast(`ユーザー検索に失敗しました: ${String(err)}`);
+  } catch (error) {
+    toast(`ユーザー検索失敗: ${String(error)}`);
   }
 }
 
 async function loadConversations() {
-  if (!state.selectedUserId) {
+  if (!state.selectedHistoryUserId) {
     toast("先にユーザーを選択してください。");
     return;
   }
-
   try {
     const q = encodeURIComponent($("convSearch").value.trim());
-    const payload = await getJson(`/api/history/users/${encodeURIComponent(state.selectedUserId)}/conversations?limit=300&q=${q}`);
+    const payload = await getJson(
+      `/api/history/users/${encodeURIComponent(state.selectedHistoryUserId)}/conversations?limit=400&q=${q}`
+    );
     const rows = payload.conversations || [];
     const tbody = document.querySelector("#conversationsTable tbody");
     tbody.innerHTML = "";
 
-    for (const row of rows) {
+    rows.forEach((row) => {
       const tr = document.createElement("tr");
-      appendCells(tr, [row.id || "", row.title || "", row.updatedAt || ""]);
+      appendCells(tr, [row.id || "", row.title || "", row.updatedAtJst || fmtJst(row.updatedAt || "")]);
       tr.addEventListener("click", () => {
-        state.selectedConversationId = row.id || "";
-        [...tbody.querySelectorAll("tr")].forEach((r) => r.classList.remove("selected"));
+        state.selectedHistoryConversationId = row.id || "";
+        [...tbody.querySelectorAll("tr")].forEach((item) => item.classList.remove("selected"));
         tr.classList.add("selected");
-        $("messageMeta").textContent = `ユーザーID=${state.selectedUserId} / 会話ID=${state.selectedConversationId}`;
+        $("messageMeta").textContent = `ユーザーID=${state.selectedHistoryUserId} / 会話ID=${state.selectedHistoryConversationId}`;
         updateExportLinks();
         loadMessages();
       });
       tbody.appendChild(tr);
-    }
+    });
+
     updateExportLinks();
-  } catch (err) {
-    toast(`会話検索に失敗しました: ${String(err)}`);
+  } catch (error) {
+    toast(`会話検索失敗: ${String(error)}`);
   }
 }
 
 async function loadMessages() {
-  if (!state.selectedUserId || !state.selectedConversationId) {
+  if (!state.selectedHistoryUserId || !state.selectedHistoryConversationId) {
     toast("先に会話を選択してください。");
     return;
   }
   try {
-    const payload = await getJson(`/api/history/users/${encodeURIComponent(state.selectedUserId)}/conversations/${encodeURIComponent(state.selectedConversationId)}?limit=800`);
-    const rows = payload.messages || [];
-    setTableRows("messagesTable", rows, (r) => [r.timestamp || "", r.role || "", (r.content || "").replace(/\s+/g, " ").slice(0, 280)]);
-  } catch (err) {
-    toast(`メッセージ取得に失敗しました: ${String(err)}`);
+    const payload = await getJson(
+      `/api/history/users/${encodeURIComponent(state.selectedHistoryUserId)}/conversations/${encodeURIComponent(state.selectedHistoryConversationId)}?limit=1500`
+    );
+    setTableRows("messagesTable", payload.messages || [], (row) => [
+      row.timestampJst || fmtJst(row.timestamp || ""),
+      displayRole(row.role || ""),
+      displayMode(row.modeAtSend || ""),
+      row.questionKind === "followup" ? "追問" : row.questionKind === "new" ? "新規" : "",
+      displayStatus(row.status || ""),
+      (row.content || "").replace(/\s+/g, " ").slice(0, 420),
+      row.errorMessage || "",
+    ]);
+  } catch (error) {
+    toast(`メッセージ取得失敗: ${String(error)}`);
   }
 }
 
 function bindEvents() {
   $("refreshAll").addEventListener("click", () => reloadDashboard());
+  $("applyCustom").addEventListener("click", () => {
+    if (applyCustomFilter()) reloadDashboard();
+  });
+
   document.querySelectorAll(".presetBtn").forEach((btn) => {
     btn.addEventListener("click", () => {
       applyPresetFilter(btn.dataset.preset || "today");
       reloadDashboard();
     });
   });
-  $("applyCustom").addEventListener("click", () => {
-    if (applyCustomFilter()) {
+
+  $("tabGlobal").addEventListener("click", () => switchTab("global"));
+  $("tabUser").addEventListener("click", () => switchTab("user"));
+
+  $("searchAnalyticsUser").addEventListener("click", () => {
+    state.analyticsUserQuery = $("analyticsUserSearch").value.trim();
+    switchTab("user");
+    reloadDashboard();
+  });
+
+  $("analyticsUserSearch").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      state.analyticsUserQuery = $("analyticsUserSearch").value.trim();
+      switchTab("user");
       reloadDashboard();
     }
   });
+
   $("loadUsers").addEventListener("click", () => loadUsers());
   $("loadConversations").addEventListener("click", () => loadConversations());
   $("loadMessages").addEventListener("click", () => loadMessages());
 
-  $("userSearch").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") loadUsers();
+  $("userSearch").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") loadUsers();
   });
 
-  $("convSearch").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") loadConversations();
+  $("convSearch").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") loadConversations();
   });
 
-  document.querySelectorAll("a.btnLink").forEach((a) => {
-    a.addEventListener("click", (e) => {
-      if (a.classList.contains("disabled") || a.getAttribute("href") === "#") {
-        e.preventDefault();
+  document.querySelectorAll("a.btnLink").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      if (link.classList.contains("disabled") || link.getAttribute("href") === "#") {
+        event.preventDefault();
       }
     });
   });
 }
 
-initFilterUi();
-bindEvents();
-reloadDashboard();
-loadUsers();
+function init() {
+  markActivePresetButton();
+  initMetricTitles();
+  bindEvents();
+  reloadDashboard();
+  loadUsers();
+  updateExportLinks();
+}
+
+init();

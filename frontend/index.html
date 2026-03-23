@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OurA Navi モニタリングダッシュボード</title>
+    <title>OurA Navi 運用モニター</title>
     <link rel="icon" type="image/svg+xml" href="/dashboard-assets/favicon.svg" />
     <link rel="stylesheet" href="/dashboard-assets/styles.css" />
     <script src="/dashboard-assets/vendor/chart.umd.min.js" defer></script>
@@ -11,11 +11,11 @@
   </head>
   <body>
     <header class="topbar">
-      <div>
-        <h1>OurA Navi モニター</h1>
-        <p class="sub">Cloud Run / Firestore 運用監視ダッシュボード</p>
+      <div class="brand">
+        <h1>OurA Navi 運用モニター</h1>
+        <p>クラウドラン / ファイアストア統合監視（日本標準時）</p>
       </div>
-      <div class="toolbar">
+      <div class="filters">
         <div class="presetGroup" id="presetGroup">
           <button type="button" class="presetBtn active" data-preset="today">今日</button>
           <button type="button" class="presetBtn" data-preset="yesterday">昨日</button>
@@ -27,172 +27,210 @@
         <div class="customRange">
           <label>開始 <input id="startAt" type="datetime-local" /></label>
           <label>終了 <input id="endAt" type="datetime-local" /></label>
-          <button id="applyCustom" type="button">期間適用</button>
+          <button id="applyCustom" type="button" class="ghostBtn">期間適用</button>
+          <button id="refreshAll" type="button">再読込</button>
         </div>
-        <button id="refreshAll">再読み込み</button>
       </div>
     </header>
 
     <main>
-      <section class="cardsStack">
-        <div class="cardsRow cardsRowPrimary" id="kpiCardsPrimary"></div>
-        <div class="cardsRow cardsRowSecondary" id="kpiCardsSecondary"></div>
+      <section class="panel summaryPanel">
+        <div class="panelHead">
+          <h2>コア指標サマリー</h2>
+          <span class="muted" id="summaryWindowLabel">-</span>
+        </div>
+        <div class="summaryGrid" id="kpiCardsPrimary"></div>
+        <div id="kpiCardsSecondary" hidden></div>
       </section>
 
-      <section class="panel metricGuide" id="metricGuide">
+      <section class="panel metricGuide" id="metricGuide" hidden>
         <div class="panelHead">
           <h2>指標の見方（リクエスト口径）</h2>
         </div>
         <div class="metricGuideGrid">
-          <article class="metricGuideItem">
-            <h3>総リクエスト</h3>
-            <p>対象期間内に Cloud Run が受信した HTTP リクエストの総数です。</p>
-          </article>
-          <article class="metricGuideItem">
-            <h3>コア業務リクエスト</h3>
-            <p>業務の主要操作に関する API 呼び出しです（現在: <code>/v2/ask</code>、<code>/v2/conversations</code> 系）。</p>
-          </article>
-          <article class="metricGuideItem">
-            <h3>システムリクエスト</h3>
-            <p>ページ読み込み、入力候補、履歴再取得、再試行などの補助的なリクエストです。</p>
+          <article class="summaryCard">
+            <div class="label">システムリクエスト推移</div>
           </article>
         </div>
-        <p class="metricGuideNote">※ 「システムリクエスト」は利用体験の維持に必要な通信を含みます。メッセージ送信数とは一致しません。</p>
-      </section>
-
-      <section class="grid2">
-        <article class="panel chartPanel">
-          <div class="panelHead">
-            <h2>リクエスト推移（PC / モバイル）</h2>
-            <a id="exportUsage" class="btnLink" href="#">CSVダウンロード</a>
-          </div>
-          <div class="chartWrap">
-            <canvas id="usageChart"></canvas>
-          </div>
-        </article>
-        <article class="panel chartPanel">
-          <div class="panelHead">
-            <h2>システムリクエスト推移（PC / モバイル）</h2>
-            <a class="btnLink" href="#topEndpointsTable">詳細を見る</a>
-          </div>
-          <div class="chartWrap">
-            <canvas id="systemUsageChart"></canvas>
-          </div>
-        </article>
-      </section>
-
-      <section class="grid2">
-        <article class="panel chartPanel">
-          <div class="panelHead">
-            <h2>5xxエラー推移</h2>
-            <a id="exportErrorsTrend" class="btnLink" href="#">CSVダウンロード</a>
-          </div>
-          <div class="chartWrap">
-            <canvas id="errorTrendChart"></canvas>
-          </div>
-        </article>
-        <article class="panel chartPanel">
-          <div class="panelHead">
-            <h2>デバイス別品質指標</h2>
-            <a id="exportDevices" class="btnLink" href="#">CSVダウンロード</a>
-          </div>
-          <div class="chartWrap">
-            <canvas id="deviceChart"></canvas>
-          </div>
-        </article>
-      </section>
-
-      <section class="panel chartPanel">
-        <div class="panelHead">
-          <h2>入力候補ステージ比率</h2>
-          <a id="exportQsStages" class="btnLink" href="#">CSVダウンロード</a>
-        </div>
-        <div class="chartWrap">
-          <canvas id="qsStageChart"></canvas>
-        </div>
-      </section>
-
-      <section class="grid2">
-        <article class="panel">
-          <div class="panelHead">
-            <h2>エラー発生エンドポイント上位</h2>
-            <a id="exportErrorsEndpoints" class="btnLink" href="#">CSVダウンロード</a>
-          </div>
-          <div class="tableWrap">
-            <table id="topEndpointsTable"><thead><tr><th>エンドポイント</th><th>5xx件数</th></tr></thead><tbody></tbody></table>
-          </div>
-        </article>
-        <article class="panel">
-          <div class="panelHead">
-            <h2>例外種別上位</h2>
-            <a id="exportErrorsTypes" class="btnLink" href="#">CSVダウンロード</a>
-          </div>
-          <div class="tableWrap">
-            <table id="topErrorsTable"><thead><tr><th>例外種別</th><th>件数</th></tr></thead><tbody></tbody></table>
-          </div>
-        </article>
-      </section>
-
-      <section class="grid2">
-        <article class="panel">
-          <div class="panelHead">
-            <h2>入力候補フォールバック内訳</h2>
-            <a id="exportQsFallbacks" class="btnLink" href="#">CSVダウンロード</a>
-          </div>
-          <div class="tableWrap">
-            <table id="qsFallbackTable"><thead><tr><th>フォールバック</th><th>理由</th><th>件数</th></tr></thead><tbody></tbody></table>
-          </div>
-        </article>
-        <article class="panel">
-          <div class="panelHead">
-            <h2>入力候補学習指標</h2>
-            <a id="exportQsFacts" class="btnLink" href="#">CSVダウンロード</a>
-          </div>
-          <div class="tableWrap">
-            <table id="qsFactsTable"><thead><tr><th>指標</th><th>値</th></tr></thead><tbody></tbody></table>
-          </div>
-        </article>
       </section>
 
       <section class="panel">
         <div class="panelHead splitHead">
-          <h2>ユーザー / 会話 / メッセージ検索</h2>
-          <div class="row">
-            <a id="exportUsers" class="btnLink" href="#">ユーザーCSV</a>
+          <h2>ユーザー / 会話 / メッセージ確認</h2>
+          <div class="actions">
+            <a id="exportUsers" class="btnLink disabled" href="#">ユーザーCSV</a>
             <a id="exportConversations" class="btnLink disabled" href="#">会話CSV</a>
-            <a id="exportMessages" class="btnLink disabled" href="#">メッセージCSV</a>
           </div>
         </div>
 
-        <div class="grid3">
-          <div>
+        <div class="historyGrid">
+          <article class="historyCol">
             <div class="row">
-              <input id="userSearch" placeholder="ユーザーID / メール / サブジェクトで検索" />
-              <button id="loadUsers">ユーザー検索</button>
+              <input id="userSearch" placeholder="ユーザーID / メール / サブジェクト" />
+              <button id="loadUsers" type="button">ユーザー検索</button>
             </div>
             <div class="tableWrap tall">
-              <table id="usersTable"><thead><tr><th>ユーザーID</th><th>メール</th><th>最終更新</th></tr></thead><tbody></tbody></table>
+              <table id="usersTable">
+                <thead>
+                  <tr>
+                    <th>ユーザーID</th>
+                    <th>メール</th>
+                    <th>最終更新（日本標準時）</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
             </div>
-          </div>
+          </article>
 
-          <div>
+          <article class="historyCol">
             <div class="row">
-              <input id="convSearch" placeholder="タイトル / モード / プレビューで検索" />
-              <button id="loadConversations">会話検索</button>
+              <input id="convSearch" placeholder="タイトル / モード / プレビュー" />
+              <button id="loadConversations" type="button">会話検索</button>
             </div>
             <div class="tableWrap tall">
-              <table id="conversationsTable"><thead><tr><th>会話ID</th><th>タイトル</th><th>最終更新</th></tr></thead><tbody></tbody></table>
+              <table id="conversationsTable">
+                <thead>
+                  <tr>
+                    <th>会話ID</th>
+                    <th>タイトル</th>
+                    <th>最終更新（日本標準時）</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
             </div>
-          </div>
+          </article>
 
-          <div>
-            <div class="row">
+          <article class="historyCol">
+            <div class="row wrap">
               <span id="messageMeta" class="muted">会話が未選択です</span>
-              <button id="loadMessages">メッセージ取得</button>
+              <button id="loadMessages" type="button">メッセージ取得</button>
             </div>
-            <div class="tableWrap tall">
-              <table id="messagesTable"><thead><tr><th>時刻</th><th>役割</th><th>本文</th></tr></thead><tbody></tbody></table>
+            <div class="tableWrap tall xscroll">
+              <table id="messagesTable" class="wideTable">
+                <thead>
+                  <tr>
+                    <th>時刻（日本標準時）</th>
+                    <th>役割</th>
+                    <th>送信モード</th>
+                    <th>質問区分</th>
+                    <th>状態</th>
+                    <th>本文</th>
+                    <th>エラー</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
             </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panelHead splitHead">
+          <h2>運用ダッシュボード</h2>
+          <div class="actions" role="tablist" aria-label="ダッシュボードタブ">
+            <button type="button" id="tabGlobal" class="tabBtn active" data-tab="global">全体</button>
+            <button type="button" id="tabUser" class="tabBtn" data-tab="user">単一ユーザー</button>
+          </div>
+        </div>
+
+        <div class="tabPane active" id="paneGlobal">
+          <div class="chartGrid2">
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleRequestTrend"></h3></div>
+              <div class="chartWrap"><canvas id="requestTrendChart"></canvas></div>
+            </article>
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleCoreRequestTrend"></h3></div>
+              <div class="chartWrap"><canvas id="coreRequestTrendChart"></canvas></div>
+            </article>
+            <canvas id="systemUsageChart" hidden></canvas>
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleDeviceQuality"></h3></div>
+              <div class="chartWrap"><canvas id="deviceQualityChart"></canvas></div>
+            </article>
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleModeDistribution"></h3></div>
+              <div class="chartWrap"><canvas id="modeDistributionChart"></canvas></div>
+            </article>
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleQuestionFlow"></h3></div>
+              <div class="chartWrap"><canvas id="questionFlowChart"></canvas></div>
+            </article>
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleFavoriteRatio"></h3></div>
+              <div class="chartWrap"><canvas id="favoriteRatioChart"></canvas></div>
+            </article>
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleIntegrityRisk"></h3></div>
+              <div class="chartWrap"><canvas id="integrityRiskChart"></canvas></div>
+            </article>
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleCitationCoverage"></h3></div>
+              <div class="chartWrap"><canvas id="citationCoverageChart"></canvas></div>
+            </article>
+          </div>
+
+          <div class="chartGrid2">
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleTopEndpoints"></h3></div>
+              <div class="tableWrap">
+                <table id="topEndpointsTable">
+                  <thead><tr><th>エンドポイント</th><th>5xx件数</th></tr></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </article>
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleTopMessageErrors"></h3></div>
+              <div class="tableWrap">
+                <table id="topMessageErrorsTable">
+                  <thead><tr><th>エラー理由</th><th>件数</th></tr></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <div class="tabPane" id="paneUser">
+          <div class="row wrap userFilterRow">
+            <input id="analyticsUserSearch" placeholder="ユーザーID または メール" />
+            <button id="searchAnalyticsUser" type="button">検索</button>
+            <span id="selectedAnalyticsUserLabel" class="muted">単一ユーザー未選択</span>
+          </div>
+
+          <div id="userMetricCards" class="summaryGrid mini"></div>
+
+          <div class="chartGrid2">
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleUserRequestTrend"></h3></div>
+              <div class="chartWrap"><canvas id="userRequestTrendChart"></canvas></div>
+            </article>
+            <article class="panel innerPanel">
+              <div class="panelHead"><h3 id="titleUserModeDistribution"></h3></div>
+              <div class="chartWrap"><canvas id="userModeDistributionChart"></canvas></div>
+            </article>
+          </div>
+
+          <div class="tableWrap tall">
+            <table id="userMetricsTable">
+              <thead>
+                <tr>
+                  <th>ユーザーID</th>
+                  <th>メール</th>
+                  <th>会話/メッセージ</th>
+                  <th>活性会話粘着度</th>
+                  <th>いいね率</th>
+                  <th>総/コアリクエスト</th>
+                  <th>追問開通率</th>
+                  <th>引用カバレッジ率</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
           </div>
         </div>
       </section>
