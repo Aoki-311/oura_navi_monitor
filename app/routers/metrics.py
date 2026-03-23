@@ -310,7 +310,7 @@ def metrics_dashboard(
             "favoriteConversationRate": None,
             "integrityRiskConversationCount": 0,
             "integrityRiskRate": None,
-            "modeCounts": {"internal": 0, "websearch": 0, "deepthinking": 0, "standard": 0, "unknown": 0},
+            "modeCounts": {"internal": 0, "websearch": 0},
             "modeDistribution": [],
             "newQuestionCount": 0,
             "followupCount": 0,
@@ -339,10 +339,23 @@ def metrics_dashboard(
         ),
         reverse=True,
     )
+    users_all = list(users)
+    users = [
+        item
+        for item in users_all
+        if (
+            _safe_int(item.get("messageCount")) > 0
+            or _safe_int(item.get("conversationCount")) > 0
+            or _safe_int(item.get("totalRequestCount")) > 0
+            or _safe_int(item.get("coreRequestCount")) > 0
+        )
+    ]
+    if not users and users_all:
+        users = users_all
 
     lookup = str(user or "").strip().lower()
     selected_user = None
-    for candidate in users:
+    for candidate in users_all:
         uid = str(candidate.get("userId") or "").lower()
         email = str(candidate.get("userEmail") or "").lower()
         if not lookup:

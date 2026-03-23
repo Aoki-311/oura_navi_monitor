@@ -38,6 +38,9 @@ def _normalize_mode(value: Any) -> str:
     return "unknown"
 
 
+_MODE_METRIC_KEYS = ("internal", "websearch")
+
+
 def _normalize_chat_flow(value: Any) -> str:
     flow = _as_text(value).lower()
     if flow in {"new_chat", "continued_chat"}:
@@ -45,7 +48,7 @@ def _normalize_chat_flow(value: Any) -> str:
     return ""
 
 
-def _question_kind_from_message(payload: Dict[str, Any]) -> str:
+def _question_kind_from_message(payload: Dict[str, Any], *, user_turn_index: int | None = None) -> str:
     flow = _normalize_chat_flow(payload.get("chatFlowType"))
     if flow == "continued_chat":
         return "followup"
@@ -53,6 +56,8 @@ def _question_kind_from_message(payload: Dict[str, Any]) -> str:
         return "new"
     if _as_text(payload.get("parentTurnId")):
         return "followup"
+    if user_turn_index is not None:
+        return "new" if user_turn_index == 0 else "followup"
     return ""
 
 
@@ -395,17 +400,25 @@ class FirestoreHistoryService:
         if not conv_doc.exists:
             return None
         conv_payload = conv_doc.to_dict() or {}
+        conv_mode = _as_text(conv_payload.get("mode"))
 
         size = max(1, min(int(limit or 500), 2000))
         query = conv_ref.collection("messages").order_by("timestamp", direction=firestore.Query.ASCENDING).limit(size)
         messages: List[Dict[str, Any]] = []
+        user_turn_index = -1
         for msg in query.stream():
             payload = msg.to_dict() or {}
             timestamp = _as_text(payload.get("timestamp"))
+            role_text = _as_text(payload.get("role"))
+            role = role_text.lower()
+            inferred_user_turn_index = None
+            if role == "user":
+                user_turn_index += 1
+                inferred_user_turn_index = user_turn_index
             messages.append(
                 {
                     "id": msg.id,
-                    "role": _as_text(payload.get("role")),
+                    "role": role_text,
                     "content": _as_text(payload.get("content")),
                     "timestamp": timestamp,
                     "timestampJst": self._to_local_text(timestamp),
@@ -414,9 +427,9 @@ class FirestoreHistoryService:
                     "feedback": _as_text(payload.get("feedback")),
                     "attachmentNames": payload.get("attachmentNames") or [],
                     "attachmentFileIds": payload.get("attachmentFileIds") or [],
-                    "modeAtSend": _as_text(payload.get("modeAtSend")),
+                    "modeAtSend": _as_text(payload.get("modeAtSend") or conv_mode),
                     "chatFlowType": _as_text(payload.get("chatFlowType")),
-                    "questionKind": _question_kind_from_message(payload),
+                    "questionKind": _question_kind_from_message(payload, user_turn_index=inferred_user_turn_index),
                     "conversationIdAtSend": _as_text(payload.get("conversationIdAtSend")),
                     "turnId": _as_text(payload.get("turnId")),
                     "parentTurnId": _as_text(payload.get("parentTurnId")),
@@ -481,8 +494,10 @@ class FirestoreHistoryService:
                 "conversationIntegrityState": _as_text(conv_payload.get("integrityState")),
                 "conversationMessageCount": conv_payload.get("messageCount"),
             }
+            conv_mode = _as_text(conv_payload.get("mode"))
 
             has_message = False
+            user_turn_index = -1
             msg_query = conv_doc.reference.collection("messages").order_by(
                 "timestamp", direction=firestore.Query.ASCENDING
             )
@@ -490,6 +505,11 @@ class FirestoreHistoryService:
                 has_message = True
                 msg = msg_doc.to_dict() or {}
                 timestamp = _as_text(msg.get("timestamp"))
+                role = _as_text(msg.get("role")).lower()
+                inferred_user_turn_index = None
+                if role == "user":
+                    user_turn_index += 1
+                    inferred_user_turn_index = user_turn_index
                 rows.append(
                     {
                         **base,
@@ -497,9 +517,11 @@ class FirestoreHistoryService:
                         "messageTimestamp": timestamp,
                         "messageTimestampJst": self._to_local_text(timestamp),
                         "messageRole": _as_text(msg.get("role")),
-                        "messageModeAtSend": _as_text(msg.get("modeAtSend")),
+                        "messageModeAtSend": _as_text(msg.get("modeAtSend") or conv_mode),
                         "messageChatFlowType": _as_text(msg.get("chatFlowType")),
-                        "messageQuestionKind": _question_kind_from_message(msg),
+                        "messageQuestionKind": _question_kind_from_message(
+                            msg, user_turn_index=inferred_user_turn_index
+                        ),
                         "messageStatus": _as_text(msg.get("status")),
                         "messageFeedback": _as_text(msg.get("feedback")),
                         "messageContent": _as_text(msg.get("content")),
@@ -566,12 +588,19 @@ class FirestoreHistoryService:
             "conversationIntegrityState": _as_text(conv_payload.get("integrityState")),
             "conversationMessageCount": conv_payload.get("messageCount"),
         }
+        conv_mode = _as_text(conv_payload.get("mode"))
 
         rows: List[Dict[str, Any]] = []
+        user_turn_index = -1
         query = conv_ref.collection("messages").order_by("timestamp", direction=firestore.Query.ASCENDING)
         for msg_doc in query.stream():
             msg = msg_doc.to_dict() or {}
             timestamp = _as_text(msg.get("timestamp"))
+            role = _as_text(msg.get("role")).lower()
+            inferred_user_turn_index = None
+            if role == "user":
+                user_turn_index += 1
+                inferred_user_turn_index = user_turn_index
             rows.append(
                 {
                     **base,
@@ -579,9 +608,9 @@ class FirestoreHistoryService:
                     "messageTimestamp": timestamp,
                     "messageTimestampJst": self._to_local_text(timestamp),
                     "messageRole": _as_text(msg.get("role")),
-                    "messageModeAtSend": _as_text(msg.get("modeAtSend")),
+                    "messageModeAtSend": _as_text(msg.get("modeAtSend") or conv_mode),
                     "messageChatFlowType": _as_text(msg.get("chatFlowType")),
-                    "messageQuestionKind": _question_kind_from_message(msg),
+                    "messageQuestionKind": _question_kind_from_message(msg, user_turn_index=inferred_user_turn_index),
                     "messageStatus": _as_text(msg.get("status")),
                     "messageFeedback": _as_text(msg.get("feedback")),
                     "messageContent": _as_text(msg.get("content")),
@@ -626,13 +655,7 @@ class FirestoreHistoryService:
 
         users = self.list_users(limit=self._settings.monitor_max_users_scan)
 
-        global_mode_counts: Dict[str, int] = {
-            "internal": 0,
-            "websearch": 0,
-            "deepthinking": 0,
-            "standard": 0,
-            "unknown": 0,
-        }
+        global_mode_counts: Dict[str, int] = {key: 0 for key in _MODE_METRIC_KEYS}
         global_error_reasons: Dict[str, int] = {}
 
         dau = 0
@@ -664,13 +687,7 @@ class FirestoreHistoryService:
             if self._in_window(dt=updated, start=week_start, end=window_end):
                 wau += 1
 
-            user_mode_counts: Dict[str, int] = {
-                "internal": 0,
-                "websearch": 0,
-                "deepthinking": 0,
-                "standard": 0,
-                "unknown": 0,
-            }
+            user_mode_counts: Dict[str, int] = {key: 0 for key in _MODE_METRIC_KEYS}
             user_error_reasons: Dict[str, int] = {}
 
             user_conversation_count = 0
@@ -692,42 +709,45 @@ class FirestoreHistoryService:
                 visibility = _as_text(conv_payload.get("visibility") or "active").lower()
                 if visibility == "hidden":
                     continue
-                conv_updated = _parse_iso(conv_payload.get("updatedAt"))
-                in_conv_window = self._in_window(dt=conv_updated, start=window_start, end=window_end)
-                if in_conv_window:
-                    conversation_count += 1
-                    active_conversation_count += 1
-                    user_conversation_count += 1
-                    user_active_conversation_count += 1
-
-                    is_favorite = bool(conv_payload.get("isFavorite"))
-                    if is_favorite:
-                        favorite_conversation_count += 1
-                        user_favorite_conversation_count += 1
-
-                    integrity_state = _as_text(conv_payload.get("integrityState")).lower()
-                    if integrity_state in {"empty", "empty_shell", "unknown"}:
-                        integrity_risk_conversation_count += 1
-                        user_integrity_risk_conversation_count += 1
-
+                is_favorite = bool(conv_payload.get("isFavorite"))
+                integrity_state = _as_text(conv_payload.get("integrityState")).lower()
                 conv_mode = _normalize_mode(conv_payload.get("mode"))
+                conv_has_window_message = False
+                user_turn_index = -1
 
                 msg_query = conv_doc.reference.collection("messages").order_by(
                     "timestamp", direction=firestore.Query.ASCENDING
                 )
                 for msg_doc in msg_query.stream():
                     msg_payload = msg_doc.to_dict() or {}
+                    role = _as_text(msg_payload.get("role")).lower()
+                    inferred_user_turn_index = None
+                    if role == "user":
+                        user_turn_index += 1
+                        inferred_user_turn_index = user_turn_index
                     msg_ts = _parse_iso(msg_payload.get("timestamp"))
                     if not self._in_window(dt=msg_ts, start=window_start, end=window_end):
                         continue
+                    if not conv_has_window_message:
+                        conv_has_window_message = True
+                        conversation_count += 1
+                        active_conversation_count += 1
+                        user_conversation_count += 1
+                        user_active_conversation_count += 1
+                        if is_favorite:
+                            favorite_conversation_count += 1
+                            user_favorite_conversation_count += 1
+                        if integrity_state in {"empty", "empty_shell", "unknown"}:
+                            integrity_risk_conversation_count += 1
+                            user_integrity_risk_conversation_count += 1
 
                     message_count += 1
                     user_message_count += 1
 
-                    role = _as_text(msg_payload.get("role")).lower()
                     mode = _normalize_mode(msg_payload.get("modeAtSend") or conv_mode)
-                    user_mode_counts[mode] = user_mode_counts.get(mode, 0) + 1
-                    global_mode_counts[mode] = global_mode_counts.get(mode, 0) + 1
+                    if mode in _MODE_METRIC_KEYS:
+                        user_mode_counts[mode] = user_mode_counts.get(mode, 0) + 1
+                        global_mode_counts[mode] = global_mode_counts.get(mode, 0) + 1
 
                     if role == "assistant":
                         assistant_message_count += 1
@@ -737,7 +757,7 @@ class FirestoreHistoryService:
                             user_citation_covered_count += 1
 
                     if role == "user":
-                        q_kind = _question_kind_from_message(msg_payload)
+                        q_kind = _question_kind_from_message(msg_payload, user_turn_index=inferred_user_turn_index)
                         if q_kind == "followup":
                             followup_count += 1
                             user_followup_count += 1
@@ -817,7 +837,7 @@ class FirestoreHistoryService:
                     "modeCounts": user_mode_counts,
                     "modeDistribution": [
                         {"mode": key, "count": user_mode_counts.get(key, 0)}
-                        for key in ["internal", "websearch", "deepthinking", "standard", "unknown"]
+                        for key in _MODE_METRIC_KEYS
                     ],
                     "newQuestionCount": user_new_question_count,
                     "followupCount": user_followup_count,
@@ -855,7 +875,7 @@ class FirestoreHistoryService:
 
         mode_distribution = [
             {"mode": key, "count": global_mode_counts.get(key, 0)}
-            for key in ["internal", "websearch", "deepthinking", "standard", "unknown"]
+            for key in _MODE_METRIC_KEYS
         ]
 
         users_out.sort(

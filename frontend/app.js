@@ -67,7 +67,7 @@ const HELP = {
     biz: "入力候補が安定生成できている割合。",
   },
   querySuggestAvgLatencyMs: {
-    tech: "入力候補ログの平均応答時間（ミリ秒）。",
+    tech: "入力候補ログの平均応答時間（秒）。",
     biz: "候補表示の体感速度。",
   },
   messageFailureRate: {
@@ -155,7 +155,8 @@ function fmtPct(value) {
 
 function fmtMs(value) {
   const num = Number(value);
-  return Number.isFinite(num) ? `${Math.round(num).toLocaleString()} ミリ秒` : "-";
+  if (!Number.isFinite(num)) return "-";
+  return `${(num / 1000).toFixed(2)} s`;
 }
 
 function fmtRatio(value, digits = 2) {
@@ -556,16 +557,25 @@ function renderDeviceQuality(rows) {
 }
 
 function renderDoughnutChart(name, canvasId, labels, values, colors) {
+  const hasData = (labels || []).length > 0;
+  const baseLabels = hasData ? labels : ["データなし"];
+  const rawValues = hasData ? (values || []).map((value) => Number(value || 0)) : [0];
+  const total = rawValues.reduce((sum, value) => sum + Math.max(0, Number(value || 0)), 0);
+  const labelsWithPct = baseLabels.map((label, index) => {
+    const value = Math.max(0, Number(rawValues[index] || 0));
+    const pct = total > 0 ? (value / total) * 100 : 0;
+    return `${label} ${pct.toFixed(1)}%`;
+  });
   resetChart(name, {
     ctx: $(canvasId),
     options: {
       type: "doughnut",
       data: {
-        labels: labels.length ? labels : ["データなし"],
+        labels: labelsWithPct,
         datasets: [
           {
-            data: labels.length ? values : [1],
-            backgroundColor: labels.length ? colors : ["#dbe7f6"],
+            data: rawValues,
+            backgroundColor: hasData ? colors : ["#dbe7f6"],
             borderWidth: 2,
             borderColor: "#ffffff",
           },
@@ -574,7 +584,20 @@ function renderDoughnutChart(name, canvasId, labels, values, colors) {
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: { legend: { position: "bottom" } },
+        plugins: {
+          legend: { position: "bottom" },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const index = Number(ctx.dataIndex || 0);
+                const value = Math.max(0, Number(rawValues[index] || 0));
+                const pct = total > 0 ? (value / total) * 100 : 0;
+                const label = baseLabels[index] || "";
+                return `${label}: ${value.toLocaleString()} (${pct.toFixed(1)}%)`;
+              },
+            },
+          },
+        },
         cutout: "62%",
       },
     },
@@ -582,13 +605,14 @@ function renderDoughnutChart(name, canvasId, labels, values, colors) {
 }
 
 function renderModeDistribution(rows, chartName, canvasId) {
-  const labels = [];
-  const values = [];
+  const modeCounts = { internal: 0, websearch: 0 };
   for (const row of rows || []) {
     const mode = String(row.mode || "unknown").toLowerCase();
-    labels.push(displayMode(mode));
-    values.push(Number(row.count || 0));
+    if (mode !== "internal" && mode !== "websearch") continue;
+    modeCounts[mode] += Number(row.count || 0);
   }
+  const labels = ["社内", "ウェブ検索"];
+  const values = [modeCounts.internal, modeCounts.websearch];
   renderDoughnutChart(
     chartName,
     canvasId,
@@ -895,7 +919,7 @@ async function loadUsers() {
         state.selectedHistoryConversationId = "";
         [...tbody.querySelectorAll("tr")].forEach((item) => item.classList.remove("selected"));
         tr.classList.add("selected");
-        $("messageMeta").textContent = `選択ユーザー: ${state.selectedHistoryUserId}`;
+        $("messageMeta").textContent = "メッセージ履歴";
         updateExportLinks();
         loadConversations();
       });
@@ -929,7 +953,7 @@ async function loadConversations() {
         state.selectedHistoryConversationId = row.id || "";
         [...tbody.querySelectorAll("tr")].forEach((item) => item.classList.remove("selected"));
         tr.classList.add("selected");
-        $("messageMeta").textContent = `ユーザーID=${state.selectedHistoryUserId} / 会話ID=${state.selectedHistoryConversationId}`;
+        $("messageMeta").textContent = "メッセージ履歴";
         updateExportLinks();
         loadMessages();
       });
