@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import copy
+import threading
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.dependencies import get_bigquery_metrics_service, get_firestore_history_service
@@ -10,6 +15,10 @@ from app.settings import Settings, get_settings
 from app.time_window import MetricsTimeWindow, TimeWindowValidationError, resolve_time_window
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
+
+_DASHBOARD_CACHE_LOCK = threading.Lock()
+_DASHBOARD_CACHE: dict[str, tuple[float, dict]] = {}
+_DASHBOARD_CACHE_MAX_ITEMS = 64
 
 
 def _build_window(
@@ -49,6 +58,43 @@ def _safe_float(value: object) -> float | None:
 
 def _user_key(user_id: str, user_email: str) -> str:
     return f"{str(user_id or '').strip()}::{str(user_email or '').strip().lower()}"
+
+
+def _dashboard_cache_key(*, window: MetricsTimeWindow, user: str) -> str:
+    return "|".join(
+        [
+            str(window.start_utc.isoformat()),
+            str(window.end_utc.isoformat()),
+            str(window.timezone),
+            str(window.source),
+            str(window.preset),
+            str(window.bucket_minutes),
+            str(user or "").strip().lower(),
+        ]
+    )
+
+
+def _dashboard_cache_get(*, key: str, now_mono: float) -> dict | None:
+    with _DASHBOARD_CACHE_LOCK:
+        row = _DASHBOARD_CACHE.get(key)
+        if not row:
+            return None
+        expire_at, payload = row
+        if expire_at <= now_mono:
+            _DASHBOARD_CACHE.pop(key, None)
+            return None
+        return copy.deepcopy(payload)
+
+
+def _dashboard_cache_set(*, key: str, payload: dict, ttl_sec: int, now_mono: float) -> None:
+    if ttl_sec <= 0:
+        return
+    expire_at = now_mono + float(ttl_sec)
+    with _DASHBOARD_CACHE_LOCK:
+        _DASHBOARD_CACHE[key] = (expire_at, copy.deepcopy(payload))
+        if len(_DASHBOARD_CACHE) > _DASHBOARD_CACHE_MAX_ITEMS:
+            oldest_key = min(_DASHBOARD_CACHE.items(), key=lambda item: item[1][0])[0]
+            _DASHBOARD_CACHE.pop(oldest_key, None)
 
 
 @router.get("/overview")
@@ -227,15 +273,62 @@ def metrics_dashboard(
     fs: FirestoreHistoryService = Depends(get_firestore_history_service),
 ) -> dict:
     window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
+    now_mono = time.monotonic()
+    cache_ttl_sec = max(0, int(settings.monitor_dashboard_cache_ttl_sec or 0))
+    cache_key = _dashboard_cache_key(window=window, user=user)
+    if cache_ttl_sec > 0:
+        cached = _dashboard_cache_get(key=cache_key, now_mono=now_mono)
+        if cached is not None:
+            cached_meta = cached.get("meta") or {}
+            cached["meta"] = {
+                "cacheHit": True,
+                "fetchMs": 0,
+                "taskMs": cached_meta.get("taskMs", {}),
+                "selectedUserTimeseriesMs": 0,
+            }
+            return cached
+
+    fetch_started = time.monotonic()
+    task_ms: dict[str, int] = {}
     try:
-        bq_overview = bq.get_overview(window=window)
-        usage_timeseries = bq.get_usage_timeseries(window=window)
-        error_report = bq.get_error_report(window=window)
-        device_report = bq.get_device_report(window=window)
-        fs_metrics = fs.aggregate_monitor_metrics(window=window)
-        followup_report = bq.get_followup_open_aggregates(window=window)
-        request_user_rows = bq.get_request_user_aggregates(window=window)
-    except Exception as exc:
+        with ThreadPoolExecutor(max_workers=7) as executor:
+            def _submit_timed(fn):
+                def _wrapped():
+                    started = time.monotonic()
+                    result = fn(window=window)
+                    elapsed = int((time.monotonic() - started) * 1000)
+                    return result, elapsed
+
+                return executor.submit(_wrapped)
+
+            futures = {
+                "bq_overview": _submit_timed(bq.get_overview),
+                "usage_timeseries": _submit_timed(bq.get_usage_timeseries),
+                "error_report": _submit_timed(bq.get_error_report),
+                "device_report": _submit_timed(bq.get_device_report),
+                "fs_metrics": _submit_timed(fs.aggregate_monitor_metrics),
+                "followup_report": _submit_timed(bq.get_followup_open_aggregates),
+                "request_user_rows": _submit_timed(bq.get_request_user_aggregates),
+            }
+
+            def _result(name: str):
+                try:
+                    result, elapsed = futures[name].result()
+                    task_ms[name] = elapsed
+                    return result
+                except Exception as exc:  # pragma: no cover - error path
+                    raise HTTPException(status_code=500, detail=f"dashboard {name} failed: {exc}") from exc
+
+            bq_overview = _result("bq_overview")
+            usage_timeseries = _result("usage_timeseries")
+            error_report = _result("error_report")
+            device_report = _result("device_report")
+            fs_metrics = _result("fs_metrics")
+            followup_report = _result("followup_report")
+            request_user_rows = _result("request_user_rows")
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive fallback
         raise HTTPException(status_code=500, detail=f"dashboard query failed: {exc}") from exc
 
     request_user_map: dict[str, dict] = {}
@@ -365,12 +458,20 @@ def metrics_dashboard(
             break
 
     selected_user_timeseries: list[dict] = []
+    selected_user_request_metrics_ready = False
+    selected_user_timeseries_ms = 0
     if selected_user is not None:
-        selected_key = str(selected_user.get("userId") or "").strip() or str(selected_user.get("userEmail") or "").strip()
-        try:
-            selected_user_timeseries = bq.get_request_user_timeseries(window=window, user_key=selected_key)
-        except Exception:
-            selected_user_timeseries = []
+        selected_total_request_count = _safe_int(selected_user.get("totalRequestCount"))
+        selected_core_request_count = _safe_int(selected_user.get("coreRequestCount"))
+        selected_user_request_metrics_ready = selected_total_request_count > 0 or selected_core_request_count > 0
+        if selected_user_request_metrics_ready:
+            selected_key = str(selected_user.get("userId") or "").strip() or str(selected_user.get("userEmail") or "").strip()
+            started = time.monotonic()
+            try:
+                selected_user_timeseries = bq.get_request_user_timeseries(window=window, user_key=selected_key)
+            except Exception:
+                selected_user_timeseries = []
+            selected_user_timeseries_ms = int((time.monotonic() - started) * 1000)
 
     summary = {
         "dau": _safe_int(fs_metrics.get("dau")),
@@ -396,7 +497,7 @@ def metrics_dashboard(
         "requestP95LatencyMs": _safe_float(bq_overview.get("request_p95_latency_ms")),
     }
 
-    return {
+    payload = {
         "days": window.requested_days,
         "window": {
             "source": window.source,
@@ -438,4 +539,13 @@ def metrics_dashboard(
         "users": users,
         "selectedUser": selected_user,
         "selectedUserTimeseries": selected_user_timeseries,
+        "selectedUserRequestMetricsReady": selected_user_request_metrics_ready,
+        "meta": {
+            "cacheHit": False,
+            "fetchMs": int((time.monotonic() - fetch_started) * 1000),
+            "taskMs": task_ms,
+            "selectedUserTimeseriesMs": selected_user_timeseries_ms,
+        },
     }
+    _dashboard_cache_set(key=cache_key, payload=payload, ttl_sec=cache_ttl_sec, now_mono=now_mono)
+    return payload

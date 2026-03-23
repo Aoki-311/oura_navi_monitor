@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     monitor_default_days: int = Field(default=7)
     monitor_retention_days: int = Field(default=180)
     monitor_max_users_scan: int = Field(default=800)
+    monitor_dashboard_cache_ttl_sec: int = Field(default=15)
     monitor_timezone: str = Field(default="Asia/Tokyo")
     monitor_log_level: str = Field(default="INFO")
 

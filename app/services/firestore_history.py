@@ -650,6 +650,8 @@ class FirestoreHistoryService:
     def aggregate_monitor_metrics(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
         window_start = window.start_utc
         window_end = window.end_utc
+        window_start_iso = window_start.isoformat()
+        window_end_iso = window_end.isoformat()
         day_start = window_end - timedelta(days=1)
         week_start = window_end - timedelta(days=7)
 
@@ -715,8 +717,11 @@ class FirestoreHistoryService:
                 conv_has_window_message = False
                 user_turn_index = -1
 
-                msg_query = conv_doc.reference.collection("messages").order_by(
-                    "timestamp", direction=firestore.Query.ASCENDING
+                msg_query = (
+                    conv_doc.reference.collection("messages")
+                    .where(filter=FieldFilter("timestamp", ">=", window_start_iso))
+                    .where(filter=FieldFilter("timestamp", "<", window_end_iso))
+                    .order_by("timestamp", direction=firestore.Query.ASCENDING)
                 )
                 for msg_doc in msg_query.stream():
                     msg_payload = msg_doc.to_dict() or {}
@@ -725,9 +730,6 @@ class FirestoreHistoryService:
                     if role == "user":
                         user_turn_index += 1
                         inferred_user_turn_index = user_turn_index
-                    msg_ts = _parse_iso(msg_payload.get("timestamp"))
-                    if not self._in_window(dt=msg_ts, start=window_start, end=window_end):
-                        continue
                     if not conv_has_window_message:
                         conv_has_window_message = True
                         conversation_count += 1

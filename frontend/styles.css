@@ -102,6 +102,59 @@ button,
   gap: 6px;
 }
 
+.loadStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid #c5d8ef;
+  background: linear-gradient(180deg, #f8fbff 0%, #edf4ff 100%);
+  color: #1a446f;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.loadStatus::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #83a2c7;
+}
+
+.loadStatus.loading {
+  border-color: #91bbe9;
+  background: linear-gradient(180deg, #f0f7ff 0%, #e5f1ff 100%);
+  color: #0d539f;
+}
+
+.loadStatus.loading::before {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #97bde6;
+  border-top-color: #0d6adf;
+  background: transparent;
+  animation: statusSpin 0.82s linear infinite;
+}
+
+.loadStatus.error {
+  border-color: #e1b7b7;
+  background: linear-gradient(180deg, #fff8f8 0%, #ffeeee 100%);
+  color: #a12a2a;
+}
+
+.loadStatus.error::before {
+  width: 8px;
+  height: 8px;
+  border: none;
+  background: #d14a4a;
+  animation: none;
+}
+
 .customRange label {
   display: inline-flex;
   align-items: center;
@@ -323,6 +376,7 @@ h3 {
 
 .historyCol {
   display: grid;
+  grid-template-rows: auto 1fr;
   gap: 8px;
 }
 
@@ -330,6 +384,30 @@ h3 {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.historyToolbar {
+  min-height: 42px;
+}
+
+.historyToolbar input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.historyTag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid #bad0ea;
+  background: linear-gradient(180deg, #f7fbff 0%, #eaf3ff 100%);
+  color: #164170;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .row.wrap {
@@ -443,6 +521,15 @@ tbody tr.selected {
 .toast.show {
   opacity: 0.95;
   transform: translateY(0);
+}
+
+@keyframes statusSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 1360px) {

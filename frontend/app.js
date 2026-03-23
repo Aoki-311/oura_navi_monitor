@@ -8,6 +8,7 @@ const state = {
   selectedHistoryUserId: "",
   selectedHistoryConversationId: "",
   analyticsUserQuery: "",
+  loadingCount: 0,
   charts: {
     requestTrend: null,
     coreRequestTrend: null,
@@ -24,6 +25,44 @@ const state = {
 
 const DASHBOARD_FETCH_TIMEOUT_MS = 18000;
 const $ = (id) => document.getElementById(id);
+const DOUGHNUT_MIN_LABEL_PCT = 4;
+
+const doughnutPercentLabelPlugin = {
+  id: "doughnutPercentLabelPlugin",
+  afterDatasetsDraw(chart) {
+    if (!chart || chart.config.type !== "doughnut") return;
+    const dataset = chart.data?.datasets?.[0];
+    const arcs = chart.getDatasetMeta(0)?.data || [];
+    if (!dataset || !arcs.length) return;
+    const values = (dataset.data || []).map((value) => Math.max(0, Number(value || 0)));
+    const total = values.reduce((sum, value) => sum + value, 0);
+    if (!(total > 0)) return;
+
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.font = '700 11px "M PLUS 1p","Zen Kaku Gothic New","Noto Sans JP",sans-serif';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = "rgba(8, 22, 40, 0.42)";
+    ctx.lineWidth = 3;
+    arcs.forEach((arc, index) => {
+      const value = values[index] || 0;
+      if (!(value > 0)) return;
+      const pct = (value / total) * 100;
+      if (pct < DOUGHNUT_MIN_LABEL_PCT) return;
+      const props = arc.getProps(["x", "y", "startAngle", "endAngle", "innerRadius", "outerRadius"], true);
+      const mid = (props.startAngle + props.endAngle) / 2;
+      const radius = props.innerRadius + (props.outerRadius - props.innerRadius) * 0.57;
+      const x = props.x + Math.cos(mid) * radius;
+      const y = props.y + Math.sin(mid) * radius;
+      const text = `${pct.toFixed(1)}%`;
+      ctx.strokeText(text, x, y);
+      ctx.fillText(text, x, y);
+    });
+    ctx.restore();
+  },
+};
 
 const HELP = {
   dau: {
@@ -205,6 +244,62 @@ function toast(message) {
   el.textContent = String(message || "");
   el.classList.add("show");
   setTimeout(() => el.classList.remove("show"), 2200);
+}
+
+function nowJstClock() {
+  return new Date().toLocaleTimeString("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    hour12: false,
+  });
+}
+
+function setLoadingStatus(message, status = "idle") {
+  const el = $("loadingStatus");
+  if (!el) return;
+  el.textContent = String(message || "");
+  el.classList.toggle("loading", status === "loading");
+  el.classList.toggle("error", status === "error");
+}
+
+function beginLoading(taskLabel) {
+  state.loadingCount += 1;
+  setLoadingStatus(`読込中: ${taskLabel}`, "loading");
+  let closed = false;
+  return ({ message, status = "idle" } = {}) => {
+    if (closed) return;
+    closed = true;
+    state.loadingCount = Math.max(0, state.loadingCount - 1);
+    if (state.loadingCount > 0) {
+      setLoadingStatus(`読込中: 残り${state.loadingCount}件`, "loading");
+      return;
+    }
+    setLoadingStatus(message || `更新完了 ${nowJstClock()}`, status);
+  };
+}
+
+function formatDashboardStatus(meta) {
+  const payload = meta || {};
+  if (payload.cacheHit) {
+    return `更新完了（キャッシュ） ${nowJstClock()}`;
+  }
+  const fetchMs = Number(payload.fetchMs || 0);
+  const taskMs = payload.taskMs || {};
+  const fsMs = Number(taskMs.fs_metrics || 0);
+  const bqMax = Math.max(
+    Number(taskMs.bq_overview || 0),
+    Number(taskMs.usage_timeseries || 0),
+    Number(taskMs.error_report || 0),
+    Number(taskMs.device_report || 0),
+    Number(taskMs.followup_report || 0),
+    Number(taskMs.request_user_rows || 0)
+  );
+  const parts = [];
+  if (fetchMs > 0) parts.push(`サーバー${(fetchMs / 1000).toFixed(2)}s`);
+  if (fsMs > 0) parts.push(`Firestore${(fsMs / 1000).toFixed(2)}s`);
+  if (bqMax > 0) parts.push(`BigQuery最大${(bqMax / 1000).toFixed(2)}s`);
+  return parts.length > 0
+    ? `更新完了（${parts.join(" / ")}） ${nowJstClock()}`
+    : `更新完了 ${nowJstClock()}`;
 }
 
 async function getJson(path) {
@@ -561,17 +656,13 @@ function renderDoughnutChart(name, canvasId, labels, values, colors) {
   const baseLabels = hasData ? labels : ["データなし"];
   const rawValues = hasData ? (values || []).map((value) => Number(value || 0)) : [0];
   const total = rawValues.reduce((sum, value) => sum + Math.max(0, Number(value || 0)), 0);
-  const labelsWithPct = baseLabels.map((label, index) => {
-    const value = Math.max(0, Number(rawValues[index] || 0));
-    const pct = total > 0 ? (value / total) * 100 : 0;
-    return `${label} ${pct.toFixed(1)}%`;
-  });
   resetChart(name, {
     ctx: $(canvasId),
     options: {
       type: "doughnut",
+      plugins: [doughnutPercentLabelPlugin],
       data: {
-        labels: labelsWithPct,
+        labels: baseLabels,
         datasets: [
           {
             data: rawValues,
@@ -818,6 +909,7 @@ function renderUserTable(users) {
 function renderSelectedUser(payload) {
   const selected = payload.selectedUser || null;
   const timeseries = payload.selectedUserTimeseries || [];
+  const requestMetricsReady = Boolean(payload.selectedUserRequestMetricsReady);
   const labelEl = $("selectedAnalyticsUserLabel");
 
   if (!selected) {
@@ -828,9 +920,11 @@ function renderSelectedUser(payload) {
     return;
   }
 
-  labelEl.textContent = `対象: ${selected.userEmail || ""} (${selected.userId || ""})`;
+  labelEl.textContent = `対象: ${selected.userEmail || ""} (${selected.userId || ""})${
+    requestMetricsReady ? "" : " / ユーザー別リクエスト埋点待ち"
+  }`;
   renderUserMetricCards(selected);
-  renderRequestTrend(timeseries, "userRequestTrend", "userRequestTrendChart", "total");
+  renderRequestTrend(requestMetricsReady ? timeseries : [], "userRequestTrend", "userRequestTrendChart", "total");
   renderModeDistribution(selected.modeDistribution || [], "userModeDistribution", "userModeDistributionChart");
 }
 
@@ -876,6 +970,7 @@ async function reloadDashboard() {
     return;
   }
 
+  const done = beginLoading("ダッシュボード");
   try {
     const query = buildFilterQueryString();
     const settled = await Promise.allSettled([getJson(`/api/metrics/dashboard?${query}`)]);
@@ -888,10 +983,12 @@ async function reloadDashboard() {
     renderGlobalCharts(payload);
     renderUserTable(payload.users || []);
     renderSelectedUser(payload);
+    done({ message: formatDashboardStatus(payload.meta || {}), status: "idle" });
   } catch (error) {
     console.error(error);
     toast("一部データの取得に失敗しました。");
     toast(`ダッシュボード取得失敗: ${String(error)}`);
+    done({ message: `ダッシュボード取得失敗 ${nowJstClock()}`, status: "error" });
   }
 }
 
@@ -904,6 +1001,7 @@ function appendCells(tr, values) {
 }
 
 async function loadUsers() {
+  const done = beginLoading("ユーザー一覧");
   try {
     const q = encodeURIComponent($("userSearch").value.trim());
     const payload = await getJson(`/api/history/users?limit=250&q=${q}`);
@@ -927,8 +1025,10 @@ async function loadUsers() {
     });
 
     updateExportLinks();
+    done({ message: `ユーザー一覧更新 ${fmtInt(rows.length)}件 ${nowJstClock()}`, status: "idle" });
   } catch (error) {
     toast(`ユーザー検索失敗: ${String(error)}`);
+    done({ message: `ユーザー一覧取得失敗 ${nowJstClock()}`, status: "error" });
   }
 }
 
@@ -937,6 +1037,7 @@ async function loadConversations() {
     toast("先にユーザーを選択してください。");
     return;
   }
+  const done = beginLoading("会話一覧");
   try {
     const q = encodeURIComponent($("convSearch").value.trim());
     const payload = await getJson(
@@ -961,8 +1062,10 @@ async function loadConversations() {
     });
 
     updateExportLinks();
+    done({ message: `会話一覧更新 ${fmtInt(rows.length)}件 ${nowJstClock()}`, status: "idle" });
   } catch (error) {
     toast(`会話検索失敗: ${String(error)}`);
+    done({ message: `会話一覧取得失敗 ${nowJstClock()}`, status: "error" });
   }
 }
 
@@ -971,6 +1074,7 @@ async function loadMessages() {
     toast("先に会話を選択してください。");
     return;
   }
+  const done = beginLoading("メッセージ履歴");
   try {
     const payload = await getJson(
       `/api/history/users/${encodeURIComponent(state.selectedHistoryUserId)}/conversations/${encodeURIComponent(state.selectedHistoryConversationId)}?limit=1500`
@@ -984,8 +1088,13 @@ async function loadMessages() {
       (row.content || "").replace(/\s+/g, " ").slice(0, 420),
       row.errorMessage || "",
     ]);
+    done({
+      message: `メッセージ履歴更新 ${fmtInt((payload.messages || []).length)}件 ${nowJstClock()}`,
+      status: "idle",
+    });
   } catch (error) {
     toast(`メッセージ取得失敗: ${String(error)}`);
+    done({ message: `メッセージ履歴取得失敗 ${nowJstClock()}`, status: "error" });
   }
 }
 
@@ -1021,7 +1130,6 @@ function bindEvents() {
 
   $("loadUsers").addEventListener("click", () => loadUsers());
   $("loadConversations").addEventListener("click", () => loadConversations());
-  $("loadMessages").addEventListener("click", () => loadMessages());
 
   $("userSearch").addEventListener("keydown", (event) => {
     if (event.key === "Enter") loadUsers();
@@ -1041,6 +1149,7 @@ function bindEvents() {
 }
 
 function init() {
+  setLoadingStatus("待機中", "idle");
   markActivePresetButton();
   initMetricTitles();
   bindEvents();

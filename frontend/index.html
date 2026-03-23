@@ -28,6 +28,7 @@
           <label>開始 <input id="startAt" type="datetime-local" /></label>
           <label>終了 <input id="endAt" type="datetime-local" /></label>
           <button id="applyCustom" type="button" class="ghostBtn">期間適用</button>
+          <span id="loadingStatus" class="loadStatus" aria-live="polite">待機中</span>
           <button id="refreshAll" type="button">再読込</button>
         </div>
       </div>
@@ -65,7 +66,7 @@
 
         <div class="historyGrid">
           <article class="historyCol">
-            <div class="row">
+            <div class="row historyToolbar">
               <input id="userSearch" placeholder="ユーザーID / メール / サブジェクト" />
               <button id="loadUsers" type="button">ユーザー検索</button>
             </div>
@@ -84,7 +85,7 @@
           </article>
 
           <article class="historyCol">
-            <div class="row">
+            <div class="row historyToolbar">
               <input id="convSearch" placeholder="タイトル / モード / プレビュー" />
               <button id="loadConversations" type="button">会話検索</button>
             </div>
@@ -103,9 +104,8 @@
           </article>
 
           <article class="historyCol">
-            <div class="row wrap">
-              <span id="messageMeta" class="muted">メッセージ履歴</span>
-              <button id="loadMessages" type="button">メッセージ取得</button>
+            <div class="row historyToolbar">
+              <span id="messageMeta" class="historyTag">メッセージ履歴</span>
             </div>
             <div class="tableWrap tall xscroll">
               <table id="messagesTable" class="wideTable">
