@@ -184,10 +184,30 @@
 
 ## 7. `GET /api/metrics/users/{user_id}`
 
-`ユーザー詳細` のデータを返します。
+`ユーザー詳細` の軽量データを返します。会話本文や message 明細はこの API では返さず、必要時に `/api/trace/messages` で懒加载します。
+
+### 7.1 Query parameters
+
+| Parameter | 型 | 説明 |
+| --- | --- | --- |
+| `preset` | string | `today`, `last_3d`, `last_7d`, `last_14d`, `last_30d` |
+| `start` / `end` | string | custom range |
+| `conversation_limit` | int | 会話一覧の返却件数。既定 50、最大 200 |
+| `conversation_cursor` | string | 次ページ取得用 cursor |
+| `include_hidden` | bool | hidden conversation を含めるか |
+| `include_messages` | bool | 互換用。既定 false。true でも message 明細はこの response には含めない |
 
 ```json
 {
+  "meta": {
+    "generatedAt": "2026-05-13T10:20:00+09:00",
+    "cacheHit": false,
+    "dataDelaySec": null,
+    "metricStatus": {
+      "answerSuccessRate": "proxy",
+      "badFeedbackRate": "pending"
+    }
+  },
   "user": {
     "userId": "user-1",
     "userEmail": "user@example.com",
@@ -220,7 +240,16 @@
       "isFavorite": false,
       "followupRuntimeSummary": {}
     }
-  ]
+  ],
+  "page": {
+    "nextCursor": "2026-05-13T10:20:00Z",
+    "cursor": ""
+  },
+  "messageLoading": {
+    "endpoint": "/api/trace/messages",
+    "includeMessagesInThisResponse": false,
+    "includeMessagesRequested": false
+  }
 }
 ```
 

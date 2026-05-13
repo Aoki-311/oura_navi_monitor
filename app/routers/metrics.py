@@ -458,34 +458,101 @@ def metrics_user_detail(
     preset: str = Query(default="today"),
     start: str = Query(default=""),
     end: str = Query(default=""),
+    conversation_limit: int = Query(default=50, ge=1, le=200),
+    conversation_cursor: str = Query(default=""),
+    include_hidden: bool = Query(default=False),
+    include_messages: bool = Query(default=False),
     _admin: AdminIdentity = Depends(require_admin),
     settings: Settings = Depends(get_settings),
     bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
     fs: FirestoreHistoryService = Depends(get_firestore_history_service),
 ) -> dict:
     window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
+    now_mono = time.monotonic()
+    cache_ttl_sec = max(0, int(settings.monitor_dashboard_cache_ttl_sec or 0))
+    cache_key = "|".join(
+        [
+            "user-detail",
+            str(user_id or "").strip().lower(),
+            str(window.timezone),
+            str(window.source),
+            str(window.preset),
+            str(days),
+            str(start or ""),
+            str(end or ""),
+            window.start_utc.isoformat(),
+            str(conversation_limit),
+            str(conversation_cursor or ""),
+            str(bool(include_hidden)),
+        ]
+    )
+    if cache_ttl_sec > 0:
+        cached = _dashboard_cache_get(key=cache_key, now_mono=now_mono)
+        if cached is not None:
+            cached["meta"] = {
+                **(cached.get("meta") or {}),
+                "cacheHit": True,
+                "fetchMs": 0,
+            }
+            return cached
+
+    fetch_started = time.monotonic()
     try:
-        detail = fs.get_user_detail_metrics(user_id=user_id, window=window)
-        if detail is None:
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            profile_future = executor.submit(fs.get_user_profile, user_id=user_id)
+            summary_future = executor.submit(bq.get_user_detail_summary, window=window, user_key=user_id)
+            conversation_future = executor.submit(
+                fs.list_user_conversation_summaries,
+                user_id=user_id,
+                include_hidden=include_hidden,
+                limit=conversation_limit,
+                cursor=conversation_cursor,
+            )
+            profile = profile_future.result()
+            summary_payload = summary_future.result()
+            conversation_page = conversation_future.result()
+        if profile is None:
             raise HTTPException(status_code=404, detail="user not found")
-        quality = bq.get_answer_quality_metrics(window=window, user_key=user_id)
-        followup = bq.get_followup_metrics(window=window, user_key=user_id)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"user detail query failed: {exc}") from exc
 
-    quality_summary = quality.get("summary") or {}
-    detail["summary"]["lowCoverageRate"] = quality_summary.get("lowCoverageRate")
-    if quality_summary.get("answerSuccessRate") is not None:
-        detail["summary"]["answerSuccessRate"] = quality_summary.get("answerSuccessRate")
-    detail["answerQualityDistribution"] = quality.get("distributions", {})
-    detail["followup"] = followup
-    return {
-        "window": _window_payload(window),
-        "meta": _meta_payload(window),
-        **detail,
+    summary = summary_payload.get("summary") or {}
+    user = {
+        **profile,
+        "activityLevel": summary.get("activityLevel") or "",
+        "activityKey": summary.get("activityKey") or "",
+        "lastActiveAtJst": summary.get("lastActiveAtJst") or "",
     }
+    meta = _meta_payload(window)
+    meta["metricStatus"] = {
+        "answerSuccessRate": "proxy",
+        "badFeedbackRate": "pending",
+    }
+    meta["fetchMs"] = int((time.monotonic() - fetch_started) * 1000)
+    payload = {
+        "window": _window_payload(window),
+        "meta": meta,
+        "user": user,
+        "summary": summary,
+        "trend": summary_payload.get("trend") or [],
+        "modeDistribution": summary_payload.get("modeDistribution") or [],
+        "answerQualityDistribution": summary_payload.get("answerQualityDistribution") or {},
+        "followup": summary_payload.get("followup") or {},
+        "conversations": conversation_page.get("items") or [],
+        "page": {
+            "nextCursor": conversation_page.get("nextCursor") or "",
+            "cursor": conversation_cursor,
+        },
+        "messageLoading": {
+            "endpoint": "/api/trace/messages",
+            "includeMessagesInThisResponse": False,
+            "includeMessagesRequested": bool(include_messages),
+        },
+    }
+    _dashboard_cache_set(key=cache_key, payload=payload, ttl_sec=cache_ttl_sec, now_mono=now_mono)
+    return payload
 
 
 @router.get("/schema-health")

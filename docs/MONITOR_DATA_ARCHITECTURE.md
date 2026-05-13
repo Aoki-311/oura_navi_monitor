@@ -31,7 +31,7 @@
 | --- | --- | --- |
 | Raw layer | 原始イベントを欠落なく保存する | `raw_monitor_events` |
 | Projection layer | UI / 分析に使いやすい形へ正規化する | `monitor_answer_events`, `monitor_followup_events`, `monitor_message_state` |
-| Aggregate layer | ダッシュボードが直接参照する集計を作る | `monitor_system_daily`, `monitor_user_daily`, `monitor_schema_quality_daily` |
+| Aggregate layer | ダッシュボードが直接参照する集計を作る | `monitor_system_hourly`, `monitor_dashboard_snapshots`, `monitor_user_daily`, `monitor_schema_quality_daily` |
 | Export layer | 管理者が選択条件で出力する | export query / export job output |
 
 MVP では物理テーブルではなく BigQuery view で開始してもよいです。ただし API 側の返却契約は、将来 table 化しても変えない前提で固定します。
@@ -82,7 +82,7 @@ MVP では物理テーブルではなく BigQuery view で開始してもよい�
 
 ### 6.2 Answer projection
 
-`monitor_answer_events` は `回答品質`, `ダッシュボード`, `ユーザー詳細`, `チャット記録確認` の主要ソースです。
+`monitor_answer_events` は `回答品質`, `ダッシュボード`, `ユーザー詳細`, `チャット記録確認` の主要ソースです。MVP では `sql/create_aggregate_tables.sql` で `v_ask_audit_events` と `v_coverage_gap_workitems` から物理化します。
 
 | 分類 | Field |
 | --- | --- |
@@ -90,8 +90,8 @@ MVP では物理テーブルではなく BigQuery view で開始してもよい�
 | Query | `query_hash`, `query_length`, `query_lang` |
 | Routing | `route_path`, `channel_plan_primary`, `final_channel_mix_dominant`, `web_channel_used`, `structured_led` |
 | Evidence | `citation_count`, `evidence_doc_count`, `evidence_structured_count`, `coverage_score`, `evidence_sufficiency` |
-| Quality | `answer_success`, `answerability_level`, `usability_level`, `delivery_readiness`, `primary_reason_code` |
-| Risk | `low_coverage_flag`, `bad_feedback_flag`, `error_flag`, `clarification_required`, `source_date_leaked_into_body` |
+| Quality | `answer_success_flag`, `answer_success_metric_status`, `answerability_level`, `usability_level`, `delivery_readiness`, `primary_reason_code` |
+| Risk | `low_coverage_flag`, `has_bad_feedback`, `has_regenerate_request`, `has_enhance_request`, `has_correction_request`, `has_error` |
 
 ### 6.3 Message projection
 
@@ -106,40 +106,67 @@ MVP では物理テーブルではなく BigQuery view で開始してもよい�
 
 ## 7. Aggregate Layer
 
-### 7.1 `monitor_system_daily`
+### 7.1 `monitor_system_hourly`
 
-ダッシュボード全体 KPI と日次推移のソースです。
+ダッシュボード全体 KPI、時間帯別リクエスト、デバイス分布、モード分布、追問サマリーの高速ソースです。MVP では `sql/create_aggregate_tables.sql` で `v_requests`, `v_request_user_metric_events`, follow-up views から時間単位で物理化します。
 
 | Field | 用途 |
 | --- | --- |
-| `date` | 日本時間の日付 |
-| `active_user_count` | アクティブユーザー数 |
-| `message_count` | メッセージ数 |
-| `answer_success_rate` | 回答成功率 |
-| `low_coverage_rate` | 低カバレッジ率 |
-| `error_rate` | エラー率 |
-| `p95_latency_ms` | P95応答時間 |
-| `structured_led_rate` | 構造化データ主導率 |
-| `websearch_rate` | Web検索モード利用率 |
-| `followup_success_rate` | 追問成功率 |
+| `bucket_ts` | UTC 時間単位 bucket |
+| `bucket_date_jst`, `bucket_hour_jst` | 日本時間の日付・時間帯 |
+| `request_count`, `error_count`, `error_rate` | リクエスト数とエラー率 |
+| `latency_count`, `latency_sum_ms`, `p95_latency_ms` | 応答時間集計。複数時間の P95 は hourly P95 の保守的近似 |
+| `desktop_request_count`, `mobile_request_count`, `unknown_request_count` | デバイス分布 |
+| `message_count`, `internal_mode_count`, `websearch_mode_count` | メッセージ数とモード分布 |
+| `active_user_count_hourly`, `active_user_hll` | アクティブユーザーの時間単位集計と HLL sketch |
+| `followup_recognized_count`, `followup_success_count` | 追問認識・追問成功 |
+| `explicit_correction_count`, `clarification_required_count`, `followup_offtopic_count` | 訂正・確認要求・話題逸脱 |
+| `answer_count`, `answer_success_count`, `low_coverage_count` | 回答成功率・低カバレッジ率の時間単位集計 |
+| `coverage_score_sum/count`, `alignment_score_sum/count` | カバレッジ・アラインメント平均の再集計用 |
+| `structured_led_count`, `citation_binding_issue_count` | 構造化主導・citation binding 異常 |
+| `*_distribution` | 可回答性、可用性、交付可用、証拠充分性、検証結果の時間単位分布 |
+
+### 7.1.1 `monitor_dashboard_snapshots`
+
+`ダッシュボード` の常用 preset を JSON として事前計算する小テーブルです。API は `today`, `last_6h`, `last_12h`, `last_3d`, `last_7d`, `last_14d`, `last_30d` の場合、BigQuery query job ではなく table row 読み取りでこのテーブルを優先します。
+
+| Field | 用途 |
+| --- | --- |
+| `preset` | `today`, `last_7d` などの画面選択値 |
+| `timezone` | snapshot の基準 timezone。現在は `Asia/Tokyo` |
+| `source_start_ts`, `source_end_ts` | snapshot 計算に使った時間範囲 |
+| `payload_json` | `/api/metrics/system-dashboard` と同じ dashboard payload |
+| `materialized_at` | snapshot 作成時刻 |
+
+自定義期間は snapshot 対象外です。その場合は `monitor_system_hourly` から API が軽量集計します。
 
 ### 7.2 `monitor_user_daily`
 
-ユーザー監視一覧とユーザー詳細のソースです。
+ユーザー監視一覧とユーザー詳細のソースです。MVP では `monitor_answer_events`, `v_request_user_metric_events`, `v_followup_open_result_events`, `v_followup_resolution_events` から日次物理表として作成します。
 
 | Field | 用途 |
 | --- | --- |
-| `date` | 日本時間の日付 |
+| `date_jst` | 日本時間の日付 |
 | `user_id_hash` | 匿名化ユーザー ID |
 | `user_id` | 管理者権限表示用 |
 | `user_email` | 管理者権限表示用 |
 | `active_flag` | 当日の利用有無 |
 | `message_count` | 当日のメッセージ数 |
-| `answer_success_rate` | 当日の回答成功率 |
-| `low_coverage_rate` | 当日の低カバレッジ率 |
-| `bad_feedback_rate` | 当日の低評価率 |
-| `followup_count` | 当日の追問数 |
-| `error_count` | 当日のエラー数 |
+| `answer_count`, `answer_success_count` | 当日の回答数と成功数 |
+| `low_coverage_count` | 当日の低カバレッジ数 |
+| `bad_feedback_count`, `feedback_count` | 当日の低評価数と feedback 数。MVP では 0/pending |
+| `followup_recognized_count`, `followup_success_count` | 当日の追問認識数と成功数 |
+| `answer_error_count` | 当日の回答エラー数 |
+
+### 7.2.1 Refresh
+
+| 項目 | 内容 |
+| --- | --- |
+| SQL | `sql/create_aggregate_tables.sql` |
+| 手動更新 | `scripts/refresh_aggregate_tables.sh` |
+| 定期更新 | `scripts/setup_aggregate_refresh.sh` で 15 分ごとの BigQuery scheduled query を作成する |
+| Bootstrap | `scripts/bootstrap_gcp.sh` が view 作成後に aggregate も作成する |
+| API fallback | 物理表が存在しない環境では既存 view-based query に fallback する |
 
 ### 7.3 `monitor_schema_quality_daily`
 
@@ -224,4 +251,3 @@ Firestore message
 3. フロントエンド用 API payload を固定する。
 4. `ユーザー監視` と `チャット記録確認` の join を優先実装する。
 5. ダッシュボードと各分析画面を新 UI に接続する。
-

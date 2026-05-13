@@ -18,6 +18,7 @@ class BigQueryMetricsService:
         self._client = bigquery.Client(project=settings.monitor_project_id, credentials=credentials)
         self._project = settings.monitor_project_id
         self._dataset = settings.monitor_bq_dataset
+        self._table_exists_cache: Dict[str, bool] = {}
 
     def _requests_table(self) -> str:
         return f"`{self._project}.{self._dataset}.run_googleapis_com_requests`"
@@ -29,6 +30,9 @@ class BigQueryMetricsService:
         return f"`{self._project}.{self._dataset}.run_googleapis_com_stderr`"
 
     def _view(self, name: str) -> str:
+        return f"`{self._project}.{self._dataset}.{name}`"
+
+    def _table(self, name: str) -> str:
         return f"`{self._project}.{self._dataset}.{name}`"
 
     def _run_query(self, sql: str, params: List[bigquery.ScalarQueryParameter]) -> List[Dict[str, Any]]:
@@ -48,11 +52,15 @@ class BigQueryMetricsService:
         return out
 
     def _table_exists(self, table_name: str) -> bool:
+        if table_name in self._table_exists_cache:
+            return self._table_exists_cache[table_name]
         table_id = f"{self._project}.{self._dataset}.{table_name}"
         try:
             self._client.get_table(table_id)
+            self._table_exists_cache[table_name] = True
             return True
         except NotFound:
+            self._table_exists_cache[table_name] = False
             return False
 
     def _window_params(self, window: MetricsTimeWindow) -> List[bigquery.ScalarQueryParameter]:
@@ -62,6 +70,45 @@ class BigQueryMetricsService:
             bigquery.ScalarQueryParameter("end_ts", "TIMESTAMP", window.end_utc),
             bigquery.ScalarQueryParameter("tz", "STRING", window.timezone),
         ]
+
+    def _get_system_dashboard_metrics_from_snapshot(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
+        supported_presets = {
+            "today",
+            "last_6h",
+            "last_12h",
+            "last_3d",
+            "last_7d",
+            "last_14d",
+            "last_30d",
+        }
+        preset = str(window.preset or "").strip().lower()
+        if window.source != "preset" or preset not in supported_presets:
+            return {}
+        if not self._table_exists("monitor_dashboard_snapshots"):
+            return {}
+
+        table_id = f"{self._project}.{self._dataset}.monitor_dashboard_snapshots"
+        try:
+            table = self._client.get_table(table_id)
+            rows = self._client.list_rows(table, max_results=50)
+        except NotFound:
+            self._table_exists_cache["monitor_dashboard_snapshots"] = False
+            return {}
+
+        for row in rows:
+            data = dict(row.items())
+            if str(data.get("preset") or "") != preset:
+                continue
+            if str(data.get("timezone") or "") != window.timezone:
+                continue
+            raw = data.get("payload_json")
+            if not raw:
+                continue
+            try:
+                return json.loads(str(raw))
+            except Exception:
+                return {}
+        return {}
 
     def get_overview(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
         sql = f"""
@@ -122,7 +169,299 @@ SELECT
         rows = self._run_query(sql, self._window_params(window)[:3])
         return rows[0] if rows else {}
 
+    def _get_system_dashboard_metrics_from_tables(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
+        params = self._window_params(window)
+        sql = f"""
+WITH hours AS (
+  SELECT hour FROM UNNEST(GENERATE_ARRAY(0, 23)) AS hour
+),
+device_labels AS (
+  SELECT 'desktop' AS device_class UNION ALL
+  SELECT 'mobile' UNION ALL
+  SELECT 'unknown'
+),
+mode_labels AS (
+  SELECT 'internal' AS mode UNION ALL
+  SELECT 'websearch'
+),
+dates AS (
+  SELECT event_date
+  FROM UNNEST(
+    GENERATE_DATE_ARRAY(
+      DATE(@start_ts, @tz),
+      DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz),
+      INTERVAL 1 DAY
+    )
+  ) AS event_date
+),
+hourly_window AS (
+  SELECT *
+  FROM {self._table("monitor_system_hourly")}
+  WHERE bucket_ts >= TIMESTAMP_TRUNC(@start_ts, HOUR)
+    AND bucket_ts < @end_ts
+),
+request_summary AS (
+  SELECT
+    SUM(request_count) AS request_count,
+    SUM(error_count) AS error_count,
+    SAFE_DIVIDE(SUM(error_count), SUM(request_count)) AS error_rate,
+    -- Conservative roll-up: hourly P95 cannot be exactly reconstructed from aggregate rows.
+    MAX(p95_latency_ms) AS p95_latency_ms
+  FROM hourly_window
+),
+request_by_hour AS (
+  SELECT
+    FORMAT('%02d:00', h.hour) AS hour_label,
+    COALESCE(SUM(w.request_count), 0) AS request_count
+  FROM hours h
+  LEFT JOIN hourly_window w ON w.bucket_hour_jst = h.hour
+  GROUP BY h.hour
+),
+device_distribution AS (
+  SELECT 'desktop' AS device_class, COALESCE(SUM(desktop_request_count), 0) AS request_count FROM hourly_window
+  UNION ALL
+  SELECT 'mobile', COALESCE(SUM(mobile_request_count), 0) FROM hourly_window
+  UNION ALL
+  SELECT 'unknown', COALESCE(SUM(unknown_request_count), 0) FROM hourly_window
+),
+mode_distribution AS (
+  SELECT 'internal' AS mode, COALESCE(SUM(internal_mode_count), 0) AS request_count FROM hourly_window
+  UNION ALL
+  SELECT 'websearch', COALESCE(SUM(websearch_mode_count), 0) FROM hourly_window
+),
+active_users AS (
+  SELECT COALESCE(HLL_COUNT.MERGE(active_user_hll), 0) AS active_user_count
+  FROM hourly_window
+  WHERE active_user_hll IS NOT NULL
+),
+daily_window AS (
+  SELECT *
+  FROM {self._table("monitor_user_daily")}
+  WHERE date_jst >= DATE(@start_ts, @tz)
+    AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
+),
+daily_14d AS (
+  SELECT *
+  FROM {self._table("monitor_user_daily")}
+  WHERE date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY), @tz)
+    AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
+),
+usage_trend_agg AS (
+  SELECT
+    date_jst AS event_date,
+    COUNT(DISTINCT IF(active_flag AND user_id != 'unknown', user_id, NULL)) AS active_user_count,
+    SUM(message_count) AS message_count
+  FROM daily_window
+  GROUP BY event_date
+),
+usage_trend AS (
+  SELECT
+    FORMAT_DATE('%Y-%m-%d', d.event_date) AS date_label,
+    COALESCE(a.active_user_count, 0) AS active_user_count,
+    COALESCE(a.message_count, 0) AS message_count
+  FROM dates d
+  LEFT JOIN usage_trend_agg a USING(event_date)
+),
+activity_by_user AS (
+  SELECT
+    COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown') AS user_key,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 3 DAY), @tz), message_count, 0)) AS core_count_3d,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY), @tz), message_count, 0)) AS core_count_7d,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY), @tz), message_count, 0)) AS core_count_14d
+  FROM daily_14d
+  GROUP BY user_key
+),
+activity_segments AS (
+  SELECT
+    CASE
+      WHEN core_count_3d >= 3 THEN '高アクティブ'
+      WHEN core_count_7d BETWEEN 1 AND 2 THEN '中アクティブ'
+      WHEN core_count_14d >= 1 THEN '低アクティブ'
+      ELSE '休眠ユーザー'
+    END AS label,
+    COUNT(*) AS count
+  FROM activity_by_user
+  WHERE user_key != 'unknown'
+  GROUP BY label
+),
+activity_labels AS (
+  SELECT '高アクティブ' AS label UNION ALL
+  SELECT '中アクティブ' UNION ALL
+  SELECT '低アクティブ' UNION ALL
+  SELECT '休眠ユーザー'
+),
+answer_summary AS (
+  SELECT
+    SUM(answer_count) AS answer_count,
+    SUM(answer_success_count) AS answer_success_count,
+    SAFE_DIVIDE(SUM(answer_success_count), SUM(answer_count)) AS answer_success_rate,
+    SUM(low_coverage_count) AS low_coverage_count,
+    SAFE_DIVIDE(SUM(low_coverage_count), SUM(answer_count)) AS low_coverage_rate,
+    SAFE_DIVIDE(SUM(coverage_score_sum), SUM(coverage_score_count)) AS average_coverage_score,
+    SAFE_DIVIDE(SUM(alignment_score_sum), SUM(alignment_score_count)) AS average_alignment_score,
+    SUM(structured_led_count) AS structured_led_count,
+    SAFE_DIVIDE(SUM(structured_led_count), SUM(answer_count)) AS structured_led_rate,
+    SUM(citation_binding_issue_count) AS citation_binding_issue_count,
+    SAFE_DIVIDE(SUM(citation_binding_issue_count), SUM(answer_count)) AS citation_binding_issue_rate
+  FROM hourly_window
+),
+answer_distribution AS (
+  SELECT metric, label, SUM(count) AS count
+  FROM (
+    SELECT 'answerability' AS metric, item.label AS label, item.count AS count
+    FROM hourly_window, UNNEST(IFNULL(answerability_distribution, ARRAY<STRUCT<label STRING, count INT64>>[])) AS item
+    UNION ALL
+    SELECT 'usability', item.label, item.count
+    FROM hourly_window, UNNEST(IFNULL(usability_distribution, ARRAY<STRUCT<label STRING, count INT64>>[])) AS item
+    UNION ALL
+    SELECT 'deliveryReadiness', item.label, item.count
+    FROM hourly_window, UNNEST(IFNULL(delivery_readiness_distribution, ARRAY<STRUCT<label STRING, count INT64>>[])) AS item
+    UNION ALL
+    SELECT 'evidenceSufficiency', item.label, item.count
+    FROM hourly_window, UNNEST(IFNULL(evidence_sufficiency_distribution, ARRAY<STRUCT<label STRING, count INT64>>[])) AS item
+    UNION ALL
+    SELECT 'verificationVerdict', item.label, item.count
+    FROM hourly_window, UNNEST(IFNULL(verification_verdict_distribution, ARRAY<STRUCT<label STRING, count INT64>>[])) AS item
+  )
+  GROUP BY metric, label
+),
+followup_summary AS (
+  SELECT
+    SUM(followup_recognized_count) AS recognized_count,
+    SUM(followup_success_count) AS success_count,
+    SUM(explicit_correction_count) AS explicit_correction_count,
+    SUM(clarification_required_count) AS clarification_required_count,
+    SUM(followup_offtopic_count) AS followup_offtopic_count
+  FROM hourly_window
+),
+activity_total AS (
+  SELECT SUM(COALESCE(count, 0)) AS total_count FROM activity_segments
+),
+device_total AS (
+  SELECT SUM(request_count) AS total_count FROM device_distribution
+),
+mode_total AS (
+  SELECT SUM(request_count) AS total_count FROM mode_distribution
+)
+SELECT TO_JSON_STRING(STRUCT(
+  STRUCT(
+    (SELECT active_user_count FROM active_users) AS activeUserCount,
+    (SELECT answer_success_rate FROM answer_summary) AS answerSuccessRate,
+    (SELECT low_coverage_rate FROM answer_summary) AS lowCoverageRate,
+    (SELECT error_rate FROM request_summary) AS errorRate,
+    (SELECT p95_latency_ms FROM request_summary) AS p95LatencyMs
+  ) AS kpis,
+  (
+    SELECT ARRAY_AGG(STRUCT(
+      date_label AS date,
+      active_user_count AS activeUserCount,
+      message_count AS messageCount
+    ) ORDER BY date_label)
+    FROM usage_trend
+  ) AS usageTrend,
+  STRUCT(
+    (SELECT COALESCE(total_count, 0) FROM activity_total) AS totalUserCount,
+    (
+      SELECT ARRAY_AGG(STRUCT(
+        l.label AS label,
+        COALESCE(s.count, 0) AS count,
+        SAFE_DIVIDE(COALESCE(s.count, 0), NULLIF((SELECT total_count FROM activity_total), 0)) AS rate
+      ) ORDER BY CASE l.label
+        WHEN '高アクティブ' THEN 1
+        WHEN '中アクティブ' THEN 2
+        WHEN '低アクティブ' THEN 3
+        ELSE 4
+      END)
+      FROM activity_labels l
+      LEFT JOIN activity_segments s USING(label)
+    ) AS segments
+  ) AS activityDistribution,
+  STRUCT(
+    (
+      SELECT ARRAY_AGG(STRUCT(hour_label AS hour, request_count AS requestCount) ORDER BY hour_label)
+      FROM request_by_hour
+    ) AS requestByHour,
+    (
+      SELECT ARRAY_AGG(STRUCT(
+        CASE d.device_class
+          WHEN 'desktop' THEN 'PC'
+          WHEN 'mobile' THEN 'モバイル'
+          ELSE '不明'
+        END AS label,
+        d.device_class AS value,
+        COALESCE(dd.request_count, 0) AS count,
+        SAFE_DIVIDE(COALESCE(dd.request_count, 0), NULLIF((SELECT total_count FROM device_total), 0)) AS rate
+      ) ORDER BY COALESCE(dd.request_count, 0) DESC, d.device_class)
+      FROM device_labels d
+      LEFT JOIN device_distribution dd USING(device_class)
+    ) AS deviceDistribution,
+    (
+      SELECT ARRAY_AGG(STRUCT(
+        CASE m.mode
+          WHEN 'internal' THEN '社内モード'
+          WHEN 'websearch' THEN 'Web検索モード'
+          ELSE 'その他'
+        END AS label,
+        m.mode AS value,
+        COALESCE(md.request_count, 0) AS count,
+        SAFE_DIVIDE(COALESCE(md.request_count, 0), NULLIF((SELECT total_count FROM mode_total), 0)) AS rate
+      ) ORDER BY COALESCE(md.request_count, 0) DESC, m.mode)
+      FROM mode_labels m
+      LEFT JOIN mode_distribution md USING(mode)
+    ) AS modeDistribution
+  ) AS environmentMode,
+  STRUCT(
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'answerability'
+    ) AS answerability,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'usability'
+    ) AS usability,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'deliveryReadiness'
+    ) AS deliveryReadiness,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'evidenceSufficiency'
+    ) AS evidenceSufficiency,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'verificationVerdict'
+    ) AS verificationVerdict
+  ) AS answerQuality,
+  STRUCT(
+    (SELECT recognized_count FROM followup_summary) AS recognizedCount,
+    (SELECT success_count FROM followup_summary) AS successCount,
+    SAFE_DIVIDE((SELECT success_count FROM followup_summary), NULLIF((SELECT recognized_count FROM followup_summary), 0)) AS successRate,
+    (SELECT explicit_correction_count FROM followup_summary) AS explicitCorrectionCount,
+    (SELECT clarification_required_count FROM followup_summary) AS clarificationRequiredCount,
+    (SELECT followup_offtopic_count FROM followup_summary) AS followupOfftopicCount
+  ) AS followup
+)) AS payload_json
+"""
+        rows = self._run_query(sql, params)
+        if not rows:
+            return {}
+        payload = rows[0].get("payload_json")
+        if not payload:
+            return {}
+        return json.loads(str(payload))
+
     def get_system_dashboard_metrics(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
+        snapshot = self._get_system_dashboard_metrics_from_snapshot(window=window)
+        if snapshot:
+            return snapshot
+
+        if (
+            self._table_exists("monitor_system_hourly")
+            and self._table_exists("monitor_user_daily")
+            and self._table_exists("monitor_answer_events")
+        ):
+            return self._get_system_dashboard_metrics_from_tables(window=window)
+
         params = self._window_params(window) + [
             bigquery.ScalarQueryParameter("coverage_threshold", "FLOAT64", 0.60),
         ]
@@ -1057,6 +1396,14 @@ ORDER BY count DESC
         q: str = "",
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
+        if self._table_exists("monitor_user_daily"):
+            return self._get_request_user_monitoring_rows_from_table(
+                window=window,
+                activity=activity,
+                q=q,
+                limit=limit,
+            )
+
         lookup = str(q or "").strip().lower()
         activity_filter = str(activity or "").strip().lower()
         size = max(1, min(int(limit or 100), 1000))
@@ -1152,6 +1499,617 @@ LIMIT @limit
             }
             for row in rows
         ]
+
+    def _get_request_user_monitoring_rows_from_table(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        activity: str = "",
+        q: str = "",
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        lookup = str(q or "").strip().lower()
+        activity_filter = str(activity or "").strip().lower()
+        size = max(1, min(int(limit or 100), 1000))
+        sql = f"""
+WITH events AS (
+  SELECT *
+  FROM {self._table("monitor_user_daily")}
+  WHERE date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY), @tz)
+    AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
+    AND (
+      @lookup = ''
+      OR LOWER(COALESCE(user_id, '')) LIKE CONCAT('%', @lookup, '%')
+      OR LOWER(COALESCE(user_email, '')) LIKE CONCAT('%', @lookup, '%')
+      OR LOWER(COALESCE(user_id_hash, '')) LIKE CONCAT('%', @lookup, '%')
+    )
+),
+by_user AS (
+  SELECT
+    user_id,
+    ANY_VALUE(user_email HAVING MAX last_active_at) AS user_email,
+    ANY_VALUE(user_id_hash HAVING MAX last_active_at) AS user_id_hash,
+    MAX(last_active_at) AS last_active_at,
+    COUNT(DISTINCT IF(message_count > 0 AND date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY), @tz), date_jst, NULL)) AS active_days_7,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY), @tz), message_count, 0)) AS message_count_7d,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 3 DAY), @tz), message_count, 0)) AS message_count_3d,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY), @tz), message_count, 0)) AS message_count_14d,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY), @tz), answer_count, 0)) AS answer_count_7d,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY), @tz), low_coverage_count, 0)) AS low_coverage_count_7d,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY), @tz), bad_feedback_count, 0)) AS bad_feedback_count_7d,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY), @tz), feedback_count, 0)) AS feedback_count_7d
+  FROM events
+  GROUP BY user_id
+),
+classified AS (
+  SELECT
+    *,
+    CASE
+      WHEN message_count_3d >= 3 THEN '高アクティブ'
+      WHEN message_count_7d BETWEEN 1 AND 2 THEN '中アクティブ'
+      WHEN message_count_14d >= 1 THEN '低アクティブ'
+      ELSE '休眠ユーザー'
+    END AS activity_level,
+    CASE
+      WHEN message_count_3d >= 3 THEN 'high'
+      WHEN message_count_7d BETWEEN 1 AND 2 THEN 'middle'
+      WHEN message_count_14d >= 1 THEN 'low'
+      ELSE 'dormant'
+    END AS activity_key
+  FROM by_user
+)
+SELECT
+  user_id,
+  user_email,
+  user_id_hash,
+  FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', last_active_at, @tz) AS last_active_at_jst,
+  active_days_7,
+  message_count_7d,
+  SAFE_DIVIDE(GREATEST(answer_count_7d - low_coverage_count_7d, 0), answer_count_7d) AS coverage_rate,
+  SAFE_DIVIDE(bad_feedback_count_7d, feedback_count_7d) AS bad_feedback_rate,
+  activity_level,
+  activity_key,
+  message_count_3d,
+  message_count_14d
+FROM classified
+WHERE @activity = '' OR activity_key = @activity OR LOWER(activity_level) = @activity
+ORDER BY last_active_at DESC
+LIMIT @limit
+"""
+        params = self._window_params(window) + [
+            bigquery.ScalarQueryParameter("lookup", "STRING", lookup),
+            bigquery.ScalarQueryParameter("activity", "STRING", activity_filter),
+            bigquery.ScalarQueryParameter("limit", "INT64", size),
+        ]
+        rows = self._run_query(sql, params)
+        return [
+            {
+                "userId": str(row.get("user_id") or ""),
+                "userEmail": str(row.get("user_email") or ""),
+                "userIdHash": str(row.get("user_id_hash") or ""),
+                "lastActiveAtJst": str(row.get("last_active_at_jst") or ""),
+                "activeDays7": int(row.get("active_days_7") or 0),
+                "messageCount7d": int(row.get("message_count_7d") or 0),
+                "coverageRate": row.get("coverage_rate"),
+                "badFeedbackRate": row.get("bad_feedback_rate"),
+                "activityLevel": str(row.get("activity_level") or ""),
+                "activityKey": str(row.get("activity_key") or ""),
+                "messageCount3d": int(row.get("message_count_3d") or 0),
+                "messageCount14d": int(row.get("message_count_14d") or 0),
+            }
+            for row in rows
+        ]
+
+    def get_user_detail_summary(self, *, window: MetricsTimeWindow, user_key: str) -> Dict[str, Any]:
+        if self._table_exists("monitor_user_daily") and self._table_exists("monitor_answer_events"):
+            return self._get_user_detail_summary_from_tables(window=window, user_key=user_key)
+
+        lookup = str(user_key or "").strip().lower()
+        if not lookup:
+            return {}
+        params = self._window_params(window) + [
+            bigquery.ScalarQueryParameter("user_key", "STRING", lookup),
+            bigquery.ScalarQueryParameter("coverage_threshold", "FLOAT64", 0.60),
+        ]
+        sql = f"""
+WITH dates AS (
+  SELECT event_date
+  FROM UNNEST(
+    GENERATE_DATE_ARRAY(
+      DATE(@start_ts, @tz),
+      DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz),
+      INTERVAL 1 DAY
+    )
+  ) AS event_date
+),
+request_events AS (
+  SELECT
+    event_ts,
+    event_date,
+    COALESCE(NULLIF(user_id, ''), 'unknown') AS user_id,
+    LOWER(COALESCE(NULLIF(user_email, ''), '')) AS user_email,
+    COALESCE(NULLIF(user_id_hash, ''), '') AS user_id_hash,
+    mode,
+    is_core
+  FROM {self._view("v_request_user_metric_events")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+    AND (
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(user_email, ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+    )
+),
+request_events_14d AS (
+  SELECT
+    event_ts,
+    COALESCE(NULLIF(user_id, ''), 'unknown') AS user_id,
+    LOWER(COALESCE(NULLIF(user_email, ''), '')) AS user_email,
+    COALESCE(NULLIF(user_id_hash, ''), '') AS user_id_hash,
+    is_core
+  FROM {self._view("v_request_user_metric_events")}
+  WHERE event_ts >= TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY)
+    AND event_ts < @end_ts
+    AND (
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(user_email, ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+    )
+),
+request_summary AS (
+  SELECT
+    COUNTIF(is_core) AS message_count,
+    MAX(event_ts) AS last_active_at
+  FROM request_events
+),
+activity AS (
+  SELECT
+    COUNTIF(is_core AND event_ts >= TIMESTAMP_SUB(@end_ts, INTERVAL 3 DAY)) AS message_count_3d,
+    COUNTIF(is_core AND event_ts >= TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY)) AS message_count_7d,
+    COUNTIF(is_core AND event_ts >= TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY)) AS message_count_14d,
+    COUNT(DISTINCT IF(is_core AND event_ts >= TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY), DATE(event_ts, @tz), NULL)) AS active_days_7,
+    MAX(event_ts) AS last_active_at_14d
+  FROM request_events_14d
+),
+mode_counts AS (
+  SELECT mode, COUNTIF(is_core) AS count
+  FROM request_events
+  WHERE mode IN ('internal', 'websearch')
+  GROUP BY mode
+),
+mode_labels AS (
+  SELECT 'internal' AS mode UNION ALL
+  SELECT 'websearch'
+),
+mode_total AS (
+  SELECT SUM(count) AS total_count FROM mode_counts
+),
+request_trend AS (
+  SELECT
+    event_date,
+    COUNTIF(is_core) AS message_count
+  FROM request_events
+  GROUP BY event_date
+),
+answer_events AS (
+  SELECT *
+  FROM {self._view("v_ask_audit_events")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+    AND (
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+    )
+),
+coverage_gap_keys AS (
+  SELECT COUNT(*) AS coverage_gap_count
+  FROM {self._view("v_coverage_gap_workitems")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+    AND (
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+    )
+),
+answer_flags AS (
+  SELECT
+    a.*,
+    (
+      error_code IS NULL
+      AND answerability_level NOT IN ('not_answerable', 'clarification_blocked')
+    ) AS answer_success_flag,
+    (
+      COALESCE(citation_count, 0) = 0
+      OR evidence_sufficiency = 'insufficient'
+      OR COALESCE(coverage_score, 1.0) < @coverage_threshold
+    ) AS low_coverage_flag
+  FROM answer_events a
+),
+answer_summary AS (
+  SELECT
+    COUNT(*) AS answer_count,
+    COUNTIF(answer_success_flag) AS answer_success_count,
+    SAFE_DIVIDE(COUNTIF(answer_success_flag), COUNT(*)) AS answer_success_rate,
+    LEAST(COUNT(*), COUNTIF(low_coverage_flag) + (SELECT coverage_gap_count FROM coverage_gap_keys)) AS low_coverage_count,
+    SAFE_DIVIDE(
+      LEAST(COUNT(*), COUNTIF(low_coverage_flag) + (SELECT coverage_gap_count FROM coverage_gap_keys)),
+      COUNT(*)
+    ) AS low_coverage_rate
+  FROM answer_flags
+),
+answer_trend AS (
+  SELECT
+    event_date,
+    SAFE_DIVIDE(COUNTIF(answer_success_flag), COUNT(*)) AS answer_success_rate,
+    SAFE_DIVIDE(COUNTIF(low_coverage_flag), COUNT(*)) AS low_coverage_rate
+  FROM answer_flags
+  GROUP BY event_date
+),
+answer_distribution AS (
+  SELECT 'answerability' AS metric, answerability_level AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'usability' AS metric, usability_level AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'deliveryReadiness' AS metric, delivery_readiness AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'evidenceSufficiency' AS metric, evidence_sufficiency AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'verificationVerdict' AS metric, verification_verdict AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+),
+followup_open AS (
+  SELECT *
+  FROM {self._view("v_followup_open_result_events")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+    AND (
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+    )
+),
+followup_resolution AS (
+  SELECT *
+  FROM {self._view("v_followup_resolution_events")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+    AND (
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+    )
+),
+followup_summary AS (
+  SELECT
+    (SELECT COUNTIF(event = 'recognized') FROM followup_open) AS recognized_count,
+    (SELECT COUNTIF(event = 'success') FROM followup_open) AS success_count,
+    (SELECT COUNTIF(decision_normalized = 'explicit_correction') FROM followup_resolution) AS explicit_correction_count,
+    (SELECT COUNTIF(decision_normalized = 'clarify_before_carry') FROM followup_resolution) AS clarification_required_count,
+    (SELECT COUNTIF(followup_offtopic) FROM followup_resolution) AS followup_offtopic_count
+),
+answer_total AS (
+  SELECT COUNT(*) AS total_count FROM answer_events
+)
+SELECT TO_JSON_STRING(STRUCT(
+  STRUCT(
+    COALESCE((SELECT message_count FROM request_summary), 0) AS messageCount,
+    (SELECT answer_success_rate FROM answer_summary) AS answerSuccessRate,
+    (SELECT low_coverage_rate FROM answer_summary) AS lowCoverageRate,
+    CAST(NULL AS FLOAT64) AS badFeedbackRate,
+    (SELECT recognized_count FROM followup_summary) AS followupCount,
+    (SELECT answer_count FROM answer_summary) AS answerCount,
+    (SELECT answer_success_count FROM answer_summary) AS answerSuccessCount,
+    (SELECT low_coverage_count FROM answer_summary) AS lowCoverageCount,
+    (SELECT active_days_7 FROM activity) AS activeDays7,
+    (SELECT message_count_7d FROM activity) AS messageCount7d,
+    (SELECT message_count_3d FROM activity) AS messageCount3d,
+    (SELECT message_count_14d FROM activity) AS messageCount14d,
+    FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', COALESCE((SELECT last_active_at_14d FROM activity), (SELECT last_active_at FROM request_summary)), @tz) AS lastActiveAtJst
+  ) AS summary,
+  (
+    SELECT ARRAY_AGG(STRUCT(
+      FORMAT_DATE('%Y-%m-%d', d.event_date) AS date,
+      COALESCE(r.message_count, 0) AS messageCount,
+      a.answer_success_rate AS answerSuccessRate,
+      a.low_coverage_rate AS lowCoverageRate
+    ) ORDER BY d.event_date)
+    FROM dates d
+    LEFT JOIN request_trend r USING(event_date)
+    LEFT JOIN answer_trend a USING(event_date)
+  ) AS trend,
+  (
+    SELECT ARRAY_AGG(STRUCT(
+      CASE m.mode
+        WHEN 'internal' THEN '社内モード'
+        WHEN 'websearch' THEN 'Web検索モード'
+        ELSE 'その他'
+      END AS label,
+      m.mode AS value,
+      COALESCE(c.count, 0) AS count,
+      SAFE_DIVIDE(COALESCE(c.count, 0), NULLIF((SELECT total_count FROM mode_total), 0)) AS rate
+    ) ORDER BY m.mode)
+    FROM mode_labels m
+    LEFT JOIN mode_counts c USING(mode)
+  ) AS modeDistribution,
+  STRUCT(
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'answerability'
+    ) AS answerability,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'usability'
+    ) AS usability,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'deliveryReadiness'
+    ) AS deliveryReadiness,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'evidenceSufficiency'
+    ) AS evidenceSufficiency,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'verificationVerdict'
+    ) AS verificationVerdict
+  ) AS answerQualityDistribution,
+  STRUCT(
+    STRUCT(
+      (SELECT recognized_count FROM followup_summary) AS recognizedCount,
+      (SELECT success_count FROM followup_summary) AS successCount,
+      SAFE_DIVIDE((SELECT success_count FROM followup_summary), NULLIF((SELECT recognized_count FROM followup_summary), 0)) AS successRate,
+      (SELECT explicit_correction_count FROM followup_summary) AS explicitCorrectionCount,
+      (SELECT clarification_required_count FROM followup_summary) AS clarificationRequiredCount,
+      (SELECT followup_offtopic_count FROM followup_summary) AS followupOfftopicCount
+    ) AS summary,
+    [
+      STRUCT('追問認識' AS label, (SELECT recognized_count FROM followup_summary) AS count),
+      STRUCT('追問成功' AS label, (SELECT success_count FROM followup_summary) AS count),
+      STRUCT('明示的な訂正' AS label, (SELECT explicit_correction_count FROM followup_summary) AS count),
+      STRUCT('確認が必要な追問' AS label, (SELECT clarification_required_count FROM followup_summary) AS count)
+    ] AS funnel
+  ) AS followup
+)) AS payload_json
+"""
+        rows = self._run_query(sql, params)
+        if not rows:
+            return {}
+        raw = rows[0].get("payload_json")
+        if not raw:
+            return {}
+        payload = json.loads(str(raw))
+        summary = payload.get("summary") or {}
+        message_count_3d = int(summary.get("messageCount3d") or 0)
+        message_count_7d = int(summary.get("messageCount7d") or 0)
+        message_count_14d = int(summary.get("messageCount14d") or 0)
+        if message_count_3d >= 3:
+            activity_level = "高アクティブ"
+            activity_key = "high"
+        elif 1 <= message_count_7d <= 2:
+            activity_level = "中アクティブ"
+            activity_key = "middle"
+        elif message_count_14d >= 1:
+            activity_level = "低アクティブ"
+            activity_key = "low"
+        else:
+            activity_level = "休眠ユーザー"
+            activity_key = "dormant"
+        summary["activityLevel"] = activity_level
+        summary["activityKey"] = activity_key
+        payload["summary"] = summary
+        return payload
+
+    def _get_user_detail_summary_from_tables(self, *, window: MetricsTimeWindow, user_key: str) -> Dict[str, Any]:
+        lookup = str(user_key or "").strip().lower()
+        if not lookup:
+            return {}
+        params = self._window_params(window) + [
+            bigquery.ScalarQueryParameter("user_key", "STRING", lookup),
+        ]
+        sql = f"""
+WITH dates AS (
+  SELECT event_date AS date_jst
+  FROM UNNEST(
+    GENERATE_DATE_ARRAY(
+      DATE(@start_ts, @tz),
+      DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz),
+      INTERVAL 1 DAY
+    )
+  ) AS event_date
+),
+daily_window AS (
+  SELECT *
+  FROM {self._table("monitor_user_daily")}
+  WHERE date_jst >= DATE(@start_ts, @tz)
+    AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
+    AND (
+      LOWER(COALESCE(user_id, '')) = @user_key
+      OR LOWER(COALESCE(user_email, '')) = @user_key
+      OR LOWER(COALESCE(user_id_hash, '')) = @user_key
+    )
+),
+daily_14d AS (
+  SELECT *
+  FROM {self._table("monitor_user_daily")}
+  WHERE date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY), @tz)
+    AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
+    AND (
+      LOWER(COALESCE(user_id, '')) = @user_key
+      OR LOWER(COALESCE(user_email, '')) = @user_key
+      OR LOWER(COALESCE(user_id_hash, '')) = @user_key
+    )
+),
+summary AS (
+  SELECT
+    SUM(message_count) AS message_count,
+    SUM(answer_count) AS answer_count,
+    SUM(answer_success_count) AS answer_success_count,
+    SUM(low_coverage_count) AS low_coverage_count,
+    SUM(bad_feedback_count) AS bad_feedback_count,
+    SUM(feedback_count) AS feedback_count,
+    SUM(followup_recognized_count) AS followup_count,
+    SUM(internal_message_count) AS internal_message_count,
+    SUM(websearch_message_count) AS websearch_message_count,
+    SUM(followup_recognized_count) AS followup_recognized_count,
+    SUM(followup_success_count) AS followup_success_count,
+    SUM(explicit_correction_count) AS explicit_correction_count,
+    SUM(clarification_required_count) AS clarification_required_count,
+    SUM(followup_offtopic_count) AS followup_offtopic_count,
+    MAX(last_active_at) AS last_active_at
+  FROM daily_window
+),
+activity AS (
+  SELECT
+    COUNT(DISTINCT IF(message_count > 0 AND date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY), @tz), date_jst, NULL)) AS active_days_7,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY), @tz), message_count, 0)) AS message_count_7d,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 3 DAY), @tz), message_count, 0)) AS message_count_3d,
+    SUM(IF(date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY), @tz), message_count, 0)) AS message_count_14d,
+    MAX(last_active_at) AS last_active_at_14d
+  FROM daily_14d
+),
+trend AS (
+  SELECT
+    d.date_jst,
+    COALESCE(SUM(w.message_count), 0) AS message_count,
+    SAFE_DIVIDE(SUM(w.answer_success_count), SUM(w.answer_count)) AS answer_success_rate,
+    SAFE_DIVIDE(SUM(w.low_coverage_count), SUM(w.answer_count)) AS low_coverage_rate
+  FROM dates d
+  LEFT JOIN daily_window w USING(date_jst)
+  GROUP BY d.date_jst
+),
+mode_rows AS (
+  SELECT 'internal' AS mode, (SELECT internal_message_count FROM summary) AS count UNION ALL
+  SELECT 'websearch', (SELECT websearch_message_count FROM summary)
+),
+mode_total AS (
+  SELECT SUM(COALESCE(count, 0)) AS total_count FROM mode_rows
+),
+answer_events AS (
+  SELECT *
+  FROM {self._table("monitor_answer_events")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+    AND (
+      LOWER(COALESCE(user_id, '')) = @user_key
+      OR LOWER(COALESCE(user_id_hash, '')) = @user_key
+    )
+),
+answer_distribution AS (
+  SELECT 'answerability' AS metric, answerability_level AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'usability' AS metric, usability_level AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'deliveryReadiness' AS metric, delivery_readiness AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'evidenceSufficiency' AS metric, evidence_sufficiency AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'verificationVerdict' AS metric, verification_verdict AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+),
+answer_total AS (
+  SELECT COUNT(*) AS total_count FROM answer_events
+)
+SELECT TO_JSON_STRING(STRUCT(
+  STRUCT(
+    COALESCE((SELECT message_count FROM summary), 0) AS messageCount,
+    SAFE_DIVIDE((SELECT answer_success_count FROM summary), (SELECT answer_count FROM summary)) AS answerSuccessRate,
+    SAFE_DIVIDE((SELECT low_coverage_count FROM summary), (SELECT answer_count FROM summary)) AS lowCoverageRate,
+    SAFE_DIVIDE((SELECT bad_feedback_count FROM summary), (SELECT feedback_count FROM summary)) AS badFeedbackRate,
+    COALESCE((SELECT followup_count FROM summary), 0) AS followupCount,
+    COALESCE((SELECT answer_count FROM summary), 0) AS answerCount,
+    COALESCE((SELECT answer_success_count FROM summary), 0) AS answerSuccessCount,
+    COALESCE((SELECT low_coverage_count FROM summary), 0) AS lowCoverageCount,
+    COALESCE((SELECT active_days_7 FROM activity), 0) AS activeDays7,
+    COALESCE((SELECT message_count_7d FROM activity), 0) AS messageCount7d,
+    COALESCE((SELECT message_count_3d FROM activity), 0) AS messageCount3d,
+    COALESCE((SELECT message_count_14d FROM activity), 0) AS messageCount14d,
+    FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', COALESCE((SELECT last_active_at_14d FROM activity), (SELECT last_active_at FROM summary)), @tz) AS lastActiveAtJst
+  ) AS summary,
+  (
+    SELECT ARRAY_AGG(STRUCT(
+      FORMAT_DATE('%Y-%m-%d', date_jst) AS date,
+      message_count AS messageCount,
+      answer_success_rate AS answerSuccessRate,
+      low_coverage_rate AS lowCoverageRate
+    ) ORDER BY date_jst)
+    FROM trend
+  ) AS trend,
+  (
+    SELECT ARRAY_AGG(STRUCT(
+      CASE mode
+        WHEN 'internal' THEN '社内モード'
+        WHEN 'websearch' THEN 'Web検索モード'
+        ELSE 'その他'
+      END AS label,
+      mode AS value,
+      COALESCE(count, 0) AS count,
+      SAFE_DIVIDE(COALESCE(count, 0), NULLIF((SELECT total_count FROM mode_total), 0)) AS rate
+    ) ORDER BY mode)
+    FROM mode_rows
+  ) AS modeDistribution,
+  STRUCT(
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'answerability'
+    ) AS answerability,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'usability'
+    ) AS usability,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'deliveryReadiness'
+    ) AS deliveryReadiness,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'evidenceSufficiency'
+    ) AS evidenceSufficiency,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'verificationVerdict'
+    ) AS verificationVerdict
+  ) AS answerQualityDistribution,
+  STRUCT(
+    STRUCT(
+      COALESCE((SELECT followup_recognized_count FROM summary), 0) AS recognizedCount,
+      COALESCE((SELECT followup_success_count FROM summary), 0) AS successCount,
+      SAFE_DIVIDE((SELECT followup_success_count FROM summary), (SELECT followup_recognized_count FROM summary)) AS successRate,
+      COALESCE((SELECT explicit_correction_count FROM summary), 0) AS explicitCorrectionCount,
+      COALESCE((SELECT clarification_required_count FROM summary), 0) AS clarificationRequiredCount,
+      COALESCE((SELECT followup_offtopic_count FROM summary), 0) AS followupOfftopicCount
+    ) AS summary,
+    [
+      STRUCT('追問認識' AS label, COALESCE((SELECT followup_recognized_count FROM summary), 0) AS count),
+      STRUCT('追問成功' AS label, COALESCE((SELECT followup_success_count FROM summary), 0) AS count),
+      STRUCT('明示的な訂正' AS label, COALESCE((SELECT explicit_correction_count FROM summary), 0) AS count),
+      STRUCT('確認が必要な追問' AS label, COALESCE((SELECT clarification_required_count FROM summary), 0) AS count)
+    ] AS funnel
+  ) AS followup
+)) AS payload_json
+"""
+        rows = self._run_query(sql, params)
+        if not rows:
+            return {}
+        raw = rows[0].get("payload_json")
+        if not raw:
+            return {}
+        payload = json.loads(str(raw))
+        summary = payload.get("summary") or {}
+        message_count_3d = int(summary.get("messageCount3d") or 0)
+        message_count_7d = int(summary.get("messageCount7d") or 0)
+        message_count_14d = int(summary.get("messageCount14d") or 0)
+        if message_count_3d >= 3:
+            activity_level = "高アクティブ"
+            activity_key = "high"
+        elif 1 <= message_count_7d <= 2:
+            activity_level = "中アクティブ"
+            activity_key = "middle"
+        elif message_count_14d >= 1:
+            activity_level = "低アクティブ"
+            activity_key = "low"
+        else:
+            activity_level = "休眠ユーザー"
+            activity_key = "dormant"
+        summary["activityLevel"] = activity_level
+        summary["activityKey"] = activity_key
+        payload["summary"] = summary
+        return payload
 
     def get_request_user_timeseries(self, *, window: MetricsTimeWindow, user_key: str) -> List[Dict[str, Any]]:
         lookup = str(user_key or "").strip()
@@ -1330,6 +2288,9 @@ ORDER BY h.hour ASC
         window: MetricsTimeWindow,
         user_key: str = "",
     ) -> Dict[str, Any]:
+        if self._table_exists("monitor_answer_events"):
+            return self._get_answer_quality_metrics_from_table(window=window, user_key=user_key)
+
         lookup = str(user_key or "").strip().lower()
         params = self._window_params(window)[:3] + [
             bigquery.ScalarQueryParameter("user_key", "STRING", lookup),
@@ -1446,6 +2407,130 @@ events AS (
 )
 SELECT gap_kind, COUNT(*) AS count
 FROM events
+GROUP BY gap_kind
+ORDER BY count DESC
+LIMIT 30
+"""
+        summary_rows = self._run_query(summary_sql, params)
+        distribution_rows = self._run_query(distribution_sql, params)
+        gap_rows = self._run_query(gap_sql, params)
+        summary = summary_rows[0] if summary_rows else {}
+        answer_count = int(summary.get("answer_count") or 0)
+
+        distributions: Dict[str, List[Dict[str, Any]]] = {
+            "answerability": [],
+            "usability": [],
+            "deliveryReadiness": [],
+            "evidenceSufficiency": [],
+            "verificationVerdict": [],
+        }
+        risk_reasons: List[Dict[str, Any]] = []
+        for row in distribution_rows:
+            metric = str(row.get("metric") or "")
+            label = str(row.get("label") or "unknown")
+            count = int(row.get("count") or 0)
+            item = {
+                "label": label,
+                "count": count,
+                "rate": (count / answer_count) if answer_count > 0 else None,
+            }
+            if metric == "riskReasons":
+                if label != "unknown":
+                    risk_reasons.append(item)
+            elif metric in distributions:
+                distributions[metric].append(item)
+
+        coverage_gap_count = sum(int(row.get("count") or 0) for row in gap_rows)
+        return {
+            "summary": {
+                "answerCount": answer_count,
+                "answerSuccessRate": summary.get("answer_success_rate"),
+                "answerSuccessCount": int(summary.get("answer_success_count") or 0),
+                "lowCoverageRate": summary.get("low_coverage_rate"),
+                "lowCoverageCount": int(summary.get("low_coverage_count") or 0),
+                "coverageGapWorkitemCount": coverage_gap_count,
+                "averageCoverageScore": summary.get("average_coverage_score"),
+                "averageAlignmentScore": summary.get("average_alignment_score"),
+                "structuredLedCount": int(summary.get("structured_led_count") or 0),
+                "structuredLedRate": summary.get("structured_led_rate"),
+                "citationBindingIssueCount": int(summary.get("citation_binding_issue_count") or 0),
+                "citationBindingIssueRate": summary.get("citation_binding_issue_rate"),
+            },
+            "distributions": distributions,
+            "riskReasons": risk_reasons,
+            "coverageGapKinds": [
+                {
+                    "label": str(row.get("gap_kind") or "unknown"),
+                    "count": int(row.get("count") or 0),
+                    "rate": (int(row.get("count") or 0) / coverage_gap_count) if coverage_gap_count > 0 else None,
+                }
+                for row in gap_rows
+            ],
+        }
+
+    def _get_answer_quality_metrics_from_table(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        user_key: str = "",
+    ) -> Dict[str, Any]:
+        lookup = str(user_key or "").strip().lower()
+        params = self._window_params(window)[:3] + [
+            bigquery.ScalarQueryParameter("user_key", "STRING", lookup),
+        ]
+        base_cte = f"""
+WITH events AS (
+  SELECT *
+  FROM {self._table("monitor_answer_events")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+    AND (
+      @user_key = ''
+      OR LOWER(COALESCE(user_id, '')) = @user_key
+      OR LOWER(COALESCE(user_id_hash, '')) = @user_key
+    )
+)
+"""
+        summary_sql = f"""
+{base_cte}
+SELECT
+  COUNT(*) AS answer_count,
+  COUNTIF(answer_success_flag) AS answer_success_count,
+  SAFE_DIVIDE(COUNTIF(answer_success_flag), COUNT(*)) AS answer_success_rate,
+  COUNTIF(low_coverage_flag) AS low_coverage_count,
+  SAFE_DIVIDE(COUNTIF(low_coverage_flag), COUNT(*)) AS low_coverage_rate,
+  AVG(coverage_score) AS average_coverage_score,
+  AVG(alignment_score) AS average_alignment_score,
+  COUNTIF(structured_led) AS structured_led_count,
+  SAFE_DIVIDE(COUNTIF(structured_led), COUNT(*)) AS structured_led_rate,
+  COUNTIF(claim_alignment_fallback OR citation_mapping_source = 'legacy') AS citation_binding_issue_count,
+  SAFE_DIVIDE(COUNTIF(claim_alignment_fallback OR citation_mapping_source = 'legacy'), COUNT(*)) AS citation_binding_issue_rate
+FROM events
+"""
+        distribution_sql = f"""
+{base_cte}
+SELECT 'answerability' AS metric, answerability_level AS label, COUNT(*) AS count FROM events GROUP BY label
+UNION ALL
+SELECT 'usability' AS metric, usability_level AS label, COUNT(*) AS count FROM events GROUP BY label
+UNION ALL
+SELECT 'deliveryReadiness' AS metric, delivery_readiness AS label, COUNT(*) AS count FROM events GROUP BY label
+UNION ALL
+SELECT 'evidenceSufficiency' AS metric, evidence_sufficiency AS label, COUNT(*) AS count FROM events GROUP BY label
+UNION ALL
+SELECT 'verificationVerdict' AS metric, verification_verdict AS label, COUNT(*) AS count FROM events GROUP BY label
+UNION ALL
+SELECT 'riskReasons' AS metric, primary_reason_code AS label, COUNT(*) AS count FROM events GROUP BY label
+"""
+        gap_sql = f"""
+SELECT gap_kind, COUNT(*) AS count
+FROM {self._view("v_coverage_gap_workitems")}
+WHERE event_ts >= @start_ts
+  AND event_ts < @end_ts
+  AND (
+    @user_key = ''
+    OR LOWER(COALESCE(user_id, '')) = @user_key
+    OR LOWER(COALESCE(user_id_hash, '')) = @user_key
+  )
 GROUP BY gap_kind
 ORDER BY count DESC
 LIMIT 30

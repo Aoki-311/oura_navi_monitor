@@ -135,6 +135,28 @@ def _content_preview(value: Any, *, max_len: int = 180) -> str:
     return text[: max_len - 1].rstrip() + "…"
 
 
+def _compact_followup_runtime_summary(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    facet_coverage = value.get("facetCoverage")
+    compact: Dict[str, Any] = {
+        "activeAnchorTurnId": _as_text(value.get("activeAnchorTurnId")),
+        "nextTurnSeq": value.get("nextTurnSeq"),
+        "updatedAt": _as_text(value.get("updatedAt")),
+        "conversationId": _as_text(value.get("conversationId")),
+    }
+    if isinstance(facet_coverage, dict):
+        compact["facetCoverage"] = {
+            "coveredCount": len(facet_coverage.get("covered") or []),
+            "uncoveredCount": len(facet_coverage.get("uncovered") or []),
+            "weakCount": len(facet_coverage.get("weak") or []),
+        }
+    compact["hasEntityLock"] = bool(value.get("entityLock"))
+    compact["hasWorkingMemory"] = bool(value.get("workingMemory"))
+    compact["truncated"] = True
+    return {key: val for key, val in compact.items() if val not in ("", None)}
+
+
 def _activity_level(*, message_count_3d: int, message_count_7d: int, message_count_14d: int) -> str:
     if message_count_3d >= 3:
         return "高アクティブ"
@@ -626,6 +648,84 @@ class FirestoreHistoryService:
             "answerQualityDistribution": {},
             "followup": {},
             "conversations": conversations,
+        }
+
+    def get_user_profile(self, *, user_id: str) -> Dict[str, Any] | None:
+        user = _as_text(user_id)
+        if not user:
+            return None
+        doc = self._root().document(user).get()
+        if not doc.exists:
+            return None
+        payload = doc.to_dict() or {}
+        created_at = _as_text(payload.get("createdAt") or payload.get("created_at"))
+        updated_at = _as_text(payload.get("updatedAt") or payload.get("updated_at"))
+        return {
+            "userId": user,
+            "userEmail": _as_text(payload.get("userEmail") or payload.get("email")),
+            "createdAt": created_at,
+            "createdAtJst": self._to_local_text(created_at),
+            "updatedAt": updated_at,
+            "updatedAtJst": self._to_local_text(updated_at),
+        }
+
+    def list_user_conversation_summaries(
+        self,
+        *,
+        user_id: str,
+        include_hidden: bool = False,
+        limit: int = 50,
+        cursor: str = "",
+    ) -> Dict[str, Any]:
+        user = _as_text(user_id)
+        if not user:
+            return {"items": [], "nextCursor": ""}
+        size = max(1, min(int(limit or 50), 200))
+        query = (
+            self._root()
+            .document(user)
+            .collection("conversations")
+            .order_by("updatedAt", direction=firestore.Query.DESCENDING)
+        )
+        cursor_value = _as_text(cursor)
+        if cursor_value:
+            query = query.start_after({"updatedAt": cursor_value})
+        query = query.limit(size + 1)
+
+        items: List[Dict[str, Any]] = []
+        next_cursor = ""
+        for doc in query.stream():
+            payload = doc.to_dict() or {}
+            visibility = _as_text(payload.get("visibility") or "active").lower()
+            if visibility == "hidden" and not include_hidden:
+                continue
+            updated_at = _as_text(payload.get("updatedAt"))
+            created_at = _as_text(payload.get("createdAt"))
+            mode = _as_text(payload.get("mode"))
+            item = {
+                "id": doc.id,
+                "conversationId": doc.id,
+                "title": _as_text(payload.get("title")),
+                "mode": mode,
+                "modeLabel": _label_mode(mode),
+                "visibility": visibility,
+                "createdAt": created_at,
+                "createdAtJst": self._to_local_text(created_at),
+                "updatedAt": updated_at,
+                "updatedAtJst": self._to_local_text(updated_at),
+                "messageCount": payload.get("messageCount"),
+                "lastMessagePreview": _as_text(payload.get("lastMessagePreview")),
+                "integrityState": _as_text(payload.get("integrityState")),
+                "isFavorite": bool(payload.get("isFavorite")),
+                "followupRuntimeSummary": _compact_followup_runtime_summary(payload.get("followupRuntimeSummary")),
+            }
+            if len(items) >= size:
+                next_cursor = updated_at
+                break
+            items.append(item)
+        return {
+            "items": items,
+            "nextCursor": next_cursor,
         }
 
     def search_messages(

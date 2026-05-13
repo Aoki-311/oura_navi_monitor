@@ -12,6 +12,7 @@ RETENTION_DAYS="${RETENTION_DAYS:-180}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SQL_TEMPLATE="${ROOT_DIR}/sql/create_views.sql"
+AGGREGATE_SQL_TEMPLATE="${ROOT_DIR}/sql/create_aggregate_tables.sql"
 
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found"; exit 1; }
 command -v bq >/dev/null 2>&1 || { echo "bq not found"; exit 1; }
@@ -54,13 +55,22 @@ else
   echo "Dataset-level grant applied."
 fi
 
-echo "[6/7] Create helper BigQuery views"
+echo "[6/7] Create helper BigQuery views and aggregate tables"
 TMP_SQL="$(mktemp)"
 sed \
   -e "s/__PROJECT_ID__/${PROJECT_ID}/g" \
   -e "s/__DATASET_ID__/${BQ_DATASET}/g" \
   -e "s/__SERVICE_NAME__/${SOURCE_SERVICE}/g" \
   "${SQL_TEMPLATE}" > "${TMP_SQL}"
+bq --location="${BQ_LOCATION}" query --use_legacy_sql=false < "${TMP_SQL}" >/dev/null
+rm -f "${TMP_SQL}"
+
+TMP_SQL="$(mktemp)"
+sed \
+  -e "s/__PROJECT_ID__/${PROJECT_ID}/g" \
+  -e "s/__DATASET_ID__/${BQ_DATASET}/g" \
+  -e "s/__SERVICE_NAME__/${SOURCE_SERVICE}/g" \
+  "${AGGREGATE_SQL_TEMPLATE}" > "${TMP_SQL}"
 bq --location="${BQ_LOCATION}" query --use_legacy_sql=false < "${TMP_SQL}" >/dev/null
 rm -f "${TMP_SQL}"
 
@@ -83,3 +93,4 @@ create_or_update_metric "lcs_rag_app_restore_failed" "resource.type=\"cloud_run_
 
 echo "Bootstrap complete."
 echo "Next: run scripts/setup_alerts.sh to create notification channels and conservative alert policies."
+echo "Optional: run scripts/setup_aggregate_refresh.sh to refresh aggregate tables on a schedule."
