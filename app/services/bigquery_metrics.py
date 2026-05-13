@@ -302,7 +302,9 @@ answer_summary AS (
     SUM(structured_led_count) AS structured_led_count,
     SAFE_DIVIDE(SUM(structured_led_count), SUM(answer_count)) AS structured_led_rate,
     SUM(citation_binding_issue_count) AS citation_binding_issue_count,
-    SAFE_DIVIDE(SUM(citation_binding_issue_count), SUM(answer_count)) AS citation_binding_issue_rate
+    SAFE_DIVIDE(SUM(citation_binding_issue_count), SUM(answer_count)) AS citation_binding_issue_rate,
+    SUM(answer_metric_official_count) AS answer_metric_official_count,
+    SUM(answer_metric_proxy_count) AS answer_metric_proxy_count
   FROM hourly_window
 ),
 answer_distribution AS (
@@ -351,6 +353,18 @@ SELECT TO_JSON_STRING(STRUCT(
     (SELECT error_rate FROM request_summary) AS errorRate,
     (SELECT p95_latency_ms FROM request_summary) AS p95LatencyMs
   ) AS kpis,
+  STRUCT(
+    (
+      SELECT CASE
+        WHEN COALESCE(answer_count, 0) = 0 THEN 'unknown'
+        WHEN COALESCE(answer_metric_official_count, 0) > 0
+         AND COALESCE(answer_metric_proxy_count, 0) > 0 THEN 'mixed'
+        WHEN COALESCE(answer_metric_official_count, 0) > 0 THEN 'official'
+        ELSE 'proxy'
+      END
+      FROM answer_summary
+    ) AS answerSuccessRate
+  ) AS metricStatus,
   (
     SELECT ARRAY_AGG(STRUCT(
       date_label AS date,

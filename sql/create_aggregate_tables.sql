@@ -351,6 +351,7 @@ answer_hour_base AS (
     structured_led,
     claim_alignment_fallback,
     citation_mapping_source,
+    COALESCE(NULLIF(answer_success_metric_status, ''), 'proxy') AS answer_success_metric_status,
     COALESCE(NULLIF(answerability_level, ''), 'unknown') AS answerability_level,
     COALESCE(NULLIF(usability_level, ''), 'unknown') AS usability_level,
     COALESCE(NULLIF(delivery_readiness, ''), 'unknown') AS delivery_readiness,
@@ -369,7 +370,9 @@ answer_hourly AS (
     SUM(alignment_score) AS alignment_score_sum,
     COUNTIF(alignment_score IS NOT NULL) AS alignment_score_count,
     COUNTIF(structured_led) AS structured_led_count,
-    COUNTIF(claim_alignment_fallback OR citation_mapping_source = 'legacy') AS citation_binding_issue_count
+    COUNTIF(claim_alignment_fallback OR citation_mapping_source = 'legacy') AS citation_binding_issue_count,
+    COUNTIF(answer_success_metric_status = 'official') AS answer_metric_official_count,
+    COUNTIF(answer_success_metric_status = 'proxy') AS answer_metric_proxy_count
   FROM answer_hour_base
   GROUP BY bucket_ts
 ),
@@ -461,6 +464,8 @@ SELECT
   COALESCE(a.alignment_score_count, 0) AS alignment_score_count,
   COALESCE(a.structured_led_count, 0) AS structured_led_count,
   COALESCE(a.citation_binding_issue_count, 0) AS citation_binding_issue_count,
+  COALESCE(a.answer_metric_official_count, 0) AS answer_metric_official_count,
+  COALESCE(a.answer_metric_proxy_count, 0) AS answer_metric_proxy_count,
   ad.answerability_distribution,
   ud.usability_distribution,
   drd.delivery_readiness_distribution,
@@ -673,7 +678,9 @@ answer_summary AS (
     SUM(structured_led_count) AS structured_led_count,
     SAFE_DIVIDE(SUM(structured_led_count), SUM(answer_count)) AS structured_led_rate,
     SUM(citation_binding_issue_count) AS citation_binding_issue_count,
-    SAFE_DIVIDE(SUM(citation_binding_issue_count), SUM(answer_count)) AS citation_binding_issue_rate
+    SAFE_DIVIDE(SUM(citation_binding_issue_count), SUM(answer_count)) AS citation_binding_issue_rate,
+    SUM(answer_metric_official_count) AS answer_metric_official_count,
+    SUM(answer_metric_proxy_count) AS answer_metric_proxy_count
   FROM hourly_window
   GROUP BY preset
 ),
@@ -824,6 +831,15 @@ SELECT
       req.error_rate AS errorRate,
       req.p95_latency_ms AS p95LatencyMs
     ) AS kpis,
+    STRUCT(
+      CASE
+        WHEN COALESCE(ans.answer_count, 0) = 0 THEN 'unknown'
+        WHEN COALESCE(ans.answer_metric_official_count, 0) > 0
+         AND COALESCE(ans.answer_metric_proxy_count, 0) > 0 THEN 'mixed'
+        WHEN COALESCE(ans.answer_metric_official_count, 0) > 0 THEN 'official'
+        ELSE 'proxy'
+      END AS answerSuccessRate
+    ) AS metricStatus,
     ut.items AS usageTrend,
     STRUCT(
       COALESCE(adp.total_user_count, 0) AS totalUserCount,

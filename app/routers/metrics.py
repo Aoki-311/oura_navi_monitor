@@ -361,11 +361,17 @@ def metrics_system_dashboard(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"system dashboard query failed: {exc}") from exc
 
+    metric_status = {}
+    if isinstance(dashboard, dict):
+        raw_metric_status = dashboard.pop("metricStatus", {})
+        if isinstance(raw_metric_status, dict):
+            metric_status = raw_metric_status
     payload = {
         "window": _window_payload(window),
         "meta": {
             **_meta_payload(window),
             "fetchMs": int((time.monotonic() - fetch_started) * 1000),
+            **({"metricStatus": metric_status} if metric_status else {}),
         },
         **dashboard,
     }

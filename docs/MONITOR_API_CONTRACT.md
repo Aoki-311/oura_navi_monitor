@@ -30,7 +30,10 @@
   "meta": {
     "generatedAt": "2026-05-13T12:00:00+09:00",
     "cacheHit": false,
-    "dataDelaySec": 30
+    "dataDelaySec": 30,
+    "metricStatus": {
+      "answerSuccessRate": "proxy"
+    }
   }
 }
 ```
@@ -38,6 +41,8 @@
 ## 3. `GET /api/metrics/system-dashboard`
 
 `ダッシュボード` の主要データを返します。
+
+`meta.metricStatus.answerSuccessRate` は回答成功率の集計状態です。`official` は action event 連携後の正式集計、`proxy` は過去データ等の暫定集計、`mixed` は対象期間内に正式集計と暫定集計が混在している状態、`unknown` は対象期間に回答データがない状態を表します。
 
 ### 3.1 Response
 
