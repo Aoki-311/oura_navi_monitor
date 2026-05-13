@@ -21,7 +21,9 @@ answer_actions AS (
   GROUP BY trace_request_key, conversation_turn_key, conversation_message_key
 ),
 answer_action_stats AS (
-  SELECT COUNT(*) AS total_answer_action_event_count
+  SELECT
+    COUNT(*) AS total_answer_action_event_count,
+    MIN(event_ts) AS first_answer_action_event_ts
   FROM `__PROJECT_ID__.__DATASET_ID__.v_answer_action_events`
 ),
 answer_base AS (
@@ -163,7 +165,11 @@ SELECT
     IF(has_enhance_request, ['enhance_requested'], []),
     IF(has_correction_request, ['correction_requested'], [])
   ) AS answer_success_reason_codes,
-  IF((SELECT total_answer_action_event_count FROM answer_action_stats) > 0, 'official', 'proxy') AS answer_success_metric_status,
+  CASE
+    WHEN (SELECT total_answer_action_event_count FROM answer_action_stats) = 0 THEN 'proxy'
+    WHEN event_ts >= (SELECT first_answer_action_event_ts FROM answer_action_stats) THEN 'official'
+    ELSE 'proxy'
+  END AS answer_success_metric_status,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key,
