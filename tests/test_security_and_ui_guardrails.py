@@ -146,6 +146,26 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("def get_user_profile", fs_py)
         self.assertIn("def list_user_conversation_summaries", fs_py)
 
+    def test_trace_messages_is_paginated_and_preview_only_by_default(self) -> None:
+        trace_py = (ROOT / "app" / "routers" / "trace.py").read_text(encoding="utf-8")
+        fs_py = (ROOT / "app" / "services" / "firestore_history.py").read_text(encoding="utf-8")
+        api_doc = (ROOT / "docs" / "MONITOR_API_CONTRACT.md").read_text(encoding="utf-8")
+        self.assertIn('cursor: str = Query(default="")', trace_py)
+        self.assertIn("include_content: bool = Query(default=False)", trace_py)
+        self.assertIn("candidates=payload_events", trace_py)
+        self.assertNotIn("resolved_user_id = user_id", trace_py)
+        self.assertIn("cursor: str = \"\"", fs_py)
+        self.assertIn("include_content: bool = False", fs_py)
+        self.assertIn("candidates: List[Dict[str, Any]] | None = None", fs_py)
+        self.assertIn('"contentPolicy"', fs_py)
+        self.assertIn('if include_content:', fs_py)
+        self.assertIn('message_row["content"]', fs_py)
+        self.assertIn('"contentPreview": _content_preview', fs_py)
+        self.assertIn('"nextCursor"', fs_py)
+        self.assertIn("candidate_pairs", fs_py)
+        self.assertIn("include_content", api_doc)
+        self.assertIn("通常画面では `contentPreview` のみ", api_doc)
+
     def test_local_gcloud_cli_auth_fallback_is_opt_in(self) -> None:
         settings_py = (ROOT / "app" / "settings.py").read_text(encoding="utf-8")
         auth_py = (ROOT / "app" / "services" / "google_auth.py").read_text(encoding="utf-8")

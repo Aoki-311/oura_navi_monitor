@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
 from google.cloud import firestore
@@ -133,6 +134,35 @@ def _content_preview(value: Any, *, max_len: int = 180) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 1].rstrip() + "…"
+
+
+def _encode_cursor(value: str) -> str:
+    text = _as_text(value)
+    if not text:
+        return ""
+    return base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(value: str) -> str:
+    text = _as_text(value)
+    if not text:
+        return ""
+    padding = "=" * (-len(text) % 4)
+    try:
+        return base64.urlsafe_b64decode(f"{text}{padding}".encode("ascii")).decode("utf-8")
+    except Exception:
+        # Accept plain cursor values for manual debugging, while emitting opaque cursors.
+        return text
+
+
+def _message_cursor_key(row: Dict[str, Any]) -> str:
+    return "|".join(
+        (
+            _as_text(row.get("timestamp")),
+            _as_text(row.get("conversationId")),
+            _as_text(row.get("messageId")),
+        )
+    )
 
 
 def _compact_followup_runtime_summary(value: Any) -> Dict[str, Any]:
@@ -740,8 +770,12 @@ class FirestoreHistoryService:
         status: str = "",
         mode: str = "",
         limit: int = 100,
+        cursor: str = "",
+        include_content: bool = False,
+        candidates: List[Dict[str, Any]] | None = None,
     ) -> Dict[str, Any]:
         size = max(1, min(int(limit or 100), 1000))
+        cursor_key = _decode_cursor(cursor)
         conv_lookup = _as_text(conversation_id)
         trace_lookup = _as_text(trace_id)
         turn_lookup = _as_text(turn_id)
@@ -753,27 +787,97 @@ class FirestoreHistoryService:
             return {
                 "conversations": [],
                 "messages": [],
+                "page": {"limit": size, "cursor": _as_text(cursor), "nextCursor": ""},
+                "contentPolicy": {
+                    "includeContent": bool(include_content),
+                    "defaultPreviewOnly": not bool(include_content),
+                },
             }
 
-        users = self.list_users(limit=self._settings.monitor_max_users_scan, q=user_lookup or email_lookup)
-        if user_lookup:
-            users = [row for row in users if _as_text(row.get("userId")) == user_lookup]
-        if email_lookup:
-            users = [row for row in users if email_lookup in _as_text(row.get("userEmail")).lower()]
+        candidate_pairs: List[Tuple[str, str]] = []
+        candidate_turns_by_pair: Dict[Tuple[str, str], set[str]] = {}
+        candidate_messages_by_pair: Dict[Tuple[str, str], set[str]] = {}
+        for event in candidates or []:
+            candidate_uid = _as_text(event.get("userId"))
+            candidate_conv = _as_text(event.get("conversationId"))
+            if not candidate_uid or not candidate_conv:
+                continue
+            if user_lookup and candidate_uid != user_lookup:
+                continue
+            if conv_lookup and candidate_conv != conv_lookup:
+                continue
+            pair = (candidate_uid, candidate_conv)
+            if pair not in candidate_pairs:
+                candidate_pairs.append(pair)
+            candidate_turn = _as_text(event.get("turnId"))
+            candidate_message = _as_text(event.get("messageId"))
+            if candidate_turn:
+                candidate_turns_by_pair.setdefault(pair, set()).add(candidate_turn)
+            if candidate_message:
+                candidate_messages_by_pair.setdefault(pair, set()).add(candidate_message)
+
+        def _load_user_row(uid: str) -> Dict[str, Any]:
+            payload: Dict[str, Any] = {}
+            try:
+                snapshot = self._root().document(uid).get()
+                if snapshot.exists:
+                    payload = snapshot.to_dict() or {}
+            except Exception:
+                payload = {}
+            return {
+                "userId": uid,
+                "userEmail": _as_text(
+                    payload.get("userEmail")
+                    or payload.get("email")
+                    or payload.get("ownerEmail")
+                    or payload.get("owner_email")
+                ),
+            }
+
+        pair_map: Dict[str, set[str]] = {}
+        if candidate_pairs:
+            users = []
+            seen_users: set[str] = set()
+            for uid, cid in candidate_pairs:
+                pair_map.setdefault(uid, set()).add(cid)
+                if uid not in seen_users:
+                    users.append(_load_user_row(uid))
+                    seen_users.add(uid)
+        elif user_lookup:
+            users = [_load_user_row(user_lookup)]
+            if conv_lookup:
+                pair_map[user_lookup] = {conv_lookup}
+        else:
+            users = self.list_users(limit=self._settings.monitor_max_users_scan, q=email_lookup)
+            if email_lookup:
+                users = [row for row in users if email_lookup in _as_text(row.get("userEmail")).lower()]
 
         conversations_by_id: Dict[str, Dict[str, Any]] = {}
         messages: List[Dict[str, Any]] = []
         for user in users:
-            if len(messages) >= size:
+            if len(messages) >= size + 1:
                 break
             uid = _as_text(user.get("userId"))
             uemail = _as_text(user.get("userEmail"))
-            conv_ref = self._root().document(uid).collection("conversations")
-            for conv_doc in conv_ref.stream():
-                if len(messages) >= size:
+            if not uid:
+                continue
+            if pair_map.get(uid):
+                conv_docs = []
+                for cid in sorted(pair_map[uid]):
+                    try:
+                        snapshot = self._root().document(uid).collection("conversations").document(cid).get()
+                    except Exception:
+                        continue
+                    if snapshot.exists:
+                        conv_docs.append(snapshot)
+            else:
+                conv_docs = self._root().document(uid).collection("conversations").stream()
+            for conv_doc in conv_docs:
+                if len(messages) >= size + 1:
                     break
                 if conv_lookup and conv_doc.id != conv_lookup:
                     continue
+                pair = (uid, conv_doc.id)
                 conv_payload = conv_doc.to_dict() or {}
                 visibility = _as_text(conv_payload.get("visibility") or "active").lower()
                 conv_mode = _as_text(conv_payload.get("mode"))
@@ -798,20 +902,28 @@ class FirestoreHistoryService:
                     .order_by("timestamp", direction=firestore.Query.ASCENDING)
                 )
                 for msg_doc in msg_query.stream():
-                    if len(messages) >= size:
+                    if len(messages) >= size + 1:
                         break
                     msg = msg_doc.to_dict() or {}
                     msg_status = _as_text(msg.get("status")).lower()
                     msg_mode = _normalize_mode(msg.get("modeAtSend") or conv_mode)
                     msg_trace = _as_text(msg.get("traceId") or msg.get("trace_id"))
                     msg_turn = _as_text(msg.get("turnId") or msg.get("turn_id"))
+                    row_message_id = _as_text(msg.get("messageId") or msg_doc.id)
+                    scoped_turns = candidate_turns_by_pair.get(pair, set())
+                    scoped_messages = candidate_messages_by_pair.get(pair, set())
+                    scoped_match = bool(
+                        (row_message_id and row_message_id in scoped_messages)
+                        or (msg_doc.id and msg_doc.id in scoped_messages)
+                        or (msg_turn and msg_turn in scoped_turns)
+                    )
                     if status_lookup and msg_status != status_lookup:
                         continue
                     if mode_lookup and msg_mode != mode_lookup:
                         continue
-                    if trace_lookup and msg_trace != trace_lookup:
+                    if trace_lookup and msg_trace != trace_lookup and not scoped_match:
                         continue
-                    if turn_lookup and msg_turn != turn_lookup:
+                    if turn_lookup and msg_turn != turn_lookup and not scoped_match:
                         continue
                     role = _as_text(msg.get("role"))
                     device_raw = _message_device_class(msg)
@@ -825,41 +937,59 @@ class FirestoreHistoryService:
                     if _has_grounded_citation(msg):
                         tags.append("回答成功")
                     conversations_by_id[conv_doc.id] = conv_row
-                    messages.append(
-                        {
-                            "timestamp": _as_text(msg.get("timestamp")),
-                            "timestampJst": self._to_local_text(msg.get("timestamp")),
-                            "role": _label_role(role),
-                            "roleLabel": _label_role(role),
-                            "roleRaw": role,
-                            "status": _label_status(msg_status),
-                            "statusLabel": _label_status(msg_status),
-                            "statusRaw": msg_status,
-                            "modeAtSend": _label_mode(msg_mode),
-                            "modeAtSendLabel": _label_mode(msg_mode),
-                            "modeAtSendRaw": msg_mode,
-                            "deviceClass": _label_device(device_raw),
-                            "deviceLabel": _label_device(device_raw),
-                            "deviceClassRaw": device_raw,
-                            "chatFlowType": _as_text(msg.get("chatFlowType")),
-                            "clientOrigin": _as_text(msg.get("clientOrigin")),
-                            "feedback": _as_text(msg.get("feedback")) or "none",
-                            "content": _as_text(msg.get("content")),
-                            "contentPreview": _content_preview(msg.get("content"), max_len=260),
-                            "conversationId": conv_doc.id,
-                            "traceId": msg_trace,
-                            "requestId": _as_text(msg.get("requestId") or msg.get("request_id")),
-                            "turnId": msg_turn,
-                            "messageId": _as_text(msg.get("messageId") or msg_doc.id),
-                            "userId": uid,
-                            "userEmail": uemail,
-                            "tags": tags,
-                        }
-                    )
+                    message_row = {
+                        "timestamp": _as_text(msg.get("timestamp")),
+                        "timestampJst": self._to_local_text(msg.get("timestamp")),
+                        "role": _label_role(role),
+                        "roleLabel": _label_role(role),
+                        "roleRaw": role,
+                        "status": _label_status(msg_status),
+                        "statusLabel": _label_status(msg_status),
+                        "statusRaw": msg_status,
+                        "modeAtSend": _label_mode(msg_mode),
+                        "modeAtSendLabel": _label_mode(msg_mode),
+                        "modeAtSendRaw": msg_mode,
+                        "deviceClass": _label_device(device_raw),
+                        "deviceLabel": _label_device(device_raw),
+                        "deviceClassRaw": device_raw,
+                        "chatFlowType": _as_text(msg.get("chatFlowType")),
+                        "clientOrigin": _as_text(msg.get("clientOrigin")),
+                        "feedback": _as_text(msg.get("feedback")) or "none",
+                        "contentPreview": _content_preview(msg.get("content"), max_len=260),
+                        "conversationId": conv_doc.id,
+                        "traceId": msg_trace,
+                        "requestId": _as_text(msg.get("requestId") or msg.get("request_id")),
+                        "turnId": msg_turn,
+                        "messageId": row_message_id,
+                        "userId": uid,
+                        "userEmail": uemail,
+                        "tags": tags,
+                    }
+                    if include_content:
+                        message_row["content"] = _as_text(msg.get("content"))
+                    if cursor_key and _message_cursor_key(message_row) <= cursor_key:
+                        continue
+                    messages.append(message_row)
 
+        messages.sort(key=_message_cursor_key)
+        next_cursor = ""
+        if len(messages) > size:
+            visible_messages = messages[:size]
+            next_cursor = _encode_cursor(_message_cursor_key(visible_messages[-1]))
+        else:
+            visible_messages = messages
         return {
             "conversations": list(conversations_by_id.values()),
-            "messages": messages,
+            "messages": visible_messages,
+            "page": {
+                "limit": size,
+                "cursor": _as_text(cursor),
+                "nextCursor": next_cursor,
+            },
+            "contentPolicy": {
+                "includeContent": bool(include_content),
+                "defaultPreviewOnly": not bool(include_content),
+            },
         }
 
     def aggregate_query_suggest_facts(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:

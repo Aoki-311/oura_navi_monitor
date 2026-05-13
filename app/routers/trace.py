@@ -57,6 +57,8 @@ def trace_messages(
     status: str = Query(default=""),
     mode: str = Query(default=""),
     limit: int = Query(default=100, ge=1, le=1000),
+    cursor: str = Query(default=""),
+    include_content: bool = Query(default=False),
     _admin: AdminIdentity = Depends(require_admin),
     settings: Settings = Depends(get_settings),
     bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
@@ -72,26 +74,19 @@ def trace_messages(
             user_id=user_id,
             limit=limit,
         ) if any([conversation_id, trace_id, turn_id, user_id]) else []
-        resolved_user_id = user_id
-        resolved_conversation_id = conversation_id
-        if not resolved_user_id or not resolved_conversation_id:
-            for event in payload_events:
-                if not resolved_user_id and event.get("userId"):
-                    resolved_user_id = str(event.get("userId") or "")
-                if not resolved_conversation_id and event.get("conversationId"):
-                    resolved_conversation_id = str(event.get("conversationId") or "")
-                if resolved_user_id and resolved_conversation_id:
-                    break
         result = fs.search_messages(
             window=window,
-            conversation_id=resolved_conversation_id,
+            conversation_id=conversation_id,
             trace_id=trace_id,
             turn_id=turn_id,
-            user_id=resolved_user_id,
+            user_id=user_id,
             user_email=user_email,
             status=status,
             mode=mode,
             limit=limit,
+            cursor=cursor,
+            include_content=include_content,
+            candidates=payload_events,
         )
         result["payloadEvents"] = payload_events
     except Exception as exc:

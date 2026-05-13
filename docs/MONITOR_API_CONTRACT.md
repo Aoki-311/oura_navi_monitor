@@ -269,11 +269,24 @@
 | `status` | string | `done`, `error`, `aborted`, `streaming` |
 | `mode` | string | `internal`, `websearch` |
 | `limit` | int | 既定 100 |
+| `cursor` | string | 次ページ取得用の不透明 cursor |
+| `include_content` | boolean | 既定 `false`。`true` の場合のみ本文原文 `content` を返す |
+
+本文は個人情報・業務情報を含む可能性があるため、通常画面では `contentPreview` のみを返します。管理者が明示的に本文表示または本文出力を選択した場合だけ `include_content=true` を指定します。
 
 ### 8.2 Response
 
 ```json
 {
+  "page": {
+    "limit": 100,
+    "cursor": "",
+    "nextCursor": "opaque-cursor"
+  },
+  "contentPolicy": {
+    "includeContent": false,
+    "defaultPreviewOnly": true
+  },
   "conversations": [
     {
       "conversationId": "conv-1",
@@ -306,7 +319,6 @@
       "chatFlowType": "continued_chat",
       "clientOrigin": "typed",
       "feedback": "none",
-      "content": "質問本文の原文",
       "contentPreview": "質問本文のプレビュー",
       "conversationId": "conv-1",
       "traceId": "trace-1",
@@ -335,7 +347,7 @@
 }
 ```
 
-`payloadEvents` は BigQuery 側の monitor event 投影です。`trace_id` または `turn_id` のみで検索された場合、まずこの投影から `user_id` / `conversation_id` 候補を解決し、Firestore message と join します。
+`payloadEvents` は BigQuery 側の monitor event 投影です。`trace_id` または `turn_id` のみで検索された場合、まずこの投影から `user_id` / `conversation_id` / `turn_id` / `message_id` 候補を解決し、Firestore message と join します。複数候補が返る場合も、先頭 1 件に固定せず候補ごとに精密検索します。
 
 ## 9. `GET /api/metrics/schema-health`
 
