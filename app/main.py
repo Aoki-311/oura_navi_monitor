@@ -12,6 +12,7 @@ from app.routers.export import router as export_router
 from app.routers.health import router as health_router
 from app.routers.history import router as history_router
 from app.routers.metrics import router as metrics_router
+from app.routers.trace import router as trace_router
 from app.security.auth import AdminIdentity, require_admin
 from app.settings import get_settings
 
@@ -33,6 +34,7 @@ app.include_router(health_router)
 app.include_router(metrics_router)
 app.include_router(history_router)
 app.include_router(export_router)
+app.include_router(trace_router)
 
 frontend_dir = Path(__file__).resolve().parents[1] / "frontend"
 if frontend_dir.exists():

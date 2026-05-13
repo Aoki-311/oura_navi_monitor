@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import copy
+from datetime import datetime
 import threading
 import time
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -54,6 +56,64 @@ def _safe_float(value: object) -> float | None:
     except Exception:
         return None
     return parsed
+
+
+def _safe_rate(numerator: int, denominator: int) -> float | None:
+    return (numerator / denominator) if denominator > 0 else None
+
+
+def _window_payload(window: MetricsTimeWindow) -> dict:
+    return {
+        "source": window.source,
+        "preset": window.preset,
+        "start": window.start_utc.isoformat(),
+        "end": window.end_utc.isoformat(),
+        "timezone": window.timezone,
+        "bucketMinutes": window.bucket_minutes,
+    }
+
+
+def _meta_payload(window: MetricsTimeWindow) -> dict:
+    try:
+        tz = ZoneInfo(window.timezone)
+        generated_at = datetime.now(tz).isoformat()
+    except Exception:
+        generated_at = datetime.utcnow().isoformat()
+    return {
+        "generatedAt": generated_at,
+        "cacheHit": False,
+        "dataDelaySec": None,
+    }
+
+
+def _mode_label(value: object) -> str:
+    mode = str(value or "").strip().lower()
+    if mode == "internal":
+        return "社内モード"
+    if mode == "websearch":
+        return "Web検索モード"
+    return "その他"
+
+
+def _device_label(value: object) -> str:
+    device = str(value or "").strip().lower()
+    if device == "desktop":
+        return "PC"
+    if device == "mobile":
+        return "モバイル"
+    return "不明"
+
+
+def _answer_success_proxy_from_fs(fs_metrics: dict) -> float | None:
+    assistant_count = _safe_int(fs_metrics.get("assistantMessageCount"))
+    if assistant_count <= 0:
+        return None
+    failure_count = _safe_int(fs_metrics.get("messageFailureCount"))
+    feedback_total = _safe_int(fs_metrics.get("feedbackTotalCount"))
+    feedback_good = _safe_int(fs_metrics.get("feedbackGoodCount"))
+    bad_feedback = max(0, feedback_total - feedback_good)
+    success_count = max(0, assistant_count - failure_count - bad_feedback)
+    return success_count / assistant_count
 
 
 def _user_key(user_id: str, user_email: str) -> str:
@@ -257,6 +317,196 @@ def metrics_query_suggest(
         },
         "logs": log_report,
         "facts": fact_report,
+    }
+
+
+@router.get("/system-dashboard")
+def metrics_system_dashboard(
+    days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default="today"),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    _admin: AdminIdentity = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+    bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
+) -> dict:
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
+    now_mono = time.monotonic()
+    cache_ttl_sec = max(0, int(settings.monitor_dashboard_cache_ttl_sec or 0))
+    cache_key = "|".join(
+        [
+            "system-dashboard",
+            str(window.timezone),
+            str(window.source),
+            str(window.preset),
+            str(days),
+            str(start or ""),
+            str(end or ""),
+            window.start_utc.isoformat(),
+        ]
+    )
+    if cache_ttl_sec > 0:
+        cached = _dashboard_cache_get(key=cache_key, now_mono=now_mono)
+        if cached is not None:
+            cached["meta"] = {
+                **(cached.get("meta") or {}),
+                "cacheHit": True,
+                "fetchMs": 0,
+            }
+            return cached
+
+    fetch_started = time.monotonic()
+    try:
+        dashboard = bq.get_system_dashboard_metrics(window=window)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"system dashboard query failed: {exc}") from exc
+
+    payload = {
+        "window": _window_payload(window),
+        "meta": {
+            **_meta_payload(window),
+            "fetchMs": int((time.monotonic() - fetch_started) * 1000),
+        },
+        **dashboard,
+    }
+    _dashboard_cache_set(key=cache_key, payload=payload, ttl_sec=cache_ttl_sec, now_mono=now_mono)
+    return payload
+
+
+@router.get("/answer-quality")
+def metrics_answer_quality(
+    days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default="today"),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    user: str = Query(default=""),
+    _admin: AdminIdentity = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+    bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
+) -> dict:
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
+    try:
+        report = bq.get_answer_quality_metrics(window=window, user_key=user)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"answer quality query failed: {exc}") from exc
+    summary = dict(report.get("summary") or {})
+    report["summary"] = summary
+    return {
+        "window": _window_payload(window),
+        "meta": _meta_payload(window),
+        **report,
+    }
+
+
+@router.get("/followup")
+def metrics_followup(
+    days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default="today"),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    user: str = Query(default=""),
+    _admin: AdminIdentity = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+    bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
+) -> dict:
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
+    try:
+        report = bq.get_followup_metrics(window=window, user_key=user)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"followup query failed: {exc}") from exc
+    return {
+        "window": _window_payload(window),
+        "meta": _meta_payload(window),
+        **report,
+    }
+
+
+@router.get("/users")
+def metrics_users(
+    days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default="today"),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    activity: str = Query(default=""),
+    q: str = Query(default=""),
+    limit: int = Query(default=100, ge=1, le=1000),
+    cursor: str = Query(default=""),
+    _admin: AdminIdentity = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+    bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
+) -> dict:
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
+    try:
+        rows = bq.get_request_user_monitoring_rows(window=window, activity=activity, q=q, limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"users query failed: {exc}") from exc
+    return {
+        "window": _window_payload(window),
+        "meta": _meta_payload(window),
+        "users": rows,
+        "page": {
+            "nextCursor": "",
+            "cursor": cursor,
+        },
+    }
+
+
+@router.get("/users/{user_id}")
+def metrics_user_detail(
+    user_id: str,
+    days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default="today"),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    _admin: AdminIdentity = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+    bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
+    fs: FirestoreHistoryService = Depends(get_firestore_history_service),
+) -> dict:
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
+    try:
+        detail = fs.get_user_detail_metrics(user_id=user_id, window=window)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        quality = bq.get_answer_quality_metrics(window=window, user_key=user_id)
+        followup = bq.get_followup_metrics(window=window, user_key=user_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"user detail query failed: {exc}") from exc
+
+    quality_summary = quality.get("summary") or {}
+    detail["summary"]["lowCoverageRate"] = quality_summary.get("lowCoverageRate")
+    if quality_summary.get("answerSuccessRate") is not None:
+        detail["summary"]["answerSuccessRate"] = quality_summary.get("answerSuccessRate")
+    detail["answerQualityDistribution"] = quality.get("distributions", {})
+    detail["followup"] = followup
+    return {
+        "window": _window_payload(window),
+        "meta": _meta_payload(window),
+        **detail,
+    }
+
+
+@router.get("/schema-health")
+def metrics_schema_health(
+    days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default="today"),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    _admin: AdminIdentity = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+    bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
+) -> dict:
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
+    try:
+        report = bq.get_schema_health_metrics(window=window)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"schema health query failed: {exc}") from exc
+    return {
+        "window": _window_payload(window),
+        "meta": _meta_payload(window),
+        **report,
     }
 
 

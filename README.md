@@ -24,10 +24,18 @@
 コード構成:
 
 - `app/`: API、認証、データサービス
+- `docs/`: 監視 UI / データ契約などの設計ドキュメント
 - `frontend/`: 独立ダッシュボード UI（HTML/CSS/JS + Chart.js）
 - `frontend/vendor/`: ローカル同梱のサードパーティ資産（CDN 非依存）
 - `deploy/`: 環境 YAML および Cloud Run サービスマニフェスト
 - `scripts/`: 初期化、アラート、デプロイ自動化
+
+主要設計ドキュメント:
+
+- `docs/MONITOR_FRONTEND_INFORMATION_ARCHITECTURE.md`: フロントエンド情報設計
+- `docs/MONITOR_DATA_ARCHITECTURE.md`: データ基盤、保存、join、連携方針
+- `docs/MONITOR_METRIC_CONTRACT.md`: 画面指標の定義と計算口径
+- `docs/MONITOR_API_CONTRACT.md`: フロントエンド向け API payload 契約
 
 セキュリティ:
 

@@ -1,0 +1,371 @@
+# 監視フロントエンド API 契約
+
+## 1. 目的
+
+本ドキュメントは、OurA Navi Monitor 次期フロントエンドが参照する API payload を固定するための契約文書です。
+
+フロントエンドは BigQuery や Firestore を直接意識せず、以下の API を通じて表示・検索・エクスポートを行います。
+
+## 2. 共通仕様
+
+### 2.1 共通 query parameters
+
+| Parameter | 型 | 説明 |
+| --- | --- | --- |
+| `preset` | string | `today`, `last_6h`, `last_12h`, `last_3d`, `last_7d`, `last_14d`, `last_30d`, `custom` |
+| `start` | string | custom range start。ISO datetime。 |
+| `end` | string | custom range end。ISO datetime。 |
+| `timezone` | string | 既定 `Asia/Tokyo`。 |
+
+### 2.2 共通 response metadata
+
+```json
+{
+  "window": {
+    "preset": "today",
+    "start": "2026-05-13T00:00:00+09:00",
+    "end": "2026-05-14T00:00:00+09:00",
+    "timezone": "Asia/Tokyo"
+  },
+  "meta": {
+    "generatedAt": "2026-05-13T12:00:00+09:00",
+    "cacheHit": false,
+    "dataDelaySec": 30
+  }
+}
+```
+
+## 3. `GET /api/metrics/system-dashboard`
+
+`ダッシュボード` の主要データを返します。
+
+### 3.1 Response
+
+```json
+{
+  "kpis": {
+    "activeUserCount": 123,
+    "answerSuccessRate": 0.94,
+    "lowCoverageRate": 0.08,
+    "errorRate": 0.01,
+    "p95LatencyMs": 2400
+  },
+  "usageTrend": [
+    {
+      "date": "2026-05-13",
+      "activeUserCount": 36,
+      "messageCount": 420
+    }
+  ],
+  "activityDistribution": {
+    "totalUserCount": 12856,
+    "segments": [
+      {"label": "高アクティブ", "count": 1842, "rate": 0.1433},
+      {"label": "中アクティブ", "count": 2840, "rate": 0.2208},
+      {"label": "低アクティブ", "count": 3756, "rate": 0.2920},
+      {"label": "休眠ユーザー", "count": 4418, "rate": 0.3439}
+    ]
+  },
+  "environmentMode": {
+    "requestByHour": [
+      {"hour": "00:00", "requestCount": 12}
+    ],
+    "deviceDistribution": [
+      {"label": "PC", "count": 100, "rate": 0.7},
+      {"label": "モバイル", "count": 40, "rate": 0.28},
+      {"label": "不明", "count": 3, "rate": 0.02}
+    ],
+    "modeDistribution": [
+      {"label": "社内モード", "count": 90, "rate": 0.63},
+      {"label": "Web検索モード", "count": 53, "rate": 0.37}
+    ]
+  },
+  "answerQuality": {
+    "answerability": [],
+    "usability": [],
+    "deliveryReadiness": [],
+    "evidenceSufficiency": []
+  },
+  "followup": {
+    "recognizedCount": 20,
+    "successCount": 16,
+    "successRate": 0.8,
+    "explicitCorrectionCount": 2,
+    "clarificationRequiredCount": 3
+  }
+}
+```
+
+## 4. `GET /api/metrics/answer-quality`
+
+`回答品質` 画面用の詳細集計を返します。
+
+```json
+{
+  "summary": {
+    "answerCount": 100,
+    "answerSuccessRate": 0.94,
+    "lowCoverageRate": 0.08,
+    "averageCoverageScore": 0.82,
+    "structuredLedRate": 0.31
+  },
+  "distributions": {
+    "answerability": [],
+    "usability": [],
+    "deliveryReadiness": [],
+    "evidenceSufficiency": []
+  },
+  "riskReasons": [
+    {"label": "根拠不足", "count": 8, "rate": 0.08}
+  ]
+}
+```
+
+## 5. `GET /api/metrics/followup`
+
+`追問分析` 画面用の集計を返します。
+
+```json
+{
+  "summary": {
+    "recognizedCount": 20,
+    "successCount": 16,
+    "successRate": 0.8,
+    "explicitCorrectionCount": 2,
+    "clarificationRequiredCount": 3
+  },
+  "funnel": [
+    {"label": "追問認識", "count": 20},
+    {"label": "追問成功", "count": 16},
+    {"label": "明示的な訂正", "count": 2},
+    {"label": "確認が必要な追問", "count": 3}
+  ],
+  "reasonBreakdown": [
+    {"label": "失敗理由", "value": "missing_anchor", "count": 4}
+  ]
+}
+```
+
+## 6. `GET /api/metrics/users`
+
+`ユーザー監視一覧` のデータを返します。
+
+### 6.1 Query parameters
+
+| Parameter | 型 | 説明 |
+| --- | --- | --- |
+| `activity` | string | `high`, `middle`, `low`, `dormant`, empty |
+| `q` | string | user ID または email 検索 |
+| `limit` | int | 既定 100 |
+| `cursor` | string | pagination cursor |
+
+### 6.2 Response
+
+```json
+{
+  "users": [
+    {
+      "userId": "user-1",
+      "userEmail": "user@example.com",
+      "userIdHash": "hash",
+      "lastActiveAtJst": "2026-05-13 10:20:00",
+      "activeDays7": 3,
+      "messageCount7d": 12,
+      "coverageRate": 0.92,
+      "badFeedbackRate": 0.03,
+      "activityLevel": "高アクティブ"
+    }
+  ],
+  "page": {
+    "nextCursor": ""
+  }
+}
+```
+
+## 7. `GET /api/metrics/users/{user_id}`
+
+`ユーザー詳細` のデータを返します。
+
+```json
+{
+  "user": {
+    "userId": "user-1",
+    "userEmail": "user@example.com",
+    "activityLevel": "高アクティブ",
+    "lastActiveAtJst": "2026-05-13 10:20:00"
+  },
+  "summary": {
+    "messageCount": 12,
+    "answerSuccessRate": 0.94,
+    "lowCoverageRate": 0.08,
+    "badFeedbackRate": 0.03,
+    "followupCount": 4
+  },
+  "trend": [
+    {"date": "2026-05-13", "messageCount": 3, "answerSuccessRate": 1.0, "lowCoverageRate": 0.0}
+  ],
+  "modeDistribution": [],
+  "answerQualityDistribution": {},
+  "followup": {},
+  "conversations": [
+    {
+      "conversationId": "conv-1",
+      "title": "タイトル",
+      "mode": "社内モード",
+      "visibility": "active",
+      "createdAtJst": "2026-05-13 09:00:00",
+      "updatedAtJst": "2026-05-13 10:20:00",
+      "messageCount": 6,
+      "integrityState": "ok",
+      "isFavorite": false,
+      "followupRuntimeSummary": {}
+    }
+  ]
+}
+```
+
+## 8. `GET /api/trace/messages`
+
+`チャット記録確認` の検索結果を返します。
+
+### 8.1 Query parameters
+
+| Parameter | 型 | 説明 |
+| --- | --- | --- |
+| `conversation_id` | string | conversation ID |
+| `trace_id` | string | trace ID |
+| `turn_id` | string | turn ID |
+| `user_id` | string | user ID |
+| `user_email` | string | email |
+| `status` | string | `done`, `error`, `aborted`, `streaming` |
+| `mode` | string | `internal`, `websearch` |
+| `limit` | int | 既定 100 |
+
+### 8.2 Response
+
+```json
+{
+  "conversations": [
+    {
+      "conversationId": "conv-1",
+      "title": "タイトル",
+      "mode": "社内モード",
+      "visibility": "active",
+      "createdAtJst": "2026-05-13 09:00:00",
+      "updatedAtJst": "2026-05-13 10:20:00",
+      "messageCount": 6,
+      "integrityState": "ok",
+      "isFavorite": false,
+      "followupRuntimeSummary": {}
+    }
+  ],
+  "messages": [
+    {
+      "timestampJst": "2026-05-13 10:20:00",
+      "role": "ユーザー",
+      "roleLabel": "ユーザー",
+      "roleRaw": "user",
+      "status": "完了",
+      "statusLabel": "完了",
+      "statusRaw": "done",
+      "modeAtSend": "社内モード",
+      "modeAtSendLabel": "社内モード",
+      "modeAtSendRaw": "internal",
+      "deviceClass": "PC",
+      "deviceLabel": "PC",
+      "deviceClassRaw": "desktop",
+      "chatFlowType": "continued_chat",
+      "clientOrigin": "typed",
+      "feedback": "none",
+      "content": "質問本文の原文",
+      "contentPreview": "質問本文のプレビュー",
+      "conversationId": "conv-1",
+      "traceId": "trace-1",
+      "requestId": "req-1",
+      "turnId": "turn-1",
+      "messageId": "msg-1",
+      "tags": ["追問", "回答成功"]
+    }
+  ],
+  "payloadEvents": [
+    {
+      "eventTsJst": "2026-05-13 10:20:00",
+      "eventFamily": "ask_audit_json",
+      "schemaVersion": "phase2.audit.v1",
+      "conversationId": "conv-1",
+      "traceId": "trace-1",
+      "requestId": "req-1",
+      "turnId": "turn-1",
+      "messageId": "msg-1",
+      "userId": "user-1",
+      "conversationTurnKey": "conv-1#turn-1",
+      "conversationMessageKey": "conv-1#msg-1",
+      "traceRequestKey": "trace-1#req-1"
+    }
+  ]
+}
+```
+
+`payloadEvents` は BigQuery 側の monitor event 投影です。`trace_id` または `turn_id` のみで検索された場合、まずこの投影から `user_id` / `conversation_id` 候補を解決し、Firestore message と join します。
+
+## 9. `GET /api/metrics/schema-health`
+
+`データ健全性` のデータを返します。
+
+```json
+{
+  "events": [
+    {
+      "eventFamily": "ask_audit_json",
+      "schemaVersion": "phase2.audit.v1",
+      "eventCount": 100,
+      "requiredFieldMissingCount": 0,
+      "schemaMismatchCount": 0
+    }
+  ],
+  "joinHealth": {
+    "answerRowCount": 100,
+    "joinedMessageCount": 96,
+    "joinRate": 0.96,
+    "followupUnjoinedCount": 2,
+    "coverageGapJoinRate": 0.9
+  },
+  "dataDelay": {
+    "p95Sec": 45
+  }
+}
+```
+
+## 10. `POST /api/export/jobs`
+
+エクスポート設定モーダルから呼び出す API です。
+
+### 10.1 Request
+
+```json
+{
+  "preset": "last_7d",
+  "start": "",
+  "end": "",
+  "outputData": ["ユーザー監視一覧"],
+  "includedFields": ["基本情報", "利用状況", "回答品質", "追問状況"],
+  "personalInfoMode": "匿名化して出力",
+  "filters": {
+    "activity": "高アクティブ",
+    "q": ""
+  }
+}
+```
+
+### 10.2 Response
+
+```json
+{
+  "jobId": "export-1",
+  "status": "ready",
+  "downloadUrl": "/api/export/jobs/export-1/download",
+  "expiresAt": "2026-05-13T13:00:00+09:00"
+}
+```
+
+`メッセージ本文` は初期選択に含めません。本文を含める場合は、管理者が明示的に選択する必要があります。

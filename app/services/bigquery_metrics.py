@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List
 
 from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
+from app.services.google_auth import get_gcloud_cli_credentials_if_enabled
 from app.settings import Settings
 from app.time_window import MetricsTimeWindow
 
@@ -12,7 +14,8 @@ from app.time_window import MetricsTimeWindow
 class BigQueryMetricsService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._client = bigquery.Client(project=settings.monitor_project_id)
+        credentials = get_gcloud_cli_credentials_if_enabled(settings)
+        self._client = bigquery.Client(project=settings.monitor_project_id, credentials=credentials)
         self._project = settings.monitor_project_id
         self._dataset = settings.monitor_bq_dataset
 
@@ -24,6 +27,9 @@ class BigQueryMetricsService:
 
     def _stderr_table(self) -> str:
         return f"`{self._project}.{self._dataset}.run_googleapis_com_stderr`"
+
+    def _view(self, name: str) -> str:
+        return f"`{self._project}.{self._dataset}.{name}`"
 
     def _run_query(self, sql: str, params: List[bigquery.ScalarQueryParameter]) -> List[Dict[str, Any]]:
         try:
@@ -115,6 +121,356 @@ SELECT
 """
         rows = self._run_query(sql, self._window_params(window)[:3])
         return rows[0] if rows else {}
+
+    def get_system_dashboard_metrics(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
+        params = self._window_params(window) + [
+            bigquery.ScalarQueryParameter("coverage_threshold", "FLOAT64", 0.60),
+        ]
+        sql = f"""
+WITH hours AS (
+  SELECT hour FROM UNNEST(GENERATE_ARRAY(0, 23)) AS hour
+),
+device_labels AS (
+  SELECT 'desktop' AS device_class UNION ALL
+  SELECT 'mobile' UNION ALL
+  SELECT 'unknown'
+),
+mode_labels AS (
+  SELECT 'internal' AS mode UNION ALL
+  SELECT 'websearch'
+),
+dates AS (
+  SELECT event_date
+  FROM UNNEST(
+    GENERATE_DATE_ARRAY(
+      DATE(@start_ts, @tz),
+      DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz),
+      INTERVAL 1 DAY
+    )
+  ) AS event_date
+),
+req AS (
+  SELECT
+    ts,
+    status,
+    latency_ms,
+    COALESCE(NULLIF(device_class, ''), 'unknown') AS device_class
+  FROM {self._view("v_requests")}
+  WHERE ts >= @start_ts
+    AND ts < @end_ts
+),
+request_summary AS (
+  SELECT
+    COUNT(*) AS request_count,
+    COUNTIF(status >= 500) AS error_count,
+    SAFE_DIVIDE(COUNTIF(status >= 500), COUNT(*)) AS error_rate,
+    APPROX_QUANTILES(latency_ms, 100)[OFFSET(95)] AS p95_latency_ms
+  FROM req
+),
+request_by_hour AS (
+  SELECT
+    FORMAT('%02d:00', h.hour) AS hour_label,
+    COALESCE(COUNT(r.ts), 0) AS request_count
+  FROM hours h
+  LEFT JOIN req r ON EXTRACT(HOUR FROM DATETIME(r.ts, @tz)) = h.hour
+  GROUP BY h.hour
+),
+device_distribution AS (
+  SELECT
+    d.device_class,
+    COALESCE(COUNT(r.ts), 0) AS request_count
+  FROM device_labels d
+  LEFT JOIN req r USING(device_class)
+  GROUP BY d.device_class
+),
+request_user_window AS (
+  SELECT
+    event_ts,
+    event_date,
+    COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown') AS user_key,
+    mode,
+    is_core
+  FROM {self._view("v_request_user_metric_events")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+),
+request_user_14d AS (
+  SELECT
+    event_ts,
+    COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown') AS user_key,
+    is_core
+  FROM {self._view("v_request_user_metric_events")}
+  WHERE event_ts >= TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY)
+    AND event_ts < @end_ts
+),
+active_users AS (
+  SELECT COUNT(DISTINCT IF(user_key = 'unknown', NULL, user_key)) AS active_user_count
+  FROM request_user_window
+),
+usage_trend_agg AS (
+  SELECT
+    event_date,
+    COUNT(DISTINCT IF(user_key = 'unknown', NULL, user_key)) AS active_user_count,
+    COUNTIF(is_core) AS message_count
+  FROM request_user_window
+  GROUP BY event_date
+),
+usage_trend AS (
+  SELECT
+    FORMAT_DATE('%Y-%m-%d', d.event_date) AS date_label,
+    COALESCE(a.active_user_count, 0) AS active_user_count,
+    COALESCE(a.message_count, 0) AS message_count
+  FROM dates d
+  LEFT JOIN usage_trend_agg a USING(event_date)
+),
+activity_by_user AS (
+  SELECT
+    user_key,
+    COUNTIF(is_core AND event_ts >= TIMESTAMP_SUB(@end_ts, INTERVAL 3 DAY)) AS core_count_3d,
+    COUNTIF(is_core AND event_ts >= TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY)) AS core_count_7d,
+    COUNTIF(is_core AND event_ts >= TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY)) AS core_count_14d
+  FROM request_user_14d
+  WHERE user_key != 'unknown'
+  GROUP BY user_key
+),
+activity_segments AS (
+  SELECT
+    CASE
+      WHEN core_count_3d >= 3 THEN '高アクティブ'
+      WHEN core_count_7d BETWEEN 1 AND 2 THEN '中アクティブ'
+      WHEN core_count_14d >= 1 THEN '低アクティブ'
+      ELSE '休眠ユーザー'
+    END AS label,
+    COUNT(*) AS count
+  FROM activity_by_user
+  GROUP BY label
+),
+activity_labels AS (
+  SELECT '高アクティブ' AS label UNION ALL
+  SELECT '中アクティブ' UNION ALL
+  SELECT '低アクティブ' UNION ALL
+  SELECT '休眠ユーザー'
+),
+mode_distribution AS (
+  SELECT
+    m.mode,
+    COALESCE(COUNTIF(u.is_core), 0) AS request_count
+  FROM mode_labels m
+  LEFT JOIN request_user_window u USING(mode)
+  GROUP BY m.mode
+),
+answer_events AS (
+  SELECT *
+  FROM {self._view("v_ask_audit_events")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+),
+coverage_gap_keys AS (
+  SELECT DISTINCT
+    NULLIF(trace_request_key, '#') AS trace_request_key,
+    NULLIF(conversation_turn_key, '#') AS conversation_turn_key,
+    NULLIF(conversation_message_key, '#') AS conversation_message_key,
+    gap_kind
+  FROM {self._view("v_coverage_gap_workitems")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+),
+answer_flags AS (
+  SELECT
+    a.*,
+    EXISTS (
+      SELECT 1
+      FROM coverage_gap_keys g
+      WHERE (
+        g.trace_request_key IS NOT NULL
+        AND g.trace_request_key = NULLIF(a.trace_request_key, '#')
+      )
+      OR (
+        g.conversation_turn_key IS NOT NULL
+        AND g.conversation_turn_key = NULLIF(a.conversation_turn_key, '#')
+      )
+      OR (
+        g.conversation_message_key IS NOT NULL
+        AND g.conversation_message_key = NULLIF(a.conversation_message_key, '#')
+      )
+    ) AS has_coverage_gap
+  FROM answer_events a
+),
+answer_summary AS (
+  SELECT
+    COUNT(*) AS answer_count,
+    COUNTIF(error_code IS NULL AND answerability_level NOT IN ('not_answerable', 'clarification_blocked')) AS answer_success_count,
+    SAFE_DIVIDE(
+      COUNTIF(error_code IS NULL AND answerability_level NOT IN ('not_answerable', 'clarification_blocked')),
+      COUNT(*)
+    ) AS answer_success_rate,
+    COUNTIF(
+      has_coverage_gap
+      OR COALESCE(citation_count, 0) = 0
+      OR evidence_sufficiency = 'insufficient'
+      OR COALESCE(coverage_score, 1.0) < @coverage_threshold
+    ) AS low_coverage_count,
+    SAFE_DIVIDE(
+      COUNTIF(
+        has_coverage_gap
+        OR COALESCE(citation_count, 0) = 0
+        OR evidence_sufficiency = 'insufficient'
+        OR COALESCE(coverage_score, 1.0) < @coverage_threshold
+      ),
+      COUNT(*)
+    ) AS low_coverage_rate,
+    AVG(coverage_score) AS average_coverage_score,
+    AVG(alignment_score) AS average_alignment_score,
+    COUNTIF(structured_led) AS structured_led_count,
+    SAFE_DIVIDE(COUNTIF(structured_led), COUNT(*)) AS structured_led_rate,
+    COUNTIF(claim_alignment_fallback OR citation_mapping_source = 'legacy') AS citation_binding_issue_count,
+    SAFE_DIVIDE(COUNTIF(claim_alignment_fallback OR citation_mapping_source = 'legacy'), COUNT(*)) AS citation_binding_issue_rate
+  FROM answer_flags
+),
+answer_distribution AS (
+  SELECT 'answerability' AS metric, answerability_level AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'usability' AS metric, usability_level AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'deliveryReadiness' AS metric, delivery_readiness AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'evidenceSufficiency' AS metric, evidence_sufficiency AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+  UNION ALL
+  SELECT 'verificationVerdict' AS metric, verification_verdict AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+),
+followup_open AS (
+  SELECT *
+  FROM {self._view("v_followup_open_result_events")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+),
+followup_resolution AS (
+  SELECT *
+  FROM {self._view("v_followup_resolution_events")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+),
+followup_summary AS (
+  SELECT
+    (SELECT COUNTIF(event = 'recognized') FROM followup_open) AS recognized_count,
+    (SELECT COUNTIF(event = 'success') FROM followup_open) AS success_count,
+    (SELECT COUNTIF(decision_normalized = 'explicit_correction') FROM followup_resolution) AS explicit_correction_count,
+    (SELECT COUNTIF(decision_normalized = 'clarify_before_carry') FROM followup_resolution) AS clarification_required_count,
+    (SELECT COUNTIF(followup_offtopic) FROM followup_resolution) AS followup_offtopic_count
+),
+activity_total AS (
+  SELECT SUM(COALESCE(count, 0)) AS total_count FROM activity_segments
+),
+device_total AS (
+  SELECT SUM(request_count) AS total_count FROM device_distribution
+),
+mode_total AS (
+  SELECT SUM(request_count) AS total_count FROM mode_distribution
+)
+SELECT TO_JSON_STRING(STRUCT(
+  STRUCT(
+    (SELECT active_user_count FROM active_users) AS activeUserCount,
+    (SELECT answer_success_rate FROM answer_summary) AS answerSuccessRate,
+    (SELECT low_coverage_rate FROM answer_summary) AS lowCoverageRate,
+    (SELECT error_rate FROM request_summary) AS errorRate,
+    (SELECT p95_latency_ms FROM request_summary) AS p95LatencyMs
+  ) AS kpis,
+  (
+    SELECT ARRAY_AGG(STRUCT(
+      date_label AS date,
+      active_user_count AS activeUserCount,
+      message_count AS messageCount
+    ) ORDER BY date_label)
+    FROM usage_trend
+  ) AS usageTrend,
+  STRUCT(
+    (SELECT COALESCE(total_count, 0) FROM activity_total) AS totalUserCount,
+    (
+      SELECT ARRAY_AGG(STRUCT(
+        l.label AS label,
+        COALESCE(s.count, 0) AS count,
+        SAFE_DIVIDE(COALESCE(s.count, 0), NULLIF((SELECT total_count FROM activity_total), 0)) AS rate
+      ) ORDER BY CASE l.label
+        WHEN '高アクティブ' THEN 1
+        WHEN '中アクティブ' THEN 2
+        WHEN '低アクティブ' THEN 3
+        ELSE 4
+      END)
+      FROM activity_labels l
+      LEFT JOIN activity_segments s USING(label)
+    ) AS segments
+  ) AS activityDistribution,
+  STRUCT(
+    (
+      SELECT ARRAY_AGG(STRUCT(hour_label AS hour, request_count AS requestCount) ORDER BY hour_label)
+      FROM request_by_hour
+    ) AS requestByHour,
+    (
+      SELECT ARRAY_AGG(STRUCT(
+        CASE device_class
+          WHEN 'desktop' THEN 'PC'
+          WHEN 'mobile' THEN 'モバイル'
+          ELSE '不明'
+        END AS label,
+        device_class AS value,
+        request_count AS count,
+        SAFE_DIVIDE(request_count, NULLIF((SELECT total_count FROM device_total), 0)) AS rate
+      ) ORDER BY request_count DESC, device_class)
+      FROM device_distribution
+    ) AS deviceDistribution,
+    (
+      SELECT ARRAY_AGG(STRUCT(
+        CASE mode
+          WHEN 'internal' THEN '社内モード'
+          WHEN 'websearch' THEN 'Web検索モード'
+          ELSE 'その他'
+        END AS label,
+        mode AS value,
+        request_count AS count,
+        SAFE_DIVIDE(request_count, NULLIF((SELECT total_count FROM mode_total), 0)) AS rate
+      ) ORDER BY request_count DESC, mode)
+      FROM mode_distribution
+    ) AS modeDistribution
+  ) AS environmentMode,
+  STRUCT(
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'answerability'
+    ) AS answerability,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'usability'
+    ) AS usability,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'deliveryReadiness'
+    ) AS deliveryReadiness,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'evidenceSufficiency'
+    ) AS evidenceSufficiency,
+    (
+      SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate) ORDER BY count DESC, label)
+      FROM answer_distribution WHERE metric = 'verificationVerdict'
+    ) AS verificationVerdict
+  ) AS answerQuality,
+  STRUCT(
+    (SELECT recognized_count FROM followup_summary) AS recognizedCount,
+    (SELECT success_count FROM followup_summary) AS successCount,
+    SAFE_DIVIDE((SELECT success_count FROM followup_summary), NULLIF((SELECT recognized_count FROM followup_summary), 0)) AS successRate,
+    (SELECT explicit_correction_count FROM followup_summary) AS explicitCorrectionCount,
+    (SELECT clarification_required_count FROM followup_summary) AS clarificationRequiredCount,
+    (SELECT followup_offtopic_count FROM followup_summary) AS followupOfftopicCount
+  ) AS followup
+)) AS payload_json
+"""
+        rows = self._run_query(sql, params)
+        if not rows:
+            return {}
+        payload = rows[0].get("payload_json")
+        if not payload:
+            return {}
+        return json.loads(str(payload))
 
     def get_usage_timeseries(self, *, window: MetricsTimeWindow) -> List[Dict[str, Any]]:
         if window.is_day_bucket:
@@ -569,6 +925,234 @@ ORDER BY request_count DESC
 """
         return self._run_query(sql, self._window_params(window)[:3])
 
+    def get_request_user_usage_trend(self, *, window: MetricsTimeWindow) -> List[Dict[str, Any]]:
+        sql = f"""
+WITH events AS (
+  SELECT
+    DATE(timestamp, @tz) AS event_date,
+    COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), NULLIF(JSON_VALUE(payload, '$.user_email'), ''), 'unknown') AS user_key,
+    COALESCE(SAFE_CAST(JSON_VALUE(payload, '$.is_core') AS BOOL), FALSE) AS is_core
+  FROM (
+    SELECT
+      timestamp,
+      SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^request_user_metric_json=(.*)$")) AS payload
+    FROM {self._stdout_table()}
+    WHERE resource.type = 'cloud_run_revision'
+      AND resource.labels.service_name = @service_name
+      AND timestamp >= @start_ts
+      AND timestamp < @end_ts
+      AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^request_user_metric_json=")
+  )
+  WHERE payload IS NOT NULL
+)
+SELECT
+  FORMAT_DATE('%Y-%m-%d', event_date) AS date,
+  COUNT(DISTINCT user_key) AS activeUserCount,
+  COUNTIF(is_core) AS messageCount
+FROM events
+GROUP BY event_date
+ORDER BY event_date ASC
+"""
+        return self._run_query(sql, self._window_params(window))
+
+    def get_request_user_activity_distribution(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
+        sql = f"""
+WITH events AS (
+  SELECT
+    timestamp,
+    COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), NULLIF(JSON_VALUE(payload, '$.user_email'), ''), 'unknown') AS user_key,
+    COALESCE(SAFE_CAST(JSON_VALUE(payload, '$.is_core') AS BOOL), FALSE) AS is_core
+  FROM (
+    SELECT
+      timestamp,
+      SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^request_user_metric_json=(.*)$")) AS payload
+    FROM {self._stdout_table()}
+    WHERE resource.type = 'cloud_run_revision'
+      AND resource.labels.service_name = @service_name
+      AND timestamp >= TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY)
+      AND timestamp < @end_ts
+      AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^request_user_metric_json=")
+  )
+  WHERE payload IS NOT NULL
+),
+by_user AS (
+  SELECT
+    user_key,
+    COUNTIF(is_core AND timestamp >= TIMESTAMP_SUB(@end_ts, INTERVAL 3 DAY)) AS core_count_3d,
+    COUNTIF(is_core AND timestamp >= TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY)) AS core_count_7d,
+    COUNTIF(is_core AND timestamp >= TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY)) AS core_count_14d
+  FROM events
+  GROUP BY user_key
+),
+segments AS (
+  SELECT
+    CASE
+      WHEN core_count_3d >= 3 THEN '高アクティブ'
+      WHEN core_count_7d BETWEEN 1 AND 2 THEN '中アクティブ'
+      WHEN core_count_14d >= 1 THEN '低アクティブ'
+      ELSE '休眠ユーザー'
+    END AS label,
+    COUNT(*) AS count
+  FROM by_user
+  GROUP BY label
+),
+labels AS (
+  SELECT '高アクティブ' AS label UNION ALL
+  SELECT '中アクティブ' UNION ALL
+  SELECT '低アクティブ' UNION ALL
+  SELECT '休眠ユーザー'
+)
+SELECT
+  labels.label,
+  COALESCE(segments.count, 0) AS count
+FROM labels
+LEFT JOIN segments USING(label)
+"""
+        rows = self._run_query(sql, self._window_params(window)[:3])
+        total = sum(int(row.get("count") or 0) for row in rows)
+        return {
+            "totalUserCount": total,
+            "segments": [
+                {
+                    "label": str(row.get("label") or ""),
+                    "count": int(row.get("count") or 0),
+                    "rate": (int(row.get("count") or 0) / total) if total > 0 else None,
+                }
+                for row in rows
+            ],
+        }
+
+    def get_request_user_mode_distribution(self, *, window: MetricsTimeWindow) -> List[Dict[str, Any]]:
+        sql = f"""
+WITH events AS (
+  SELECT
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.mode'), ''), 'unknown')) AS mode,
+    COALESCE(SAFE_CAST(JSON_VALUE(payload, '$.is_core') AS BOOL), FALSE) AS is_core
+  FROM (
+    SELECT SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^request_user_metric_json=(.*)$")) AS payload
+    FROM {self._stdout_table()}
+    WHERE resource.type = 'cloud_run_revision'
+      AND resource.labels.service_name = @service_name
+      AND timestamp >= @start_ts
+      AND timestamp < @end_ts
+      AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^request_user_metric_json=")
+  )
+  WHERE payload IS NOT NULL
+)
+SELECT
+  mode,
+  COUNTIF(is_core) AS count
+FROM events
+WHERE mode IN ('internal', 'websearch')
+GROUP BY mode
+ORDER BY count DESC
+"""
+        return self._run_query(sql, self._window_params(window)[:3])
+
+    def get_request_user_monitoring_rows(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        activity: str = "",
+        q: str = "",
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        lookup = str(q or "").strip().lower()
+        activity_filter = str(activity or "").strip().lower()
+        size = max(1, min(int(limit or 100), 1000))
+        sql = f"""
+WITH events AS (
+  SELECT
+    timestamp,
+    COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), 'unknown') AS user_id,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_email'), ''), '')) AS user_email,
+    COALESCE(SAFE_CAST(JSON_VALUE(payload, '$.is_core') AS BOOL), FALSE) AS is_core
+  FROM (
+    SELECT
+      timestamp,
+      SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^request_user_metric_json=(.*)$")) AS payload
+    FROM {self._stdout_table()}
+    WHERE resource.type = 'cloud_run_revision'
+      AND resource.labels.service_name = @service_name
+      AND timestamp >= TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY)
+      AND timestamp < @end_ts
+      AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^request_user_metric_json=")
+  )
+  WHERE payload IS NOT NULL
+    AND (
+      @lookup = ''
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), '')) LIKE CONCAT('%', @lookup, '%')
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_email'), ''), '')) LIKE CONCAT('%', @lookup, '%')
+    )
+),
+by_user AS (
+  SELECT
+    user_id,
+    user_email,
+    MAX(timestamp) AS last_active_at,
+    COUNT(DISTINCT IF(is_core AND timestamp >= TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY), DATE(timestamp, @tz), NULL)) AS active_days_7,
+    COUNTIF(is_core AND timestamp >= TIMESTAMP_SUB(@end_ts, INTERVAL 7 DAY)) AS message_count_7d,
+    COUNTIF(is_core AND timestamp >= TIMESTAMP_SUB(@end_ts, INTERVAL 3 DAY)) AS message_count_3d,
+    COUNTIF(is_core AND timestamp >= TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY)) AS message_count_14d
+  FROM events
+  GROUP BY user_id, user_email
+),
+classified AS (
+  SELECT
+    *,
+    CASE
+      WHEN message_count_3d >= 3 THEN '高アクティブ'
+      WHEN message_count_7d BETWEEN 1 AND 2 THEN '中アクティブ'
+      WHEN message_count_14d >= 1 THEN '低アクティブ'
+      ELSE '休眠ユーザー'
+    END AS activity_level,
+    CASE
+      WHEN message_count_3d >= 3 THEN 'high'
+      WHEN message_count_7d BETWEEN 1 AND 2 THEN 'middle'
+      WHEN message_count_14d >= 1 THEN 'low'
+      ELSE 'dormant'
+    END AS activity_key
+  FROM by_user
+)
+SELECT
+  user_id,
+  user_email,
+  FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', last_active_at, @tz) AS last_active_at_jst,
+  active_days_7,
+  message_count_7d,
+  activity_level,
+  activity_key,
+  message_count_3d,
+  message_count_14d
+FROM classified
+WHERE @activity = '' OR activity_key = @activity OR LOWER(activity_level) = @activity
+ORDER BY last_active_at DESC
+LIMIT @limit
+"""
+        params = self._window_params(window) + [
+            bigquery.ScalarQueryParameter("lookup", "STRING", lookup),
+            bigquery.ScalarQueryParameter("activity", "STRING", activity_filter),
+            bigquery.ScalarQueryParameter("limit", "INT64", size),
+        ]
+        rows = self._run_query(sql, params)
+        return [
+            {
+                "userId": str(row.get("user_id") or ""),
+                "userEmail": str(row.get("user_email") or ""),
+                "userIdHash": "",
+                "lastActiveAtJst": str(row.get("last_active_at_jst") or ""),
+                "activeDays7": int(row.get("active_days_7") or 0),
+                "messageCount7d": int(row.get("message_count_7d") or 0),
+                "coverageRate": None,
+                "badFeedbackRate": None,
+                "activityLevel": str(row.get("activity_level") or ""),
+                "activityKey": str(row.get("activity_key") or ""),
+                "messageCount3d": int(row.get("message_count_3d") or 0),
+                "messageCount14d": int(row.get("message_count_14d") or 0),
+            }
+            for row in rows
+        ]
+
     def get_request_user_timeseries(self, *, window: MetricsTimeWindow, user_key: str) -> List[Dict[str, Any]]:
         lookup = str(user_key or "").strip()
         if not lookup:
@@ -715,3 +1299,497 @@ ORDER BY g.bucket_local ASC, d.device_class ASC
             bigquery.ScalarQueryParameter("user_key", "STRING", lookup_lower),
         ]
         return self._run_query(sql, params)
+
+    def get_request_hour_distribution(self, *, window: MetricsTimeWindow) -> List[Dict[str, Any]]:
+        sql = f"""
+WITH hours AS (
+  SELECT hour
+  FROM UNNEST(GENERATE_ARRAY(0, 23)) AS hour
+),
+req AS (
+  SELECT EXTRACT(HOUR FROM DATETIME(timestamp, @tz)) AS hour
+  FROM {self._requests_table()}
+  WHERE resource.type = 'cloud_run_revision'
+    AND resource.labels.service_name = @service_name
+    AND timestamp >= @start_ts
+    AND timestamp < @end_ts
+)
+SELECT
+  FORMAT('%02d:00', h.hour) AS hour,
+  COALESCE(COUNT(r.hour), 0) AS request_count
+FROM hours h
+LEFT JOIN req r ON r.hour = h.hour
+GROUP BY h.hour
+ORDER BY h.hour ASC
+"""
+        return self._run_query(sql, self._window_params(window))
+
+    def get_answer_quality_metrics(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        user_key: str = "",
+    ) -> Dict[str, Any]:
+        lookup = str(user_key or "").strip().lower()
+        params = self._window_params(window)[:3] + [
+            bigquery.ScalarQueryParameter("user_key", "STRING", lookup),
+            bigquery.ScalarQueryParameter("coverage_threshold", "FLOAT64", 0.60),
+        ]
+        base_cte = f"""
+WITH src AS (
+  SELECT
+    timestamp AS ts,
+    SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^ask_audit_json=(.*)$")) AS payload
+  FROM {self._stdout_table()}
+  WHERE resource.type = 'cloud_run_revision'
+    AND resource.labels.service_name = @service_name
+    AND timestamp >= @start_ts
+    AND timestamp < @end_ts
+    AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^ask_audit_json=")
+),
+events AS (
+  SELECT
+    COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), NULLIF(JSON_VALUE(payload, '$.user_id_hash'), ''), 'unknown') AS user_key_value,
+    COALESCE(NULLIF(JSON_VALUE(payload, '$.ask_audit_schema_version'), ''), 'unknown') AS schema_version,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.answerability_level'), ''), NULLIF(JSON_VALUE(payload, '$.governance.answerability_level'), ''), 'unknown')) AS answerability_level,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.usability_level'), ''), NULLIF(JSON_VALUE(payload, '$.governance.usability_level'), ''), 'unknown')) AS usability_level,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.delivery_readiness'), ''), NULLIF(JSON_VALUE(payload, '$.governance.delivery_readiness'), ''), 'unknown')) AS delivery_readiness,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.evidence_sufficiency'), ''), NULLIF(JSON_VALUE(payload, '$.governance.evidence_sufficiency'), ''), 'unknown')) AS evidence_sufficiency,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.survivable_telemetry.verification_verdict'), ''), NULLIF(JSON_VALUE(payload, '$.verification_verdict'), ''), 'unknown')) AS verification_verdict,
+    SAFE_CAST(COALESCE(JSON_VALUE(payload, '$.coverage_score'), JSON_VALUE(payload, '$.survivable_telemetry.coverage_score')) AS FLOAT64) AS coverage_score,
+    SAFE_CAST(COALESCE(JSON_VALUE(payload, '$.alignment_score'), JSON_VALUE(payload, '$.survivable_telemetry.alignment_score')) AS FLOAT64) AS alignment_score,
+    COALESCE(SAFE_CAST(JSON_VALUE(payload, '$.structured_led') AS BOOL), FALSE) AS structured_led,
+    SAFE_CAST(JSON_VALUE(payload, '$.citation_count') AS INT64) AS citation_count,
+    COALESCE(SAFE_CAST(JSON_VALUE(payload, '$.claim_alignment_fallback') AS BOOL), FALSE) AS claim_alignment_fallback,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.citation_mapping_source'), ''), 'unknown')) AS citation_mapping_source,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.primary_reason_code'), ''), NULLIF(JSON_VALUE(payload, '$.governance.primary_reason_code'), ''), 'unknown')) AS primary_reason_code,
+    NULLIF(JSON_VALUE(payload, '$.error_code'), '') AS error_code
+  FROM src
+  WHERE payload IS NOT NULL
+    AND (
+      @user_key = ''
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id_hash'), ''), '')) = @user_key
+    )
+)
+"""
+        summary_sql = f"""
+{base_cte}
+SELECT
+  COUNT(*) AS answer_count,
+  COUNTIF(
+    error_code IS NULL
+    AND answerability_level NOT IN ('not_answerable', 'clarification_blocked')
+  ) AS answer_success_count,
+  SAFE_DIVIDE(
+    COUNTIF(
+      error_code IS NULL
+      AND answerability_level NOT IN ('not_answerable', 'clarification_blocked')
+    ),
+    COUNT(*)
+  ) AS answer_success_rate,
+  COUNTIF(
+    COALESCE(citation_count, 0) = 0
+    OR evidence_sufficiency = 'insufficient'
+    OR COALESCE(coverage_score, 1.0) < @coverage_threshold
+  ) AS low_coverage_count,
+  SAFE_DIVIDE(
+    COUNTIF(
+      COALESCE(citation_count, 0) = 0
+      OR evidence_sufficiency = 'insufficient'
+      OR COALESCE(coverage_score, 1.0) < @coverage_threshold
+    ),
+    COUNT(*)
+  ) AS low_coverage_rate,
+  AVG(coverage_score) AS average_coverage_score,
+  AVG(alignment_score) AS average_alignment_score,
+  COUNTIF(structured_led) AS structured_led_count,
+  SAFE_DIVIDE(COUNTIF(structured_led), COUNT(*)) AS structured_led_rate,
+  COUNTIF(claim_alignment_fallback OR citation_mapping_source = 'legacy') AS citation_binding_issue_count,
+  SAFE_DIVIDE(COUNTIF(claim_alignment_fallback OR citation_mapping_source = 'legacy'), COUNT(*)) AS citation_binding_issue_rate
+FROM events
+"""
+        distribution_sql = f"""
+{base_cte}
+SELECT 'answerability' AS metric, answerability_level AS label, COUNT(*) AS count FROM events GROUP BY label
+UNION ALL
+SELECT 'usability' AS metric, usability_level AS label, COUNT(*) AS count FROM events GROUP BY label
+UNION ALL
+SELECT 'deliveryReadiness' AS metric, delivery_readiness AS label, COUNT(*) AS count FROM events GROUP BY label
+UNION ALL
+SELECT 'evidenceSufficiency' AS metric, evidence_sufficiency AS label, COUNT(*) AS count FROM events GROUP BY label
+UNION ALL
+SELECT 'verificationVerdict' AS metric, verification_verdict AS label, COUNT(*) AS count FROM events GROUP BY label
+UNION ALL
+SELECT 'riskReasons' AS metric, primary_reason_code AS label, COUNT(*) AS count FROM events GROUP BY label
+"""
+        gap_sql = f"""
+WITH src AS (
+  SELECT SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^coverage_gap_workitem_json=(.*)$")) AS payload
+  FROM {self._stdout_table()}
+  WHERE resource.type = 'cloud_run_revision'
+    AND resource.labels.service_name = @service_name
+    AND timestamp >= @start_ts
+    AND timestamp < @end_ts
+    AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^coverage_gap_workitem_json=")
+),
+events AS (
+  SELECT
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.gap_kind'), ''), 'unknown')) AS gap_kind
+  FROM src
+  WHERE payload IS NOT NULL
+    AND (
+      @user_key = ''
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id_hash'), ''), '')) = @user_key
+    )
+)
+SELECT gap_kind, COUNT(*) AS count
+FROM events
+GROUP BY gap_kind
+ORDER BY count DESC
+LIMIT 30
+"""
+        summary_rows = self._run_query(summary_sql, params)
+        distribution_rows = self._run_query(distribution_sql, params)
+        gap_rows = self._run_query(gap_sql, params)
+        summary = summary_rows[0] if summary_rows else {}
+        answer_count = int(summary.get("answer_count") or 0)
+
+        distributions: Dict[str, List[Dict[str, Any]]] = {
+            "answerability": [],
+            "usability": [],
+            "deliveryReadiness": [],
+            "evidenceSufficiency": [],
+            "verificationVerdict": [],
+        }
+        risk_reasons: List[Dict[str, Any]] = []
+        for row in distribution_rows:
+            metric = str(row.get("metric") or "")
+            label = str(row.get("label") or "unknown")
+            count = int(row.get("count") or 0)
+            item = {
+                "label": label,
+                "count": count,
+                "rate": (count / answer_count) if answer_count > 0 else None,
+            }
+            if metric == "riskReasons":
+                if label != "unknown":
+                    risk_reasons.append(item)
+            elif metric in distributions:
+                distributions[metric].append(item)
+
+        coverage_gap_count = sum(int(row.get("count") or 0) for row in gap_rows)
+        return {
+            "summary": {
+                "answerCount": answer_count,
+                "answerSuccessRate": summary.get("answer_success_rate"),
+                "answerSuccessCount": int(summary.get("answer_success_count") or 0),
+                "lowCoverageRate": summary.get("low_coverage_rate"),
+                "lowCoverageCount": int(summary.get("low_coverage_count") or 0),
+                "coverageGapWorkitemCount": coverage_gap_count,
+                "averageCoverageScore": summary.get("average_coverage_score"),
+                "averageAlignmentScore": summary.get("average_alignment_score"),
+                "structuredLedCount": int(summary.get("structured_led_count") or 0),
+                "structuredLedRate": summary.get("structured_led_rate"),
+                "citationBindingIssueCount": int(summary.get("citation_binding_issue_count") or 0),
+                "citationBindingIssueRate": summary.get("citation_binding_issue_rate"),
+            },
+            "distributions": distributions,
+            "riskReasons": risk_reasons,
+            "coverageGapKinds": [
+                {
+                    "label": str(row.get("gap_kind") or "unknown"),
+                    "count": int(row.get("count") or 0),
+                    "rate": (int(row.get("count") or 0) / coverage_gap_count) if coverage_gap_count > 0 else None,
+                }
+                for row in gap_rows
+            ],
+        }
+
+    def get_followup_metrics(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        user_key: str = "",
+    ) -> Dict[str, Any]:
+        lookup = str(user_key or "").strip().lower()
+        params = self._window_params(window)[:3] + [
+            bigquery.ScalarQueryParameter("user_key", "STRING", lookup),
+        ]
+        sql = f"""
+WITH open_src AS (
+  SELECT SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^followup_open_result_json=(.*)$")) AS payload
+  FROM {self._stdout_table()}
+  WHERE resource.type = 'cloud_run_revision'
+    AND resource.labels.service_name = @service_name
+    AND timestamp >= @start_ts
+    AND timestamp < @end_ts
+    AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^followup_open_result_json=")
+),
+open_events AS (
+  SELECT
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.event'), ''), 'unknown')) AS event_name,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.state_action'), ''), 'unknown')) AS state_action,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.error_code'), ''), '')) AS error_code
+  FROM open_src
+  WHERE payload IS NOT NULL
+    AND (
+      @user_key = ''
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id_hash'), ''), '')) = @user_key
+    )
+),
+resolution_src AS (
+  SELECT SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^followup_resolution_json=(.*)$")) AS payload
+  FROM {self._stdout_table()}
+  WHERE resource.type = 'cloud_run_revision'
+    AND resource.labels.service_name = @service_name
+    AND timestamp >= @start_ts
+    AND timestamp < @end_ts
+    AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^followup_resolution_json=")
+),
+resolution_events AS (
+  SELECT
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.decision_normalized'), ''), NULLIF(JSON_VALUE(payload, '$.decision'), ''), 'unknown')) AS decision,
+    COALESCE(SAFE_CAST(JSON_VALUE(payload, '$.followup_offtopic') AS BOOL), FALSE) AS followup_offtopic,
+    JSON_VALUE_ARRAY(payload, '$.reason_codes') AS reason_codes
+  FROM resolution_src
+  WHERE payload IS NOT NULL
+    AND (
+      @user_key = ''
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), '')) = @user_key
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id_hash'), ''), '')) = @user_key
+    )
+),
+reason_rows AS (
+  SELECT LOWER(COALESCE(NULLIF(reason, ''), 'unknown')) AS reason
+  FROM resolution_events, UNNEST(COALESCE(reason_codes, ['unknown'])) AS reason
+)
+SELECT 'open_event' AS kind, event_name AS value, COUNT(*) AS count FROM open_events GROUP BY value
+UNION ALL
+SELECT 'decision' AS kind, decision AS value, COUNT(*) AS count FROM resolution_events GROUP BY value
+UNION ALL
+SELECT 'reason' AS kind, reason AS value, COUNT(*) AS count FROM reason_rows GROUP BY value
+UNION ALL
+SELECT 'state_action' AS kind, state_action AS value, COUNT(*) AS count FROM open_events GROUP BY value
+UNION ALL
+SELECT 'offtopic' AS kind, CAST(followup_offtopic AS STRING) AS value, COUNT(*) AS count FROM resolution_events GROUP BY value
+"""
+        rows = self._run_query(sql, params)
+        by_kind: Dict[str, Dict[str, int]] = {}
+        for row in rows:
+            kind = str(row.get("kind") or "")
+            value = str(row.get("value") or "unknown")
+            count = int(row.get("count") or 0)
+            by_kind.setdefault(kind, {})[value] = count
+
+        open_events = by_kind.get("open_event", {})
+        decisions = by_kind.get("decision", {})
+        recognized = int(open_events.get("recognized", 0))
+        success = int(open_events.get("success", 0))
+        explicit_correction = int(decisions.get("explicit_correction", 0))
+        clarification = int(decisions.get("clarify_before_carry", 0))
+        offtopic = int(by_kind.get("offtopic", {}).get("true", 0))
+        reason_total = sum(by_kind.get("reason", {}).values())
+        state_total = sum(by_kind.get("state_action", {}).values())
+        return {
+            "summary": {
+                "recognizedCount": recognized,
+                "successCount": success,
+                "successRate": (success / recognized) if recognized > 0 else None,
+                "explicitCorrectionCount": explicit_correction,
+                "clarificationRequiredCount": clarification,
+                "followupOfftopicCount": offtopic,
+            },
+            "funnel": [
+                {"label": "追問認識", "count": recognized},
+                {"label": "追問成功", "count": success},
+                {"label": "明示的な訂正", "count": explicit_correction},
+                {"label": "確認が必要な追問", "count": clarification},
+            ],
+            "reasonBreakdown": [
+                {
+                    "label": "理由シグナル",
+                    "value": value,
+                    "count": count,
+                    "rate": (count / reason_total) if reason_total > 0 else None,
+                }
+                for value, count in sorted(by_kind.get("reason", {}).items(), key=lambda item: item[1], reverse=True)
+                if value != "unknown"
+            ],
+            "stateActionBreakdown": [
+                {
+                    "label": value,
+                    "count": count,
+                    "rate": (count / state_total) if state_total > 0 else None,
+                }
+                for value, count in sorted(by_kind.get("state_action", {}).items(), key=lambda item: item[1], reverse=True)
+                if value != "unknown"
+            ],
+        }
+
+    def get_schema_health_metrics(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
+        sql = f"""
+WITH families AS (
+  SELECT 'ask_audit_json' AS event_family, r"^ask_audit_json=(.*)$" AS pattern UNION ALL
+  SELECT 'followup_resolution_json', r"^followup_resolution_json=(.*)$" UNION ALL
+  SELECT 'followup_open_result_json', r"^followup_open_result_json=(.*)$" UNION ALL
+  SELECT 'coverage_gap_workitem_json', r"^coverage_gap_workitem_json=(.*)$"
+),
+src AS (
+  SELECT
+    f.event_family,
+    SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(s.textPayload AS STRING), f.pattern)) AS payload
+  FROM {self._stdout_table()} s
+  JOIN families f ON REGEXP_CONTAINS(CAST(s.textPayload AS STRING), REGEXP_REPLACE(f.pattern, r"\(\.\*\)\$", ""))
+  WHERE s.resource.type = 'cloud_run_revision'
+    AND s.resource.labels.service_name = @service_name
+    AND s.timestamp >= @start_ts
+    AND s.timestamp < @end_ts
+),
+events AS (
+  SELECT
+    event_family,
+    COALESCE(
+      NULLIF(JSON_VALUE(payload, '$.ask_audit_schema_version'), ''),
+      NULLIF(JSON_VALUE(payload, '$.followup_resolution_schema_version'), ''),
+      NULLIF(JSON_VALUE(payload, '$.followup_open_result_schema_version'), ''),
+      NULLIF(JSON_VALUE(payload, '$.coverage_gap_workitem_schema_version'), ''),
+      'unknown'
+    ) AS schema_version,
+    payload
+  FROM src
+)
+SELECT
+  event_family,
+  schema_version,
+  COUNT(*) AS event_count,
+  COUNTIF(payload IS NULL) AS schema_mismatch_count,
+  COUNTIF(
+    COALESCE(NULLIF(JSON_VALUE(payload, '$.trace_id'), ''), '') = ''
+    OR COALESCE(NULLIF(JSON_VALUE(payload, '$.conversation_id'), ''), NULLIF(JSON_VALUE(payload, '$.session_id'), ''), '') = ''
+    OR COALESCE(NULLIF(JSON_VALUE(payload, '$.turn_id'), ''), '') = ''
+  ) AS required_field_missing_count,
+  COUNTIF(COALESCE(NULLIF(JSON_VALUE(payload, '$.message_id'), ''), '') != '') AS joined_message_id_count,
+  COUNTIF(COALESCE(NULLIF(JSON_VALUE(payload, '$.message_id'), ''), '') = '') AS missing_message_id_count
+FROM events
+GROUP BY event_family, schema_version
+ORDER BY event_family, schema_version
+"""
+        rows = self._run_query(sql, self._window_params(window)[:3])
+        answer_rows = sum(int(row.get("event_count") or 0) for row in rows if row.get("event_family") == "ask_audit_json")
+        joined_message = sum(
+            int(row.get("joined_message_id_count") or 0)
+            for row in rows
+            if row.get("event_family") == "ask_audit_json"
+        )
+        followup_unjoined = sum(
+            int(row.get("required_field_missing_count") or 0)
+            for row in rows
+            if row.get("event_family") in {"followup_resolution_json", "followup_open_result_json"}
+        )
+        coverage_rows = sum(
+            int(row.get("event_count") or 0)
+            for row in rows
+            if row.get("event_family") == "coverage_gap_workitem_json"
+        )
+        coverage_joined = sum(
+            int(row.get("joined_message_id_count") or 0)
+            for row in rows
+            if row.get("event_family") == "coverage_gap_workitem_json"
+        )
+        return {
+            "events": [
+                {
+                    "eventFamily": str(row.get("event_family") or "unknown"),
+                    "schemaVersion": str(row.get("schema_version") or "unknown"),
+                    "eventCount": int(row.get("event_count") or 0),
+                    "requiredFieldMissingCount": int(row.get("required_field_missing_count") or 0),
+                    "schemaMismatchCount": int(row.get("schema_mismatch_count") or 0),
+                    "missingMessageIdCount": int(row.get("missing_message_id_count") or 0),
+                }
+                for row in rows
+            ],
+            "joinHealth": {
+                "answerRowCount": answer_rows,
+                "joinedMessageCount": joined_message,
+                "joinRate": (joined_message / answer_rows) if answer_rows > 0 else None,
+                "followupUnjoinedCount": followup_unjoined,
+                "coverageGapJoinRate": (coverage_joined / coverage_rows) if coverage_rows > 0 else None,
+            },
+            "dataDelay": {
+                "p95Sec": None,
+            },
+        }
+
+    def search_trace_payloads(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        conversation_id: str = "",
+        trace_id: str = "",
+        turn_id: str = "",
+        user_id: str = "",
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        size = max(1, min(int(limit or 50), 500))
+        sql = f"""
+SELECT
+  event_ts,
+  FORMAT_TIMESTAMP('%Y-%m-%d %H:%M:%S', event_ts, @tz) AS event_ts_jst,
+  event_family,
+  schema_version,
+  trace_id,
+  request_id,
+  conversation_id,
+  session_id,
+  turn_id,
+  parent_turn_id,
+  message_id,
+  user_id,
+  user_id_hash,
+  mode,
+  conversation_turn_key,
+  conversation_message_key,
+  trace_request_key
+FROM `{self._project}.{self._dataset}.v_monitor_event_message_join_keys`
+WHERE event_ts >= @start_ts
+  AND event_ts < @end_ts
+  AND (@conversation_id = '' OR conversation_id = @conversation_id)
+  AND (@trace_id = '' OR trace_id = @trace_id)
+  AND (@turn_id = '' OR turn_id = @turn_id)
+  AND (@user_id = '' OR user_id = @user_id OR user_id_hash = @user_id)
+ORDER BY event_ts DESC
+LIMIT @limit
+"""
+        params = self._window_params(window) + [
+            bigquery.ScalarQueryParameter("conversation_id", "STRING", str(conversation_id or "").strip()),
+            bigquery.ScalarQueryParameter("trace_id", "STRING", str(trace_id or "").strip()),
+            bigquery.ScalarQueryParameter("turn_id", "STRING", str(turn_id or "").strip()),
+            bigquery.ScalarQueryParameter("user_id", "STRING", str(user_id or "").strip()),
+            bigquery.ScalarQueryParameter("limit", "INT64", size),
+        ]
+        rows = self._run_query(sql, params)
+        return [
+            {
+                "eventTs": row.get("event_ts").isoformat() if hasattr(row.get("event_ts"), "isoformat") else row.get("event_ts"),
+                "eventTsJst": str(row.get("event_ts_jst") or ""),
+                "eventFamily": str(row.get("event_family") or ""),
+                "schemaVersion": str(row.get("schema_version") or ""),
+                "traceId": str(row.get("trace_id") or ""),
+                "requestId": str(row.get("request_id") or ""),
+                "conversationId": str(row.get("conversation_id") or ""),
+                "sessionId": str(row.get("session_id") or ""),
+                "turnId": str(row.get("turn_id") or ""),
+                "parentTurnId": str(row.get("parent_turn_id") or ""),
+                "messageId": str(row.get("message_id") or ""),
+                "userId": str(row.get("user_id") or ""),
+                "userIdHash": str(row.get("user_id_hash") or ""),
+                "mode": str(row.get("mode") or ""),
+                "conversationTurnKey": str(row.get("conversation_turn_key") or ""),
+                "conversationMessageKey": str(row.get("conversation_message_key") or ""),
+                "traceRequestKey": str(row.get("trace_request_key") or ""),
+            }
+            for row in rows
+        ]

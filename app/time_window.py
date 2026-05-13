@@ -5,7 +5,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
-PresetType = Literal["today", "yesterday", "last_30m", "last_1h", "last_6h", "last_12h"]
+PresetType = Literal[
+    "today",
+    "yesterday",
+    "last_30m",
+    "last_1h",
+    "last_6h",
+    "last_12h",
+    "last_3d",
+    "last_7d",
+    "last_14d",
+    "last_30d",
+]
 SourceType = Literal["days", "preset", "custom"]
 
 
@@ -25,6 +36,10 @@ _PRESET_SET = {
     "last_1h",
     "last_6h",
     "last_12h",
+    "last_3d",
+    "last_7d",
+    "last_14d",
+    "last_30d",
 }
 
 
@@ -143,8 +158,17 @@ def resolve_time_window(
         elif cleaned_preset == "last_6h":
             local_start = now_local - timedelta(hours=6)
             local_end = now_local
-        else:  # last_12h
+        elif cleaned_preset == "last_12h":
             local_start = now_local - timedelta(hours=12)
+            local_end = now_local
+        else:
+            preset_days = {
+                "last_3d": 3,
+                "last_7d": 7,
+                "last_14d": 14,
+                "last_30d": 30,
+            }[cleaned_preset]
+            local_start = now_local - timedelta(days=preset_days)
             local_end = now_local
         start_utc = local_start.astimezone(timezone.utc)
         end_utc = local_end.astimezone(timezone.utc)

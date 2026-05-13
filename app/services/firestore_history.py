@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from app.services.google_auth import get_gcloud_cli_credentials_if_enabled
 from app.settings import Settings
 from app.time_window import MetricsTimeWindow
 
@@ -81,6 +82,79 @@ def _normalize_error_reason(value: Any) -> str:
     return text
 
 
+def _label_mode(value: Any) -> str:
+    mode = _normalize_mode(value)
+    if mode == "internal":
+        return "社内モード"
+    if mode == "websearch":
+        return "Web検索モード"
+    if mode == "standard":
+        return "標準モード"
+    if mode == "deepthinking":
+        return "Deep Thinking"
+    return "不明"
+
+
+def _label_role(value: Any) -> str:
+    role = _as_text(value).lower()
+    if role == "user":
+        return "ユーザー"
+    if role == "assistant":
+        return "アシスタント"
+    if role == "system":
+        return "システム"
+    return _as_text(value) or "不明"
+
+
+def _label_status(value: Any) -> str:
+    status = _as_text(value).lower()
+    if status in {"done", "success", "completed", "complete"}:
+        return "完了"
+    if status == "error":
+        return "エラー"
+    if status == "aborted":
+        return "取消し"
+    if status == "streaming":
+        return "生成中"
+    return _as_text(value) or "不明"
+
+
+def _label_device(value: Any) -> str:
+    device = _as_text(value).lower()
+    if device in {"desktop", "pc"}:
+        return "PC"
+    if device in {"mobile", "sp", "phone"}:
+        return "モバイル"
+    return "不明"
+
+
+def _content_preview(value: Any, *, max_len: int = 180) -> str:
+    text = " ".join(_as_text(value).split())
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
+
+
+def _activity_level(*, message_count_3d: int, message_count_7d: int, message_count_14d: int) -> str:
+    if message_count_3d >= 3:
+        return "高アクティブ"
+    if 1 <= message_count_7d <= 2:
+        return "中アクティブ"
+    if message_count_14d >= 1:
+        return "低アクティブ"
+    return "休眠ユーザー"
+
+
+def _message_device_class(payload: Dict[str, Any]) -> str:
+    direct = _as_text(payload.get("deviceClass") or payload.get("device_class"))
+    if direct:
+        return direct
+    metadata = payload.get("messageMetadata") or payload.get("message_metadata")
+    if isinstance(metadata, dict):
+        return _as_text(metadata.get("deviceClass") or metadata.get("device_class"))
+    return ""
+
+
 @dataclass
 class UsageAggregate:
     dau: int = 0
@@ -96,7 +170,12 @@ class FirestoreHistoryService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         db_id = str(settings.monitor_firestore_database or "(default)").strip() or "(default)"
-        self._client = firestore.Client(project=settings.monitor_project_id, database=db_id)
+        credentials = get_gcloud_cli_credentials_if_enabled(settings)
+        self._client = firestore.Client(
+            project=settings.monitor_project_id,
+            database=db_id,
+            credentials=credentials,
+        )
         self._root_collection = settings.monitor_firestore_chat_collection
         tz_name = str(settings.monitor_timezone or "Asia/Tokyo").strip() or "Asia/Tokyo"
         self._tz_name = tz_name
@@ -268,6 +347,421 @@ class FirestoreHistoryService:
             "usersScanned": len(users),
         }
 
+    def list_user_monitoring_rows(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        activity: str = "",
+        q: str = "",
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        size = max(1, min(int(limit or 100), 2000))
+        keyword = _as_text(q).lower()
+        activity_filter = _as_text(activity).lower()
+        end = window.end_utc
+        start_3d = end - timedelta(days=3)
+        start_7d = end - timedelta(days=7)
+        start_14d = end - timedelta(days=14)
+
+        rows: List[Dict[str, Any]] = []
+        users = self.list_users(limit=self._settings.monitor_max_users_scan, q=keyword)
+        for user in users:
+            user_id = _as_text(user.get("userId"))
+            user_email = _as_text(user.get("userEmail"))
+            if not user_id:
+                continue
+
+            message_count_3d = 0
+            message_count_7d = 0
+            message_count_14d = 0
+            active_days_7: set[str] = set()
+            assistant_count = 0
+            citation_covered_count = 0
+            feedback_total = 0
+            bad_feedback = 0
+            last_active: datetime | None = _parse_iso(user.get("updatedAt") or user.get("lastSeenAt"))
+
+            conv_ref = self._root().document(user_id).collection("conversations")
+            for conv_doc in conv_ref.stream():
+                conv_payload = conv_doc.to_dict() or {}
+                visibility = _as_text(conv_payload.get("visibility") or "active").lower()
+                if visibility == "hidden":
+                    continue
+                msg_query = (
+                    conv_doc.reference.collection("messages")
+                    .where(filter=FieldFilter("timestamp", ">=", start_14d.isoformat()))
+                    .where(filter=FieldFilter("timestamp", "<", end.isoformat()))
+                    .order_by("timestamp", direction=firestore.Query.ASCENDING)
+                )
+                for msg_doc in msg_query.stream():
+                    msg = msg_doc.to_dict() or {}
+                    ts = _parse_iso(msg.get("timestamp") or msg.get("updatedAt"))
+                    if ts is None or ts >= end:
+                        continue
+                    if last_active is None or ts > last_active:
+                        last_active = ts
+                    role = _as_text(msg.get("role")).lower()
+                    if role == "user":
+                        message_count_14d += 1
+                        if ts >= start_7d:
+                            message_count_7d += 1
+                            active_days_7.add(ts.astimezone(self._tz).strftime("%Y-%m-%d"))
+                        if ts >= start_3d:
+                            message_count_3d += 1
+                    elif role == "assistant" and window.start_utc <= ts < window.end_utc:
+                        assistant_count += 1
+                        if _has_grounded_citation(msg):
+                            citation_covered_count += 1
+
+                    feedback = _as_text(msg.get("feedback")).lower()
+                    if feedback in {"good", "bad"} and window.start_utc <= ts < window.end_utc:
+                        feedback_total += 1
+                        if feedback == "bad":
+                            bad_feedback += 1
+
+            level = _activity_level(
+                message_count_3d=message_count_3d,
+                message_count_7d=message_count_7d,
+                message_count_14d=message_count_14d,
+            )
+            activity_key = {
+                "高アクティブ": "high",
+                "中アクティブ": "middle",
+                "低アクティブ": "low",
+                "休眠ユーザー": "dormant",
+            }.get(level, "")
+            if activity_filter and activity_filter not in {activity_key, level.lower()}:
+                continue
+
+            rows.append(
+                {
+                    "userId": user_id,
+                    "userEmail": user_email,
+                    "userIdHash": "",
+                    "lastActiveAt": last_active.isoformat() if last_active else "",
+                    "lastActiveAtJst": last_active.astimezone(self._tz).strftime("%Y-%m-%d %H:%M:%S") if last_active else "",
+                    "activeDays7": len(active_days_7),
+                    "messageCount7d": message_count_7d,
+                    "coverageRate": (citation_covered_count / assistant_count) if assistant_count > 0 else None,
+                    "badFeedbackRate": (bad_feedback / feedback_total) if feedback_total > 0 else None,
+                    "badFeedbackCount": bad_feedback,
+                    "feedbackCount": feedback_total,
+                    "activityLevel": level,
+                    "activityKey": activity_key,
+                    "messageCount3d": message_count_3d,
+                    "messageCount14d": message_count_14d,
+                }
+            )
+
+        rows.sort(key=lambda item: (_parse_iso(item.get("lastActiveAt")) or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+        return rows[:size]
+
+    def build_activity_distribution(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
+        rows = self.list_user_monitoring_rows(window=window, limit=self._settings.monitor_max_users_scan)
+        labels = ["高アクティブ", "中アクティブ", "低アクティブ", "休眠ユーザー"]
+        counts = {label: 0 for label in labels}
+        for row in rows:
+            level = _as_text(row.get("activityLevel")) or "休眠ユーザー"
+            counts[level] = counts.get(level, 0) + 1
+        total = sum(counts.values())
+        return {
+            "totalUserCount": total,
+            "segments": [
+                {
+                    "label": label,
+                    "count": counts.get(label, 0),
+                    "rate": (counts.get(label, 0) / total) if total > 0 else None,
+                }
+                for label in labels
+            ],
+        }
+
+    def get_usage_trend(self, *, window: MetricsTimeWindow) -> List[Dict[str, Any]]:
+        day_users: Dict[str, set[str]] = {}
+        day_messages: Dict[str, int] = {}
+        users = self.list_users(limit=self._settings.monitor_max_users_scan)
+        for user in users:
+            user_id = _as_text(user.get("userId"))
+            if not user_id:
+                continue
+            conv_ref = self._root().document(user_id).collection("conversations")
+            for conv_doc in conv_ref.stream():
+                conv_payload = conv_doc.to_dict() or {}
+                if _as_text(conv_payload.get("visibility") or "active").lower() == "hidden":
+                    continue
+                msg_query = (
+                    conv_doc.reference.collection("messages")
+                    .where(filter=FieldFilter("timestamp", ">=", window.start_utc.isoformat()))
+                    .where(filter=FieldFilter("timestamp", "<", window.end_utc.isoformat()))
+                    .order_by("timestamp", direction=firestore.Query.ASCENDING)
+                )
+                for msg_doc in msg_query.stream():
+                    msg = msg_doc.to_dict() or {}
+                    ts = _parse_iso(msg.get("timestamp") or msg.get("updatedAt"))
+                    if ts is None:
+                        continue
+                    day = ts.astimezone(self._tz).strftime("%Y-%m-%d")
+                    day_messages[day] = day_messages.get(day, 0) + 1
+                    if _as_text(msg.get("role")).lower() == "user":
+                        day_users.setdefault(day, set()).add(user_id)
+
+        all_days = sorted(set(day_messages.keys()) | set(day_users.keys()))
+        return [
+            {
+                "date": day,
+                "activeUserCount": len(day_users.get(day, set())),
+                "messageCount": day_messages.get(day, 0),
+            }
+            for day in all_days
+        ]
+
+    def get_user_detail_metrics(
+        self,
+        *,
+        user_id: str,
+        window: MetricsTimeWindow,
+    ) -> Dict[str, Any] | None:
+        user = _as_text(user_id)
+        if not user:
+            return None
+        user_doc = self._root().document(user).get()
+        if not user_doc.exists:
+            return None
+        user_payload = user_doc.to_dict() or {}
+        user_email = _as_text(user_payload.get("userEmail"))
+
+        monitoring_rows = self.list_user_monitoring_rows(window=window, q=user, limit=1)
+        monitoring = monitoring_rows[0] if monitoring_rows else {}
+        conversations = self.list_user_conversations(user_id=user, include_hidden=True, limit=500)
+
+        day_counts: Dict[str, int] = {}
+        mode_counts: Dict[str, int] = {"internal": 0, "websearch": 0, "other": 0}
+        message_count = 0
+        assistant_count = 0
+        failed_answers = 0
+        bad_feedback = 0
+        feedback_total = 0
+        followup_count = 0
+
+        conv_ref = self._root().document(user).collection("conversations")
+        for conv_doc in conv_ref.stream():
+            conv_payload = conv_doc.to_dict() or {}
+            conv_mode = _as_text(conv_payload.get("mode"))
+            msg_query = (
+                conv_doc.reference.collection("messages")
+                .where(filter=FieldFilter("timestamp", ">=", window.start_utc.isoformat()))
+                .where(filter=FieldFilter("timestamp", "<", window.end_utc.isoformat()))
+                .order_by("timestamp", direction=firestore.Query.ASCENDING)
+            )
+            user_turn_index = -1
+            for msg_doc in msg_query.stream():
+                msg = msg_doc.to_dict() or {}
+                ts = _parse_iso(msg.get("timestamp") or msg.get("updatedAt"))
+                if ts is None:
+                    continue
+                day = ts.astimezone(self._tz).strftime("%Y-%m-%d")
+                day_counts[day] = day_counts.get(day, 0) + 1
+                message_count += 1
+                role = _as_text(msg.get("role")).lower()
+                if role == "user":
+                    user_turn_index += 1
+                    if _question_kind_from_message(msg, user_turn_index=user_turn_index) == "followup":
+                        followup_count += 1
+                if role == "assistant":
+                    assistant_count += 1
+                    status = _as_text(msg.get("status")).lower()
+                    if status == "error" or _as_text(msg.get("errorMessage")):
+                        failed_answers += 1
+                feedback = _as_text(msg.get("feedback")).lower()
+                if feedback in {"good", "bad"}:
+                    feedback_total += 1
+                    if feedback == "bad":
+                        bad_feedback += 1
+                mode = _normalize_mode(msg.get("modeAtSend") or conv_mode)
+                if mode in {"internal", "websearch"}:
+                    mode_counts[mode] += 1
+                else:
+                    mode_counts["other"] += 1
+
+        bad_feedback_rate = (bad_feedback / feedback_total) if feedback_total > 0 else None
+        answer_success_rate = (
+            max(0, assistant_count - failed_answers - bad_feedback) / assistant_count
+            if assistant_count > 0
+            else None
+        )
+        trend = [
+            {
+                "date": day,
+                "messageCount": count,
+                "answerSuccessRate": None,
+                "lowCoverageRate": None,
+            }
+            for day, count in sorted(day_counts.items())
+        ]
+        mode_total = sum(mode_counts.values())
+        return {
+            "user": {
+                "userId": user,
+                "userEmail": user_email,
+                "activityLevel": _as_text(monitoring.get("activityLevel")),
+                "lastActiveAtJst": _as_text(monitoring.get("lastActiveAtJst")),
+            },
+            "summary": {
+                "messageCount": message_count,
+                "answerSuccessRate": answer_success_rate,
+                "lowCoverageRate": None,
+                "badFeedbackRate": bad_feedback_rate,
+                "followupCount": followup_count,
+            },
+            "trend": trend,
+            "modeDistribution": [
+                {
+                    "label": _label_mode(mode) if mode != "other" else "その他",
+                    "value": mode,
+                    "count": count,
+                    "rate": (count / mode_total) if mode_total > 0 else None,
+                }
+                for mode, count in mode_counts.items()
+            ],
+            "answerQualityDistribution": {},
+            "followup": {},
+            "conversations": conversations,
+        }
+
+    def search_messages(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        conversation_id: str = "",
+        trace_id: str = "",
+        turn_id: str = "",
+        user_id: str = "",
+        user_email: str = "",
+        status: str = "",
+        mode: str = "",
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        size = max(1, min(int(limit or 100), 1000))
+        conv_lookup = _as_text(conversation_id)
+        trace_lookup = _as_text(trace_id)
+        turn_lookup = _as_text(turn_id)
+        user_lookup = _as_text(user_id)
+        email_lookup = _as_text(user_email).lower()
+        status_lookup = _as_text(status).lower()
+        mode_lookup = _as_text(mode).lower()
+        if not any([conv_lookup, trace_lookup, turn_lookup, user_lookup, email_lookup]):
+            return {
+                "conversations": [],
+                "messages": [],
+            }
+
+        users = self.list_users(limit=self._settings.monitor_max_users_scan, q=user_lookup or email_lookup)
+        if user_lookup:
+            users = [row for row in users if _as_text(row.get("userId")) == user_lookup]
+        if email_lookup:
+            users = [row for row in users if email_lookup in _as_text(row.get("userEmail")).lower()]
+
+        conversations_by_id: Dict[str, Dict[str, Any]] = {}
+        messages: List[Dict[str, Any]] = []
+        for user in users:
+            if len(messages) >= size:
+                break
+            uid = _as_text(user.get("userId"))
+            uemail = _as_text(user.get("userEmail"))
+            conv_ref = self._root().document(uid).collection("conversations")
+            for conv_doc in conv_ref.stream():
+                if len(messages) >= size:
+                    break
+                if conv_lookup and conv_doc.id != conv_lookup:
+                    continue
+                conv_payload = conv_doc.to_dict() or {}
+                visibility = _as_text(conv_payload.get("visibility") or "active").lower()
+                conv_mode = _as_text(conv_payload.get("mode"))
+                conv_row = {
+                    "conversationId": conv_doc.id,
+                    "title": _as_text(conv_payload.get("title")),
+                    "mode": _label_mode(conv_mode),
+                    "visibility": visibility,
+                    "createdAtJst": self._to_local_text(conv_payload.get("createdAt")),
+                    "updatedAtJst": self._to_local_text(conv_payload.get("updatedAt")),
+                    "messageCount": conv_payload.get("messageCount"),
+                    "integrityState": _as_text(conv_payload.get("integrityState")),
+                    "isFavorite": bool(conv_payload.get("isFavorite")),
+                    "followupRuntimeSummary": conv_payload.get("followupRuntimeSummary") or {},
+                    "userId": uid,
+                    "userEmail": uemail,
+                }
+                msg_query = (
+                    conv_doc.reference.collection("messages")
+                    .where(filter=FieldFilter("timestamp", ">=", window.start_utc.isoformat()))
+                    .where(filter=FieldFilter("timestamp", "<", window.end_utc.isoformat()))
+                    .order_by("timestamp", direction=firestore.Query.ASCENDING)
+                )
+                for msg_doc in msg_query.stream():
+                    if len(messages) >= size:
+                        break
+                    msg = msg_doc.to_dict() or {}
+                    msg_status = _as_text(msg.get("status")).lower()
+                    msg_mode = _normalize_mode(msg.get("modeAtSend") or conv_mode)
+                    msg_trace = _as_text(msg.get("traceId") or msg.get("trace_id"))
+                    msg_turn = _as_text(msg.get("turnId") or msg.get("turn_id"))
+                    if status_lookup and msg_status != status_lookup:
+                        continue
+                    if mode_lookup and msg_mode != mode_lookup:
+                        continue
+                    if trace_lookup and msg_trace != trace_lookup:
+                        continue
+                    if turn_lookup and msg_turn != turn_lookup:
+                        continue
+                    role = _as_text(msg.get("role"))
+                    device_raw = _message_device_class(msg)
+                    tags: List[str] = []
+                    if _question_kind_from_message(msg) == "followup":
+                        tags.append("追問")
+                    if msg_status == "error" or _as_text(msg.get("errorMessage")):
+                        tags.append("エラー")
+                    if _as_text(msg.get("feedback")).lower() == "bad":
+                        tags.append("低評価")
+                    if _has_grounded_citation(msg):
+                        tags.append("回答成功")
+                    conversations_by_id[conv_doc.id] = conv_row
+                    messages.append(
+                        {
+                            "timestamp": _as_text(msg.get("timestamp")),
+                            "timestampJst": self._to_local_text(msg.get("timestamp")),
+                            "role": _label_role(role),
+                            "roleLabel": _label_role(role),
+                            "roleRaw": role,
+                            "status": _label_status(msg_status),
+                            "statusLabel": _label_status(msg_status),
+                            "statusRaw": msg_status,
+                            "modeAtSend": _label_mode(msg_mode),
+                            "modeAtSendLabel": _label_mode(msg_mode),
+                            "modeAtSendRaw": msg_mode,
+                            "deviceClass": _label_device(device_raw),
+                            "deviceLabel": _label_device(device_raw),
+                            "deviceClassRaw": device_raw,
+                            "chatFlowType": _as_text(msg.get("chatFlowType")),
+                            "clientOrigin": _as_text(msg.get("clientOrigin")),
+                            "feedback": _as_text(msg.get("feedback")) or "none",
+                            "content": _as_text(msg.get("content")),
+                            "contentPreview": _content_preview(msg.get("content"), max_len=260),
+                            "conversationId": conv_doc.id,
+                            "traceId": msg_trace,
+                            "requestId": _as_text(msg.get("requestId") or msg.get("request_id")),
+                            "turnId": msg_turn,
+                            "messageId": _as_text(msg.get("messageId") or msg_doc.id),
+                            "userId": uid,
+                            "userEmail": uemail,
+                            "tags": tags,
+                        }
+                    )
+
+        return {
+            "conversations": list(conversations_by_id.values()),
+            "messages": messages,
+        }
+
     def aggregate_query_suggest_facts(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
         window_start = window.start_utc
         window_end = window.end_utc
@@ -366,8 +860,10 @@ class FirestoreHistoryService:
             out.append(
                 {
                     "id": doc.id,
+                    "conversationId": doc.id,
                     "title": title,
                     "mode": mode,
+                    "modeLabel": _label_mode(mode),
                     "updatedAt": updated_at,
                     "updatedAtJst": self._to_local_text(updated_at),
                     "createdAt": created_at,
@@ -377,6 +873,7 @@ class FirestoreHistoryService:
                     "messageCount": payload.get("messageCount"),
                     "integrityState": _as_text(payload.get("integrityState")),
                     "lastMessagePreview": preview,
+                    "followupRuntimeSummary": payload.get("followupRuntimeSummary") or {},
                     "deletedAt": deleted_at,
                     "deletedAtJst": self._to_local_text(deleted_at),
                 }
@@ -418,21 +915,29 @@ class FirestoreHistoryService:
             messages.append(
                 {
                     "id": msg.id,
+                    "messageId": _as_text(payload.get("messageId") or msg.id),
                     "role": role_text,
+                    "roleLabel": _label_role(role_text),
                     "content": _as_text(payload.get("content")),
+                    "contentPreview": _content_preview(payload.get("content")),
                     "timestamp": timestamp,
                     "timestampJst": self._to_local_text(timestamp),
                     "status": _as_text(payload.get("status")),
+                    "statusLabel": _label_status(payload.get("status")),
                     "errorMessage": _as_text(payload.get("errorMessage")),
                     "feedback": _as_text(payload.get("feedback")),
                     "attachmentNames": payload.get("attachmentNames") or [],
                     "attachmentFileIds": payload.get("attachmentFileIds") or [],
                     "modeAtSend": _as_text(payload.get("modeAtSend") or conv_mode),
+                    "modeAtSendLabel": _label_mode(payload.get("modeAtSend") or conv_mode),
+                    "deviceClass": _label_device(_message_device_class(payload)),
                     "chatFlowType": _as_text(payload.get("chatFlowType")),
                     "questionKind": _question_kind_from_message(payload, user_turn_index=inferred_user_turn_index),
                     "conversationIdAtSend": _as_text(payload.get("conversationIdAtSend")),
                     "turnId": _as_text(payload.get("turnId")),
                     "parentTurnId": _as_text(payload.get("parentTurnId")),
+                    "requestId": _as_text(payload.get("requestId") or payload.get("request_id")),
+                    "traceId": _as_text(payload.get("traceId") or payload.get("trace_id")),
                     "clientOrigin": _as_text(payload.get("clientOrigin")),
                 }
             )
@@ -452,6 +957,7 @@ class FirestoreHistoryService:
                 "isFavorite": bool(conv_payload.get("isFavorite")),
                 "messageCount": conv_payload.get("messageCount"),
                 "integrityState": _as_text(conv_payload.get("integrityState")),
+                "followupRuntimeSummary": conv_payload.get("followupRuntimeSummary") or {},
             },
             "messages": messages,
         }

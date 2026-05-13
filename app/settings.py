@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     monitor_dashboard_cache_ttl_sec: int = Field(default=15)
     monitor_timezone: str = Field(default="Asia/Tokyo")
     monitor_log_level: str = Field(default="INFO")
+    monitor_use_gcloud_cli_auth: bool = Field(default=False)
 
     @property
     def admin_allowlist(self) -> List[str]:
