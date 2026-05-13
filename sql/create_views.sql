@@ -312,6 +312,51 @@ SELECT
 FROM src
 WHERE payload IS NOT NULL;
 
+CREATE OR REPLACE VIEW `__PROJECT_ID__.__DATASET_ID__.v_answer_action_events` AS
+WITH src AS (
+  SELECT
+    timestamp AS event_ts,
+    SAFE.PARSE_JSON(REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^answer_action_json=(.*)$")) AS payload,
+    REGEXP_EXTRACT(CAST(textPayload AS STRING), r"^answer_action_json=(.*)$") AS raw_payload_json
+  FROM `__PROJECT_ID__.__DATASET_ID__.run_googleapis_com_stdout`
+  WHERE resource.type = 'cloud_run_revision'
+    AND resource.labels.service_name = '__SERVICE_NAME__'
+    AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^answer_action_json=")
+)
+SELECT
+  event_ts,
+  DATE(event_ts, 'Asia/Tokyo') AS event_date,
+  'answer_action_json' AS event_family,
+  COALESCE(NULLIF(JSON_VALUE(payload, '$.answer_action_schema_version'), ''), 'phase2.answer_action.v1') AS schema_version,
+  COALESCE(NULLIF(JSON_VALUE(payload, '$.answer_action_schema_version'), ''), 'phase2.answer_action.v1') AS answer_action_schema_version,
+  NULLIF(JSON_VALUE(payload, '$.event_id'), '') AS event_id,
+  LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.event'), ''), 'unknown')) AS event,
+  LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.feedback'), ''), '')) AS feedback,
+  NULLIF(JSON_VALUE(payload, '$.trace_id'), '') AS trace_id,
+  NULLIF(JSON_VALUE(payload, '$.request_id'), '') AS request_id,
+  NULLIF(JSON_VALUE(payload, '$.base_trace_id'), '') AS base_trace_id,
+  COALESCE(NULLIF(JSON_VALUE(payload, '$.conversation_id'), ''), NULLIF(JSON_VALUE(payload, '$.session_id'), '')) AS conversation_id,
+  COALESCE(NULLIF(JSON_VALUE(payload, '$.session_id'), ''), NULLIF(JSON_VALUE(payload, '$.conversation_id'), '')) AS session_id,
+  NULLIF(JSON_VALUE(payload, '$.turn_id'), '') AS turn_id,
+  NULLIF(JSON_VALUE(payload, '$.parent_turn_id'), '') AS parent_turn_id,
+  NULLIF(JSON_VALUE(payload, '$.message_id'), '') AS message_id,
+  COALESCE(NULLIF(JSON_VALUE(payload, '$.target_message_id'), ''), NULLIF(JSON_VALUE(payload, '$.message_id'), '')) AS target_message_id,
+  NULLIF(JSON_VALUE(payload, '$.user_id'), '') AS user_id,
+  NULLIF(JSON_VALUE(payload, '$.user_id_hash'), '') AS user_id_hash,
+  LOWER(NULLIF(JSON_VALUE(payload, '$.user_email'), '')) AS user_email,
+  LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.mode'), ''), 'unknown')) AS mode,
+  LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.request_mode'), ''), '')) AS request_mode,
+  LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.client_origin'), ''), '')) AS client_origin,
+  LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.device_class'), ''), 'unknown')) AS device_class,
+  NULLIF(JSON_VALUE(payload, '$.source_endpoint'), '') AS source_endpoint,
+  NULLIF(JSON_VALUE(payload, '$.reason'), '') AS reason,
+  CONCAT(COALESCE(NULLIF(JSON_VALUE(payload, '$.conversation_id'), ''), NULLIF(JSON_VALUE(payload, '$.session_id'), ''), ''), '#', COALESCE(NULLIF(JSON_VALUE(payload, '$.turn_id'), ''), '')) AS conversation_turn_key,
+  CONCAT(COALESCE(NULLIF(JSON_VALUE(payload, '$.conversation_id'), ''), NULLIF(JSON_VALUE(payload, '$.session_id'), ''), ''), '#', COALESCE(NULLIF(JSON_VALUE(payload, '$.target_message_id'), ''), NULLIF(JSON_VALUE(payload, '$.message_id'), ''), '')) AS conversation_message_key,
+  CONCAT(COALESCE(NULLIF(JSON_VALUE(payload, '$.trace_id'), ''), ''), '#', COALESCE(NULLIF(JSON_VALUE(payload, '$.request_id'), ''), '')) AS trace_request_key,
+  raw_payload_json
+FROM src
+WHERE payload IS NOT NULL;
+
 CREATE OR REPLACE VIEW `__PROJECT_ID__.__DATASET_ID__.v_monitor_event_message_join_keys` AS
 SELECT
   event_ts,
@@ -411,4 +456,24 @@ SELECT
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
-FROM `__PROJECT_ID__.__DATASET_ID__.v_request_user_metric_events`;
+FROM `__PROJECT_ID__.__DATASET_ID__.v_request_user_metric_events`
+UNION ALL
+SELECT
+  event_ts,
+  event_date,
+  event_family,
+  schema_version,
+  trace_id,
+  request_id,
+  conversation_id,
+  session_id,
+  turn_id,
+  parent_turn_id,
+  target_message_id AS message_id,
+  user_id,
+  user_id_hash,
+  mode,
+  conversation_turn_key,
+  conversation_message_key,
+  trace_request_key
+FROM `__PROJECT_ID__.__DATASET_ID__.v_answer_action_events`;

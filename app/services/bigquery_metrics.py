@@ -2720,7 +2720,8 @@ WITH families AS (
   SELECT 'ask_audit_json' AS event_family, r"^ask_audit_json=(.*)$" AS pattern UNION ALL
   SELECT 'followup_resolution_json', r"^followup_resolution_json=(.*)$" UNION ALL
   SELECT 'followup_open_result_json', r"^followup_open_result_json=(.*)$" UNION ALL
-  SELECT 'coverage_gap_workitem_json', r"^coverage_gap_workitem_json=(.*)$"
+  SELECT 'coverage_gap_workitem_json', r"^coverage_gap_workitem_json=(.*)$" UNION ALL
+  SELECT 'answer_action_json', r"^answer_action_json=(.*)$"
 ),
 src AS (
   SELECT

@@ -8,6 +8,22 @@ WITH gap_keys AS (
     NULLIF(conversation_message_key, '#') AS conversation_message_key
   FROM `__PROJECT_ID__.__DATASET_ID__.v_coverage_gap_workitems`
 ),
+answer_actions AS (
+  SELECT
+    NULLIF(trace_request_key, '#') AS trace_request_key,
+    NULLIF(conversation_turn_key, '#') AS conversation_turn_key,
+    NULLIF(conversation_message_key, '#') AS conversation_message_key,
+    LOGICAL_OR(event = 'feedback_submitted' AND feedback = 'bad') AS has_bad_feedback,
+    LOGICAL_OR(event = 'regenerate_requested') AS has_regenerate_request,
+    LOGICAL_OR(event = 'enhance_requested') AS has_enhance_request,
+    LOGICAL_OR(event = 'correction_requested') AS has_correction_request
+  FROM `__PROJECT_ID__.__DATASET_ID__.v_answer_action_events`
+  GROUP BY trace_request_key, conversation_turn_key, conversation_message_key
+),
+answer_action_stats AS (
+  SELECT COUNT(*) AS total_answer_action_event_count
+  FROM `__PROJECT_ID__.__DATASET_ID__.v_answer_action_events`
+),
 answer_base AS (
   SELECT
     a.*,
@@ -15,7 +31,47 @@ answer_base AS (
       gt.trace_request_key IS NOT NULL
       OR gturn.conversation_turn_key IS NOT NULL
       OR gmsg.conversation_message_key IS NOT NULL
-    ) AS has_coverage_gap
+    ) AS has_coverage_gap,
+    EXISTS (
+      SELECT 1
+      FROM answer_actions act
+      WHERE act.has_bad_feedback
+        AND (
+          act.trace_request_key = NULLIF(a.trace_request_key, '#')
+          OR act.conversation_turn_key = NULLIF(a.conversation_turn_key, '#')
+          OR act.conversation_message_key = NULLIF(a.conversation_message_key, '#')
+        )
+    ) AS has_bad_feedback,
+    EXISTS (
+      SELECT 1
+      FROM answer_actions act
+      WHERE act.has_regenerate_request
+        AND (
+          act.trace_request_key = NULLIF(a.trace_request_key, '#')
+          OR act.conversation_turn_key = NULLIF(a.conversation_turn_key, '#')
+          OR act.conversation_message_key = NULLIF(a.conversation_message_key, '#')
+        )
+    ) AS has_regenerate_request,
+    EXISTS (
+      SELECT 1
+      FROM answer_actions act
+      WHERE act.has_enhance_request
+        AND (
+          act.trace_request_key = NULLIF(a.trace_request_key, '#')
+          OR act.conversation_turn_key = NULLIF(a.conversation_turn_key, '#')
+          OR act.conversation_message_key = NULLIF(a.conversation_message_key, '#')
+        )
+    ) AS has_enhance_request,
+    EXISTS (
+      SELECT 1
+      FROM answer_actions act
+      WHERE act.has_correction_request
+        AND (
+          act.trace_request_key = NULLIF(a.trace_request_key, '#')
+          OR act.conversation_turn_key = NULLIF(a.conversation_turn_key, '#')
+          OR act.conversation_message_key = NULLIF(a.conversation_message_key, '#')
+        )
+    ) AS has_correction_request
   FROM `__PROJECT_ID__.__DATASET_ID__.v_ask_audit_events` a
   LEFT JOIN gap_keys gt
     ON gt.trace_request_key = NULLIF(a.trace_request_key, '#')
@@ -82,10 +138,10 @@ SELECT
   secondary_reason_codes,
   error_code,
   error_code IS NOT NULL AS has_error,
-  FALSE AS has_bad_feedback,
-  FALSE AS has_regenerate_request,
-  FALSE AS has_enhance_request,
-  FALSE AS has_correction_request,
+  has_bad_feedback,
+  has_regenerate_request,
+  has_enhance_request,
+  has_correction_request,
   has_coverage_gap,
   (
     has_coverage_gap
@@ -95,10 +151,19 @@ SELECT
   ) AS low_coverage_flag,
   (
     error_code IS NULL
-    AND answerability_level NOT IN ('not_answerable', 'clarification_blocked')
+    AND NOT has_bad_feedback
+    AND NOT has_regenerate_request
+    AND NOT has_enhance_request
+    AND NOT has_correction_request
   ) AS answer_success_flag,
-  ['proxy_quality_only'] AS answer_success_reason_codes,
-  'proxy' AS answer_success_metric_status,
+  ARRAY_CONCAT(
+    IF(error_code IS NOT NULL, ['error'], []),
+    IF(has_bad_feedback, ['bad_feedback'], []),
+    IF(has_regenerate_request, ['regenerate_requested'], []),
+    IF(has_enhance_request, ['enhance_requested'], []),
+    IF(has_correction_request, ['correction_requested'], [])
+  ) AS answer_success_reason_codes,
+  IF((SELECT total_answer_action_event_count FROM answer_action_stats) > 0, 'official', 'proxy') AS answer_success_metric_status,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key,
@@ -135,6 +200,8 @@ answer_daily AS (
     COUNTIF(answer_success_flag) AS answer_success_count,
     COUNTIF(low_coverage_flag) AS low_coverage_count,
     COUNTIF(has_error) AS answer_error_count,
+    COUNTIF(has_bad_feedback) AS bad_feedback_count,
+    COUNTIF(has_bad_feedback OR has_regenerate_request OR has_enhance_request OR has_correction_request) AS feedback_count,
     COUNTIF(structured_led) AS structured_led_count,
     SUM(COALESCE(citation_count, 0)) AS citation_count_sum
   FROM `__PROJECT_ID__.__DATASET_ID__.monitor_answer_events`
@@ -189,8 +256,8 @@ SELECT
   COALESCE(a.answer_error_count, 0) AS answer_error_count,
   COALESCE(a.structured_led_count, 0) AS structured_led_count,
   COALESCE(a.citation_count_sum, 0) AS citation_count_sum,
-  0 AS bad_feedback_count,
-  0 AS feedback_count,
+  COALESCE(a.bad_feedback_count, 0) AS bad_feedback_count,
+  COALESCE(a.feedback_count, 0) AS feedback_count,
   COALESCE(fo.followup_recognized_count, 0) AS followup_recognized_count,
   COALESCE(fo.followup_success_count, 0) AS followup_success_count,
   COALESCE(fr.explicit_correction_count, 0) AS explicit_correction_count,

@@ -72,6 +72,7 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
             "v_followup_open_result_events",
             "v_coverage_gap_workitems",
             "v_request_user_metric_events",
+            "v_answer_action_events",
             "v_monitor_event_message_join_keys",
         ):
             self.assertIn(view_name, sql)
@@ -84,6 +85,8 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
             "decision_normalized",
             "gap_kind",
             "device_class",
+            "answer_action_json",
+            "target_message_id",
         ):
             self.assertIn(field_name, sql)
 
@@ -120,6 +123,11 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("'last_30d'", aggregate_sql)
         self.assertIn("answer_success_flag", aggregate_sql)
         self.assertIn("answer_success_metric_status", aggregate_sql)
+        self.assertIn("v_answer_action_events", aggregate_sql)
+        self.assertIn("has_bad_feedback", aggregate_sql)
+        self.assertIn("regenerate_requested", aggregate_sql)
+        self.assertIn("enhance_requested", aggregate_sql)
+        self.assertIn("correction_requested", aggregate_sql)
         self.assertIn("low_coverage_flag", aggregate_sql)
         self.assertIn("AGGREGATE_SQL_TEMPLATE", bootstrap)
         self.assertTrue((ROOT / "scripts" / "refresh_aggregate_tables.sh").exists())

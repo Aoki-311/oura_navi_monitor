@@ -154,7 +154,7 @@ MVP では物理テーブルではなく BigQuery view で開始してもよい�
 | `message_count` | 当日のメッセージ数 |
 | `answer_count`, `answer_success_count` | 当日の回答数と成功数 |
 | `low_coverage_count` | 当日の低カバレッジ数 |
-| `bad_feedback_count`, `feedback_count` | 当日の低評価数と feedback 数。MVP では 0/pending |
+| `bad_feedback_count`, `feedback_count` | `answer_action_json` 由来の低評価数と、再生成・回答強化・修正要求を含む回答アクション数 |
 | `followup_recognized_count`, `followup_success_count` | 当日の追問認識数と成功数 |
 | `answer_error_count` | 当日の回答エラー数 |
 
