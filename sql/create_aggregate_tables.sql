@@ -20,11 +20,10 @@ answer_actions AS (
   FROM `__PROJECT_ID__.__DATASET_ID__.v_answer_action_events`
   GROUP BY trace_request_key, conversation_turn_key, conversation_message_key
 ),
-answer_action_stats AS (
+answer_success_cutover AS (
   SELECT
-    COUNT(*) AS total_answer_action_event_count,
-    MIN(event_ts) AS first_answer_action_event_ts
-  FROM `__PROJECT_ID__.__DATASET_ID__.v_answer_action_events`
+    -- lcs-rag-app was cut over to the answer-action capable revision at this time.
+    TIMESTAMP('2026-05-15T03:59:21Z') AS official_cutover_ts
 ),
 answer_base AS (
   SELECT
@@ -166,8 +165,7 @@ SELECT
     IF(has_correction_request, ['correction_requested'], [])
   ) AS answer_success_reason_codes,
   CASE
-    WHEN (SELECT total_answer_action_event_count FROM answer_action_stats) = 0 THEN 'proxy'
-    WHEN event_ts >= (SELECT first_answer_action_event_ts FROM answer_action_stats) THEN 'official'
+    WHEN event_ts >= (SELECT official_cutover_ts FROM answer_success_cutover) THEN 'official'
     ELSE 'proxy'
   END AS answer_success_metric_status,
   conversation_turn_key,

@@ -38,6 +38,17 @@
 | 計算式 | `successful_answer_count / assistant_answer_count` |
 | 注意点 | feedback が後から付いた場合、過去期間の値も再計算する。 |
 
+#### 集計状態 `answer_success_metric_status`
+
+| 値 | 定義 |
+| --- | --- |
+| `official` | `lcs-rag-app` が answer action event 対応 revision に正式切替された後の回答です。ユーザーが低評価を押していない場合も、再生成・強化・修正・低評価の捕捉対象として扱います。 |
+| `proxy` | 正式切替前の過去回答です。action event が完全ではないため、暫定集計として扱います。 |
+| `mixed` | 選択期間内に `official` と `proxy` が混在しています。 |
+| `unknown` | 選択期間内に回答データがありません。 |
+
+現在の official cutover は `2026-05-15T03:59:21Z` です。
+
 ### 3.3 `低カバレッジ率`
 
 | 項目 | 内容 |
@@ -185,4 +196,3 @@ MVP では `internal` と `websearch` を主要対象にします。
 | `Schema不一致` | 未対応 schema version または schema validation error 件数。 |
 | `Join健全性` | expected join の成功率。 |
 | `データ遅延` | `monitor_available_at - event_ts` の P95。 |
-
