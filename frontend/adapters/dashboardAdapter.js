@@ -2,6 +2,21 @@ import { displayCount, displayMs, displayRate, safeArray } from "../viewModels/f
 import { ACTIVITY_DEFINITIONS, KPI_HELP, PRESET_LABELS, QUALITY_LABELS } from "../viewModels/labels.js";
 import { toMetricStatusBadge } from "../viewModels/metricStatus.js";
 
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null);
+}
+
+function numberValue(...values) {
+  return Number(firstDefined(...values) || 0);
+}
+
+function defaultRequestByHourRows() {
+  return Array.from({ length: 24 }, (_, hour) => ({
+    hour: `${String(hour).padStart(2, "0")}:00`,
+    requestCount: 0,
+  }));
+}
+
 function qualityRows(rows) {
   return safeArray(rows).map((row) => ({
     label: QUALITY_LABELS[String(row.label || "").toLowerCase()] || row.label || "不明",
@@ -30,11 +45,40 @@ export function toDashboardViewModel(payload, preset = "today") {
   const kpis = payload?.kpis || {};
   const metricStatus = payload?.meta?.metricStatus || {};
   const answerStatus = toMetricStatusBadge(metricStatus.answerSuccessRate);
-  const activity = payload?.activityDistribution || {};
-  const environment = payload?.environmentMode || {};
-  const answerQuality = payload?.answerQuality || {};
-  const followup = payload?.followup || {};
+  const activity = payload?.activityDistribution || payload?.activity || {};
+  const environment = payload?.environmentMode || payload?.environment || payload?.modeDevice || {};
+  const answerQuality = payload?.answerQuality || payload?.distributions || {};
+  const followup = payload?.followup || payload?.followupSummary || {};
   const generatedAt = payload?.meta?.generatedAt || "";
+  const usageTrendRows = safeArray(firstDefined(payload?.usageTrend, payload?.usage?.trend, payload?.trends?.usage, payload?.requestTrend));
+  const activityRows = safeArray(firstDefined(activity.segments, activity.items, activity.distribution));
+  const normalizedActivityRows = activityRows.length
+    ? activityRows
+    : [
+        { label: "高アクティブ", count: 0 },
+        { label: "中アクティブ", count: 0 },
+        { label: "低アクティブ", count: 0 },
+        { label: "休眠ユーザー", count: 0 },
+      ];
+  const activityTotal = numberValue(
+    activity.totalUserCount,
+    activity.total_user_count,
+    activity.totalCount,
+    kpis.totalUserCount,
+    normalizedActivityRows.reduce((sum, row) => sum + numberValue(row.count, row.userCount, row.value), 0),
+  );
+  const requestByHourRows = safeArray(firstDefined(environment.requestByHour, environment.requestsByHour, environment.hourlyRequests));
+  const normalizedRequestByHourRows = requestByHourRows.length ? requestByHourRows : defaultRequestByHourRows();
+  const deviceRows = safeArray(firstDefined(environment.deviceDistribution, payload?.deviceDistribution, environment.devices));
+  const normalizedDeviceRows = deviceRows.length ? deviceRows : [{ label: "PC", count: 0 }, { label: "モバイル", count: 0 }, { label: "不明", count: 0 }];
+  const modeRows = safeArray(firstDefined(environment.modeDistribution, payload?.modeDistribution, environment.modes));
+  const normalizedModeRows = modeRows.length ? modeRows : [{ label: "社内モード", count: 0 }, { label: "Web検索モード", count: 0 }];
+  const deviceTotal = normalizedDeviceRows.reduce((sum, row) => sum + numberValue(row.count, row.requestCount, row.request_count), 0);
+  const modeTotal = normalizedModeRows.reduce((sum, row) => sum + numberValue(row.count, row.requestCount, row.request_count), 0);
+  const recognizedCount = numberValue(followup.recognizedCount, followup.followupRecognizedCount, followup.recognized_count);
+  const successCount = numberValue(followup.successCount, followup.followupSuccessCount, followup.success_count);
+  const explicitCorrectionCount = numberValue(followup.explicitCorrectionCount, followup.explicit_correction_count);
+  const clarificationRequiredCount = numberValue(followup.clarificationRequiredCount, followup.clarification_required_count);
 
   return {
     windowLabel: PRESET_LABELS[preset] || PRESET_LABELS.today,
@@ -44,13 +88,13 @@ export function toDashboardViewModel(payload, preset = "today") {
       buildKpi(
         "activeUserCount",
         "アクティブユーザー数",
-        displayCount(kpis.activeUserCount),
+        displayCount(firstDefined(kpis.activeUserCount, kpis.active_user_count, kpis.activeUsers)),
         KPI_HELP.activeUserCount,
       ),
       buildKpi(
         "answerSuccessRate",
         "回答成功率",
-        displayRate(kpis.answerSuccessRate),
+        displayRate(firstDefined(kpis.answerSuccessRate, kpis.answer_success_rate)),
         KPI_HELP.answerSuccessRate,
         answerStatus,
         answerStatus.tone,
@@ -58,53 +102,60 @@ export function toDashboardViewModel(payload, preset = "today") {
       buildKpi(
         "lowCoverageRate",
         "低カバレッジ率",
-        displayRate(kpis.lowCoverageRate),
+        displayRate(firstDefined(kpis.lowCoverageRate, kpis.low_coverage_rate)),
         KPI_HELP.lowCoverageRate,
         null,
-        Number(kpis.lowCoverageRate || 0) >= 0.25 ? "warning" : "success",
+        Number(firstDefined(kpis.lowCoverageRate, kpis.low_coverage_rate, 0)) >= 0.25 ? "warning" : "success",
       ),
       buildKpi(
         "errorRate",
         "エラー率",
-        displayRate(kpis.errorRate),
+        displayRate(firstDefined(kpis.errorRate, kpis.error_rate)),
         KPI_HELP.errorRate,
         null,
-        Number(kpis.errorRate || 0) > 0.03 ? "danger" : "success",
+        Number(firstDefined(kpis.errorRate, kpis.error_rate, 0)) > 0.03 ? "danger" : "success",
       ),
-      buildKpi("p95LatencyMs", "P95応答時間", displayMs(kpis.p95LatencyMs), KPI_HELP.p95LatencyMs),
+      buildKpi("p95LatencyMs", "P95応答時間", displayMs(firstDefined(kpis.p95LatencyMs, kpis.p95_latency_ms)), KPI_HELP.p95LatencyMs),
     ],
-    usageTrend: safeArray(payload?.usageTrend).map((row) => ({
-      label: row.date || "",
-      activeUserCount: Number(row.activeUserCount || 0),
-      messageCount: Number(row.messageCount || 0),
+    usageTrend: usageTrendRows.map((row) => ({
+      label: row.date || row.label || row.bucket || row.hour || "",
+      activeUserCount: numberValue(row.activeUserCount, row.active_user_count, row.userCount, row.users),
+      messageCount: numberValue(row.messageCount, row.message_count, row.coreRequestCount, row.requestCount, row.count),
     })),
     activityDistribution: {
-      totalUserCount: Number(activity.totalUserCount || 0),
-      segments: safeArray(activity.segments).map((row) => {
+      totalUserCount: activityTotal,
+      segments: normalizedActivityRows.map((row) => {
         const activityKey = activityKeyFromLabel(row);
+        const count = numberValue(row.count, row.userCount, row.value);
         return {
           label: row.label || "不明",
-          count: Number(row.count || 0),
-          rate: row.rate,
+          count,
+          rate: firstDefined(row.rate, row.ratio, activityTotal ? count / activityTotal : null),
           definition: ACTIVITY_DEFINITIONS[activityKey] || "",
         };
       }),
     },
     environmentMode: {
-      requestByHour: safeArray(environment.requestByHour).map((row) => ({
-        label: row.hour || "",
-        count: Number(row.requestCount || 0),
+      requestByHour: normalizedRequestByHourRows.map((row) => ({
+        label: row.hour || row.label || row.bucket || "",
+        count: numberValue(row.requestCount, row.request_count, row.count),
       })),
-      deviceDistribution: safeArray(environment.deviceDistribution).map((row) => ({
-        label: row.label || row.value || "不明",
-        count: Number(row.count || 0),
-        rate: row.rate,
-      })),
-      modeDistribution: safeArray(environment.modeDistribution).map((row) => ({
-        label: row.label || row.value || "不明",
-        count: Number(row.count || 0),
-        rate: row.rate,
-      })),
+      deviceDistribution: normalizedDeviceRows.map((row) => {
+        const count = numberValue(row.count, row.requestCount, row.request_count);
+        return {
+          label: row.label || row.value || "不明",
+          count,
+          rate: firstDefined(row.rate, row.ratio, deviceTotal ? count / deviceTotal : null),
+        };
+      }),
+      modeDistribution: normalizedModeRows.map((row) => {
+        const count = numberValue(row.count, row.requestCount, row.request_count);
+        return {
+          label: row.label || row.value || "不明",
+          count,
+          rate: firstDefined(row.rate, row.ratio, modeTotal ? count / modeTotal : null),
+        };
+      }),
     },
     answerQuality: [
       { key: "answerability", title: "回答可能性", rows: qualityRows(answerQuality.answerability) },
@@ -114,16 +165,16 @@ export function toDashboardViewModel(payload, preset = "today") {
     ],
     followup: {
       cards: [
-        { label: "追問認識数", value: displayCount(followup.recognizedCount) },
-        { label: "追問成功率", value: displayRate(followup.successRate) },
-        { label: "明示的な訂正", value: displayCount(followup.explicitCorrectionCount) },
-        { label: "確認が必要な追問", value: displayCount(followup.clarificationRequiredCount) },
+        { label: "追問認識数", value: displayCount(recognizedCount) },
+        { label: "追問成功率", value: displayRate(firstDefined(followup.successRate, recognizedCount ? successCount / recognizedCount : null)) },
+        { label: "明示的な訂正", value: displayCount(explicitCorrectionCount) },
+        { label: "確認が必要な追問", value: displayCount(clarificationRequiredCount) },
       ],
       funnel: [
-        { label: "追問認識", count: Number(followup.recognizedCount || 0) },
-        { label: "追問成功", count: Number(followup.successCount || 0) },
-        { label: "明示的な訂正", count: Number(followup.explicitCorrectionCount || 0) },
-        { label: "確認が必要な追問", count: Number(followup.clarificationRequiredCount || 0) },
+        { label: "追問認識", count: recognizedCount },
+        { label: "追問成功", count: successCount },
+        { label: "明示的な訂正", count: explicitCorrectionCount },
+        { label: "確認が必要な追問", count: clarificationRequiredCount },
       ],
     },
   };

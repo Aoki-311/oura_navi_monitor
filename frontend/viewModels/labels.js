@@ -52,19 +52,20 @@ export const QUALITY_LABELS = {
 };
 
 export const ACTIVITY_DEFINITIONS = {
-  high: "直近3日で3回以上",
-  middle: "直近7日で1〜2回",
-  low: "直近14日で1回以上",
-  dormant: "直近14日利用なし",
+  high: "直近3日内メッセージ送信が3回以上",
+  middle: "直近7日内メッセージ送信が1-2回",
+  low: "直近14日内メッセージ送信が1回以上、かつ中/高に該当しない",
+  dormant: "直近14日内メッセージ送信が0回",
 };
 
 export const KPI_HELP = {
   activeUserCount: "選択した期間内に実際にチャットを利用したユーザー数です。",
   answerSuccessRate:
-    "エラー表示がなく、ユーザーからの回答再生成・回答強化・修正要求・低評価が確認されていない回答の割合です。",
+    "エラー表示がなく、ユーザーからの回答再生成・回答強化・修正要求・低評価が確認されていない回答率です。",
   lowCoverageRate: "根拠資料や引用が不足している可能性がある回答の割合です。",
   errorRate: "回答生成や通信処理でエラーになった割合です。",
-  p95LatencyMs: "利用者の大半が待つ最大に近い応答時間の目安です。",
+  p95LatencyMs: "利用者の大半が待つ最大に近い応答時間の目安です。数値が大きいほど体感が遅くなります。",
+  activityDistribution: "直近14日間の利用頻度に基づき、ユーザーを高・中・低・休眠に分類しています。",
 };
 
 export function labelOf(labels, raw, fallback = "不明") {

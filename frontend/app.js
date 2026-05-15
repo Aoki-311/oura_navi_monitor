@@ -79,6 +79,21 @@ function createChart(id, config) {
   state.charts[id] = new Chart(canvas, config);
 }
 
+function chartTextColor() {
+  return getComputedStyle(document.documentElement).getPropertyValue("--chart-text").trim() || "#dbeafe";
+}
+
+function chartGridColor() {
+  return getComputedStyle(document.documentElement).getPropertyValue("--chart-grid").trim() || "rgba(148, 163, 184, 0.16)";
+}
+
+function configureChartTheme() {
+  if (!window.Chart) return;
+  window.Chart.defaults.color = chartTextColor();
+  window.Chart.defaults.font.family = '"DIN 2014", "BIZ UDPGothic", "Noto Sans JP", sans-serif';
+  window.Chart.defaults.plugins.legend.labels.usePointStyle = true;
+}
+
 function lineChart(id, labels, datasets) {
   createChart(id, {
     type: "line",
@@ -89,8 +104,8 @@ function lineChart(id, labels, datasets) {
       interaction: { intersect: false, mode: "index" },
       plugins: { legend: { position: "bottom" } },
       scales: {
-        x: { grid: { color: "rgba(148, 163, 184, 0.18)" } },
-        y: { beginAtZero: true, grid: { color: "rgba(148, 163, 184, 0.18)" } },
+        x: { grid: { color: chartGridColor() } },
+        y: { beginAtZero: true, grid: { color: chartGridColor() } },
       },
     },
   });
@@ -131,7 +146,7 @@ function barLineChart(id, labels, barData, lineData, options = {}) {
       interaction: { intersect: false, mode: "index" },
       plugins: { legend: { position: "bottom" } },
       scales: {
-        y: { beginAtZero: true, position: "left", title: { display: true, text: leftAxisLabel } },
+        y: { beginAtZero: true, position: "left", grid: { color: chartGridColor() }, title: { display: true, text: leftAxisLabel } },
         y1: {
           beginAtZero: true,
           position: "right",
@@ -157,7 +172,7 @@ function doughnutChart(id, rows, centerText = "") {
       const ctx = chart.ctx;
       ctx.save();
       ctx.textAlign = "center";
-      ctx.fillStyle = "#172033";
+      ctx.fillStyle = chartTextColor();
       ctx.font = '700 18px "Noto Sans JP", sans-serif';
       ctx.fillText(centerText, x, y + 4);
       ctx.restore();
@@ -209,7 +224,7 @@ function horizontalBarChart(id, rows) {
       maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { beginAtZero: true, grid: { color: "rgba(148, 163, 184, 0.18)" } },
+        x: { beginAtZero: true, grid: { color: chartGridColor() } },
         y: { grid: { display: false } },
       },
     },
@@ -228,7 +243,7 @@ function renderKpis(viewModel) {
         <article class="kpiCard ${card.tone || "neutral"}">
           <div class="kpiLabel">
             <span>${escapeHtml(card.label)}</span>
-            <button type="button" class="helpBtn" title="${escapeHtml(card.help)}">?</button>
+            <button type="button" class="helpBtn" data-help-title="${escapeHtml(card.label)}" data-help-body="${escapeHtml(card.help)}" aria-label="${escapeHtml(card.label)}の説明">?</button>
           </div>
           <div class="kpiValue">${escapeHtml(card.value)}</div>
           ${badge}
@@ -326,6 +341,19 @@ function renderFollowup(viewModel) {
       .join("");
   }
   horizontalBarChart("followupFunnelChart", viewModel.followup.funnel);
+}
+
+function openHelpDialog(title, body) {
+  $("helpDialogTitle").textContent = title || "指標の説明";
+  $("helpDialogBody").textContent = body || "-";
+  $("helpDialog")?.showModal();
+}
+
+function openExportDialog(scope = "global") {
+  const isUser = scope === "user";
+  $("globalExportData")?.classList.toggle("hidden", isUser);
+  $("userExportData")?.classList.toggle("hidden", !isUser);
+  $("exportDialog")?.showModal();
 }
 
 async function loadDashboard() {
@@ -554,8 +582,8 @@ function bindEvents() {
     await loadMessages({ includeContent: true });
   });
   $("loadMoreMessages")?.addEventListener("click", () => loadMessages({ append: true }));
-  $("openExportDialog")?.addEventListener("click", () => $("exportDialog")?.showModal());
-  $("exportUserDetail")?.addEventListener("click", () => $("exportDialog")?.showModal());
+  $("openExportDialog")?.addEventListener("click", () => openExportDialog("global"));
+  $("exportUserDetail")?.addEventListener("click", () => openExportDialog("user"));
   $("confirmExport")?.addEventListener("click", () => {
     if ($("exportIncludeContent")?.checked) {
       const ok = window.confirm("メッセージ本文を含む出力には個人情報や業務情報が含まれる可能性があります。続行しますか？");
@@ -568,6 +596,11 @@ function bindEvents() {
     const copyBtn = event.target.closest("[data-copy]");
     if (copyBtn) {
       await copyText(copyBtn.dataset.copy);
+      return;
+    }
+    const helpBtn = event.target.closest("[data-help-title]");
+    if (helpBtn) {
+      openHelpDialog(helpBtn.dataset.helpTitle, helpBtn.dataset.helpBody);
       return;
     }
     const detailBtn = event.target.closest("[data-user-id]");
@@ -597,6 +630,7 @@ async function loadAll() {
 }
 
 function startApp() {
+  configureChartTheme();
   bindEvents();
   loadAll();
 }
