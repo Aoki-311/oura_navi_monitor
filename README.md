@@ -33,6 +33,8 @@
 主要設計ドキュメント:
 
 - `docs/MONITOR_FRONTEND_INFORMATION_ARCHITECTURE.md`: フロントエンド情報設計
+- `docs/MONITOR_FRONTEND_IMPLEMENTATION_PLAN.md`: フロントエンド実装計画と API adapter 方針
+- `docs/MONITOR_UPGRADE_EXECUTION_PLAN.md`: 監視基盤・フロントエンドアップグレード実行計画
 - `docs/MONITOR_DATA_ARCHITECTURE.md`: データ基盤、保存、join、連携方針
 - `docs/MONITOR_METRIC_CONTRACT.md`: 画面指標の定義と計算口径
 - `docs/MONITOR_API_CONTRACT.md`: フロントエンド向け API payload 契約
