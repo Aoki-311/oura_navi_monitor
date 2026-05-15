@@ -7,226 +7,246 @@
     <link rel="icon" type="image/svg+xml" href="/dashboard-assets/favicon.svg" />
     <link rel="stylesheet" href="/dashboard-assets/styles.css" />
     <script src="/dashboard-assets/vendor/chart.umd.min.js" defer></script>
-    <script src="/dashboard-assets/app.js" defer></script>
+    <script type="module" src="/dashboard-assets/app.js"></script>
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
+        <span class="brandEyebrow">Enterprise Operations Console</span>
         <h1>OurA Navi 運用モニター</h1>
-        <p>クラウドラン / ファイアストア統合監視（日本標準時）</p>
+        <p>システム状態、回答品質、追問状況、ユーザー利用状況を日本時間で確認します。</p>
       </div>
-      <div class="filters">
-        <div class="presetGroup" id="presetGroup">
-          <button type="button" class="presetBtn active" data-preset="today">今日</button>
-          <button type="button" class="presetBtn" data-preset="yesterday">昨日</button>
-          <button type="button" class="presetBtn" data-preset="last_30m">直近30分</button>
-          <button type="button" class="presetBtn" data-preset="last_1h">直近1時間</button>
-          <button type="button" class="presetBtn" data-preset="last_6h">直近6時間</button>
-          <button type="button" class="presetBtn" data-preset="last_12h">直近12時間</button>
-        </div>
-        <div class="customRange">
-          <label>開始 <input id="startAt" type="datetime-local" /></label>
-          <label>終了 <input id="endAt" type="datetime-local" /></label>
-          <button id="applyCustom" type="button" class="ghostBtn">期間適用</button>
-          <span id="loadingStatus" class="loadStatus" aria-live="polite">待機中</span>
-          <button id="refreshAll" type="button">再読込</button>
-        </div>
+      <div class="toolbar">
+        <label class="control">
+          <span>分析期間</span>
+          <select id="dashboardPreset">
+            <option value="today">今日</option>
+            <option value="last_6h">直近6時間</option>
+            <option value="last_12h">直近12時間</option>
+            <option value="last_3d">過去3日</option>
+            <option value="last_7d">過去7日</option>
+            <option value="last_14d">過去14日</option>
+            <option value="last_30d">過去30日</option>
+          </select>
+        </label>
+        <button id="refreshAll" type="button" class="primaryBtn">再読込</button>
+        <button id="openExportDialog" type="button" class="ghostBtn">エクスポート</button>
       </div>
     </header>
 
-    <main>
-      <section class="panel summaryPanel">
+    <main class="dashboardShell">
+      <section class="statusStrip" id="statusStrip" aria-live="polite">
+        <span id="loadingStatus">初期化中</span>
+        <span id="dataFreshness">最終更新: -</span>
+      </section>
+
+      <section class="panel" id="sectionKpi">
         <div class="panelHead">
-          <h2>コア指標サマリー</h2>
-          <span class="muted" id="summaryWindowLabel">-</span>
+          <div>
+            <span class="sectionNo">01</span>
+            <h2>KPIサマリー</h2>
+          </div>
+          <span class="muted" id="summaryWindowLabel">今日</span>
         </div>
-        <div class="summaryGrid" id="kpiCardsPrimary"></div>
+        <div class="kpiGrid" id="kpiCardsPrimary"></div>
         <div id="kpiCardsSecondary" hidden></div>
       </section>
 
-      <section class="panel metricGuide" id="metricGuide" hidden>
+      <section class="twoColumn">
+        <article class="panel widePanel" id="sectionUsageTrend">
+          <div class="panelHead">
+            <div>
+              <span class="sectionNo">02</span>
+              <h2>利用推移</h2>
+            </div>
+            <label class="compactControl">
+              <span>表示期間</span>
+              <select id="usagePreset">
+                <option value="last_7d">過去7日</option>
+                <option value="last_14d">過去14日</option>
+                <option value="last_30d">過去30日</option>
+              </select>
+            </label>
+          </div>
+          <div class="chartWrap large"><canvas id="usageTrendChart"></canvas></div>
+        </article>
+
+        <article class="panel" id="sectionActivity">
+          <div class="panelHead">
+            <div>
+              <span class="sectionNo">03</span>
+              <h2>活性度分布（14日）</h2>
+            </div>
+          </div>
+          <div class="donutWithLegend">
+            <div class="chartWrap donut"><canvas id="activityChart"></canvas></div>
+            <div class="legendList" id="activityLegend"></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel" id="sectionEnvironment">
         <div class="panelHead">
-          <h2>指標の見方（リクエスト口径）</h2>
+          <div>
+            <span class="sectionNo">04</span>
+            <h2>利用環境・モード分析</h2>
+          </div>
+          <span class="muted">分析期間と連動</span>
         </div>
-        <div class="metricGuideGrid">
-          <article class="summaryCard">
-            <div class="label">システムリクエスト推移</div>
+        <div class="threeColumn">
+          <article class="subPanel">
+            <h3>時間帯別リクエスト数</h3>
+            <div class="chartWrap"><canvas id="requestByHourChart"></canvas></div>
+          </article>
+          <article class="subPanel">
+            <h3>利用デバイス分布</h3>
+            <div class="chartWrap"><canvas id="deviceChart"></canvas></div>
+          </article>
+          <article class="subPanel">
+            <h3>利用モード分布</h3>
+            <div class="chartWrap"><canvas id="modeChart"></canvas></div>
           </article>
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="sectionAnswerQuality">
+        <div class="panelHead">
+          <div>
+            <span class="sectionNo">05</span>
+            <h2>回答品質分析</h2>
+          </div>
+          <span class="muted">回答可能性 / 利用可能性 / 業務利用可能性 / 根拠十分性</span>
+        </div>
+        <div class="qualityGrid" id="answerQualityGrid"></div>
+      </section>
+
+      <section class="panel" id="sectionFollowup">
+        <div class="panelHead">
+          <div>
+            <span class="sectionNo">06</span>
+            <h2>追問分析</h2>
+          </div>
+          <span class="muted">追問認識から追問成功までの流れを確認します。</span>
+        </div>
+        <div class="followupGrid">
+          <div class="miniKpiGrid" id="followupCards"></div>
+          <div class="chartWrap"><canvas id="followupFunnelChart"></canvas></div>
+        </div>
+      </section>
+
+      <section class="panel" id="sectionUsers">
         <div class="panelHead splitHead">
-          <h2>ユーザー / 会話 / メッセージ確認</h2>
+          <div>
+            <span class="sectionNo">07</span>
+            <h2>ユーザー監視一覧</h2>
+          </div>
+          <div class="tableToolbar">
+            <label class="compactControl">
+              <span>活性度で絞り込み</span>
+              <select id="activityFilter">
+                <option value="">すべて</option>
+                <option value="high">高アクティブ</option>
+                <option value="middle">中アクティブ</option>
+                <option value="low">低アクティブ</option>
+                <option value="dormant">休眠ユーザー</option>
+              </select>
+            </label>
+            <label class="searchControl">
+              <span>ユーザーID / メールで検索</span>
+              <input id="userSearch" type="search" placeholder="ユーザーID または メール" />
+            </label>
+            <button id="loadUsers" type="button" class="ghostBtn">検索</button>
+          </div>
+        </div>
+        <div class="tableWrap">
+          <table id="usersTable">
+            <thead>
+              <tr>
+                <th>ユーザーID</th>
+                <th>メールアドレス</th>
+                <th>最終利用日時</th>
+                <th>直近7日利用日数</th>
+                <th>直近7日メッセージ数</th>
+                <th>根拠カバレッジ率</th>
+                <th>低評価率</th>
+                <th>活性度区分</th>
+                <th>詳細</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel hidden" id="userDetailPanel">
+        <div class="panelHead splitHead">
+          <div>
+            <span class="sectionNo">DETAIL</span>
+            <h2>ユーザー詳細</h2>
+            <p class="muted" id="userDetailTitle">-</p>
+          </div>
           <div class="actions">
-            <a id="exportUsers" class="btnLink disabled" href="#">ユーザーCSV</a>
-            <a id="exportConversations" class="btnLink disabled" href="#">会話CSV</a>
+            <button id="exportUserDetail" type="button" class="ghostBtn">エクスポート</button>
+            <button id="closeUserDetail" type="button" class="ghostBtn">閉じる</button>
           </div>
         </div>
-
-        <div class="historyGrid">
-          <article class="historyCol">
-            <div class="row historyToolbar">
-              <input id="userSearch" placeholder="ユーザーID / メール / サブジェクト" />
-              <button id="loadUsers" type="button">ユーザー検索</button>
-            </div>
-            <div class="tableWrap tall">
-              <table id="usersTable">
-                <thead>
-                  <tr>
-                    <th>ユーザーID</th>
-                    <th>メール</th>
-                    <th>最終更新（日本標準時）</th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
+        <div class="miniKpiGrid" id="userSummaryCards"></div>
+        <div class="twoColumn detailCharts">
+          <article class="subPanel">
+            <h3>利用推移</h3>
+            <div class="chartWrap"><canvas id="userTrendChart"></canvas></div>
           </article>
-
-          <article class="historyCol">
-            <div class="row historyToolbar">
-              <input id="convSearch" placeholder="タイトル / モード / プレビュー" />
-              <button id="loadConversations" type="button">会話検索</button>
-            </div>
-            <div class="tableWrap tall">
-              <table id="conversationsTable">
-                <thead>
-                  <tr>
-                    <th>会話ID</th>
-                    <th>タイトル</th>
-                    <th>最終更新（日本標準時）</th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
-          </article>
-
-          <article class="historyCol">
-            <div class="row historyToolbar">
-              <span id="messageMeta" class="historyTag">メッセージ履歴</span>
-            </div>
-            <div class="tableWrap tall xscroll">
-              <table id="messagesTable" class="wideTable">
-                <thead>
-                  <tr>
-                    <th>時刻（日本標準時）</th>
-                    <th>役割</th>
-                    <th>送信モード</th>
-                    <th>質問区分</th>
-                    <th>状態</th>
-                    <th>本文</th>
-                    <th>エラー</th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
+          <article class="subPanel">
+            <h3>モード分布</h3>
+            <div class="chartWrap"><canvas id="userModeChart"></canvas></div>
           </article>
         </div>
-      </section>
-
-      <section class="panel">
-        <div class="panelHead splitHead">
-          <h2>運用ダッシュボード</h2>
-          <div class="actions" role="tablist" aria-label="ダッシュボードタブ">
-            <button type="button" id="tabGlobal" class="tabBtn active" data-tab="global">全体</button>
-            <button type="button" id="tabUser" class="tabBtn" data-tab="user">単一ユーザー</button>
-          </div>
+        <div class="tableWrap">
+          <table id="conversationTable">
+            <thead>
+              <tr>
+                <th>conversation_id</th>
+                <th>title</th>
+                <th>mode</th>
+                <th>visibility</th>
+                <th>created_at</th>
+                <th>updated_at</th>
+                <th>message_count</th>
+                <th>integrity_state</th>
+                <th>is_favorite</th>
+                <th>followup_runtime_summary</th>
+                <th>メッセージ</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
         </div>
-
-        <div class="tabPane active" id="paneGlobal">
-          <div class="chartGrid2">
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleRequestTrend"></h3></div>
-              <div class="chartWrap"><canvas id="requestTrendChart"></canvas></div>
-            </article>
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleCoreRequestTrend"></h3></div>
-              <div class="chartWrap"><canvas id="coreRequestTrendChart"></canvas></div>
-            </article>
-            <canvas id="systemUsageChart" hidden></canvas>
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleDeviceQuality"></h3></div>
-              <div class="chartWrap"><canvas id="deviceQualityChart"></canvas></div>
-            </article>
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleModeDistribution"></h3></div>
-              <div class="chartWrap"><canvas id="modeDistributionChart"></canvas></div>
-            </article>
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleQuestionFlow"></h3></div>
-              <div class="chartWrap"><canvas id="questionFlowChart"></canvas></div>
-            </article>
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleFavoriteRatio"></h3></div>
-              <div class="chartWrap"><canvas id="favoriteRatioChart"></canvas></div>
-            </article>
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleIntegrityRisk"></h3></div>
-              <div class="chartWrap"><canvas id="integrityRiskChart"></canvas></div>
-            </article>
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleCitationCoverage"></h3></div>
-              <div class="chartWrap"><canvas id="citationCoverageChart"></canvas></div>
-            </article>
+        <div class="messagePanel hidden" id="messagePanel">
+          <div class="panelHead splitHead">
+            <div>
+              <h3>会話・メッセージ確認</h3>
+              <p class="muted" id="messagePanelTitle">プレビューのみ表示しています。</p>
+            </div>
+            <div class="actions">
+              <button id="showMessageContent" type="button" class="dangerGhostBtn">本文を表示</button>
+              <button id="loadMoreMessages" type="button" class="ghostBtn">さらに表示</button>
+            </div>
           </div>
-
-          <div class="chartGrid2">
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleTopEndpoints"></h3></div>
-              <div class="tableWrap">
-                <table id="topEndpointsTable">
-                  <thead><tr><th>エンドポイント</th><th>5xx件数</th></tr></thead>
-                  <tbody></tbody>
-                </table>
-              </div>
-            </article>
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleTopMessageErrors"></h3></div>
-              <div class="tableWrap">
-                <table id="topMessageErrorsTable">
-                  <thead><tr><th>エラー理由</th><th>件数</th></tr></thead>
-                  <tbody></tbody>
-                </table>
-              </div>
-            </article>
-          </div>
-        </div>
-
-        <div class="tabPane" id="paneUser">
-          <div class="row wrap userFilterRow">
-            <input id="analyticsUserSearch" placeholder="ユーザーID または メール" />
-            <button id="searchAnalyticsUser" type="button">検索</button>
-            <span id="selectedAnalyticsUserLabel" class="muted">単一ユーザー未選択</span>
-          </div>
-
-          <div id="userMetricCards" class="summaryGrid mini"></div>
-
-          <div class="chartGrid2">
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleUserRequestTrend"></h3></div>
-              <div class="chartWrap"><canvas id="userRequestTrendChart"></canvas></div>
-            </article>
-            <article class="panel innerPanel">
-              <div class="panelHead"><h3 id="titleUserModeDistribution"></h3></div>
-              <div class="chartWrap"><canvas id="userModeDistributionChart"></canvas></div>
-            </article>
-          </div>
-
-          <div class="tableWrap tall">
-            <table id="userMetricsTable">
+          <div class="tableWrap">
+            <table id="messagesTable">
               <thead>
                 <tr>
-                  <th>ユーザーID</th>
-                  <th>メール</th>
-                  <th>会話/メッセージ</th>
-                  <th>活性会話粘着度</th>
-                  <th>いいね率</th>
-                  <th>総/コアリクエスト</th>
-                  <th>追問開通率</th>
-                  <th>引用カバレッジ率</th>
+                  <th>送信日時</th>
+                  <th>役割</th>
+                  <th>状態</th>
+                  <th>送信時モード</th>
+                  <th>デバイス</th>
+                  <th>評価</th>
+                  <th>本文プレビュー</th>
+                  <th>Trace ID</th>
+                  <th>Request ID</th>
+                  <th>Turn ID</th>
+                  <th>Message ID</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -236,6 +256,62 @@
       </section>
     </main>
 
-    <div id="toast" class="toast"></div>
+    <dialog id="exportDialog" class="exportDialog">
+      <form method="dialog">
+        <div class="panelHead">
+          <div>
+            <h2>エクスポート設定</h2>
+            <p class="muted">正式な export/jobs 接続前の UI 設計です。出力対象と項目を選択できます。</p>
+          </div>
+          <button value="close" class="ghostBtn">閉じる</button>
+        </div>
+        <div class="exportGrid">
+          <label>対象期間
+            <select id="exportPreset">
+              <option value="today">今日</option>
+              <option value="last_3d">過去3日</option>
+              <option value="last_7d">過去7日</option>
+              <option value="last_14d">過去14日</option>
+              <option value="last_30d">過去30日</option>
+              <option value="custom">カスタム</option>
+            </select>
+          </label>
+          <fieldset>
+            <legend>出力データ</legend>
+            <label><input type="radio" name="exportData" value="users" checked /> ユーザー監視一覧</label>
+            <label><input type="radio" name="exportData" value="messages" /> メッセージ明細</label>
+          </fieldset>
+          <fieldset>
+            <legend>出力項目</legend>
+            <label><input type="checkbox" checked /> 基本情報</label>
+            <label><input type="checkbox" checked /> 利用状況</label>
+            <label><input type="checkbox" checked /> 回答品質</label>
+            <label><input type="checkbox" /> 追問状況</label>
+            <label><input type="checkbox" /> 技術ID</label>
+            <label><input type="checkbox" id="exportIncludeContent" /> メッセージ本文</label>
+          </fieldset>
+          <fieldset>
+            <legend>個人情報の扱い</legend>
+            <label><input type="radio" name="piiMode" checked /> 匿名化して出力</label>
+            <label><input type="radio" name="piiMode" /> 管理者権限で原文を含める</label>
+          </fieldset>
+        </div>
+        <div class="dialogActions">
+          <button id="confirmExport" type="button" class="primaryBtn">設定を確認</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status"></div>
+    <section id="metricGuide" hidden>
+      <h2>指標の見方（リクエスト口径）</h2>
+      <div class="metricGuideGrid">
+        <label>開始日時<input id="startAt" type="datetime-local" /></label>
+        <label>終了日時<input id="endAt" type="datetime-local" /></label>
+        <div class="chartWrap"><canvas id="systemUsageChart"></canvas></div>
+        <p>システムリクエスト推移</p>
+      </div>
+    </section>
+    <div id="presetCompatibility" data-preset="today" hidden></div>
   </body>
 </html>
