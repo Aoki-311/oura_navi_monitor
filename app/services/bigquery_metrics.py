@@ -241,12 +241,24 @@ daily_window AS (
   FROM {self._table("monitor_user_daily")}
   WHERE date_jst >= DATE(@start_ts, @tz)
     AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
+    AND NOT (
+      LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+      OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
+    )
 ),
 daily_14d AS (
   SELECT *
   FROM {self._table("monitor_user_daily")}
   WHERE date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY), @tz)
     AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
+    AND NOT (
+      LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+      OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
+    )
 ),
 usage_trend_agg AS (
   SELECT
@@ -328,6 +340,17 @@ answer_distribution AS (
     FROM hourly_window, UNNEST(IFNULL(verification_verdict_distribution, ARRAY<STRUCT<label STRING, count INT64>>[])) AS item
   )
   GROUP BY metric, label
+),
+question_category_distribution AS (
+  SELECT label, SUM(count) AS count
+  FROM (
+    SELECT COALESCE(NULLIF(intent_family, ''), 'unknown') AS label, COUNT(*) AS count
+    FROM {self._table("monitor_answer_events")}
+    WHERE event_ts >= @start_ts
+      AND event_ts < @end_ts
+    GROUP BY label
+  )
+  GROUP BY label
 ),
 followup_summary AS (
   SELECT
@@ -449,6 +472,17 @@ SELECT TO_JSON_STRING(STRUCT(
     ) AS verificationVerdict
   ) AS answerQuality,
   STRUCT(
+    (
+      SELECT ARRAY_AGG(STRUCT(
+        label,
+        label AS value,
+        count,
+        SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate
+      ) ORDER BY count DESC, label)
+      FROM question_category_distribution
+    ) AS items
+  ) AS questionCategory,
+  STRUCT(
     (SELECT recognized_count FROM followup_summary) AS recognizedCount,
     (SELECT success_count FROM followup_summary) AS successCount,
     SAFE_DIVIDE((SELECT success_count FROM followup_summary), NULLIF((SELECT recognized_count FROM followup_summary), 0)) AS successRate,
@@ -548,6 +582,12 @@ request_user_window AS (
   FROM {self._view("v_request_user_metric_events")}
   WHERE event_ts >= @start_ts
     AND event_ts < @end_ts
+    AND NOT (
+      LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+      OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
+    )
 ),
 request_user_14d AS (
   SELECT
@@ -557,6 +597,12 @@ request_user_14d AS (
   FROM {self._view("v_request_user_metric_events")}
   WHERE event_ts >= TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY)
     AND event_ts < @end_ts
+    AND NOT (
+      LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+      OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
+    )
 ),
 active_users AS (
   SELECT COUNT(DISTINCT IF(user_key = 'unknown', NULL, user_key)) AS active_user_count
@@ -619,6 +665,11 @@ answer_events AS (
   FROM {self._view("v_ask_audit_events")}
   WHERE event_ts >= @start_ts
     AND event_ts < @end_ts
+    AND NOT (
+      LOWER(COALESCE(user_id, '')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+      OR REGEXP_CONTAINS(LOWER(COALESCE(user_id, '')), r'lcs-agent')
+    )
 ),
 coverage_gap_keys AS (
   SELECT DISTINCT
@@ -692,6 +743,11 @@ answer_distribution AS (
   SELECT 'evidenceSufficiency' AS metric, evidence_sufficiency AS label, COUNT(*) AS count FROM answer_events GROUP BY label
   UNION ALL
   SELECT 'verificationVerdict' AS metric, verification_verdict AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+),
+question_category_distribution AS (
+  SELECT COALESCE(NULLIF(intent_family, ''), 'unknown') AS label, COUNT(*) AS count
+  FROM answer_events
+  GROUP BY label
 ),
 followup_open AS (
   SELECT *
@@ -809,6 +865,17 @@ SELECT TO_JSON_STRING(STRUCT(
       FROM answer_distribution WHERE metric = 'verificationVerdict'
     ) AS verificationVerdict
   ) AS answerQuality,
+  STRUCT(
+    (
+      SELECT ARRAY_AGG(STRUCT(
+        label,
+        label AS value,
+        count,
+        SAFE_DIVIDE(count, NULLIF((SELECT answer_count FROM answer_summary), 0)) AS rate
+      ) ORDER BY count DESC, label)
+      FROM question_category_distribution
+    ) AS items
+  ) AS questionCategory,
   STRUCT(
     (SELECT recognized_count FROM followup_summary) AS recognizedCount,
     (SELECT success_count FROM followup_summary) AS successCount,
@@ -1442,6 +1509,12 @@ WITH events AS (
       AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^request_user_metric_json=")
   )
   WHERE payload IS NOT NULL
+    AND NOT (
+      LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), NULLIF(JSON_VALUE(payload, '$.user_email'), ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(JSON_VALUE(payload, '$.user_id'), '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(JSON_VALUE(payload, '$.user_email'), '')) = '2401145@tc.terumo.co.jp'
+      OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(JSON_VALUE(payload, '$.user_id'), ''), ' ', COALESCE(JSON_VALUE(payload, '$.user_email'), ''))), r'lcs-agent')
+    )
     AND (
       @lookup = ''
       OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), '')) LIKE CONCAT('%', @lookup, '%')
@@ -1533,6 +1606,12 @@ WITH events AS (
   FROM {self._table("monitor_user_daily")}
   WHERE date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY), @tz)
     AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
+    AND NOT (
+      LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+      OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
+    )
     AND (
       @lookup = ''
       OR LOWER(COALESCE(user_id, '')) LIKE CONCAT('%', @lookup, '%')
@@ -1646,6 +1725,7 @@ request_events AS (
     LOWER(COALESCE(NULLIF(user_email, ''), '')) AS user_email,
     COALESCE(NULLIF(user_id_hash, ''), '') AS user_id_hash,
     mode,
+    COALESCE(NULLIF(device_class, ''), 'unknown') AS device_class,
     is_core
   FROM {self._view("v_request_user_metric_events")}
   WHERE event_ts >= @start_ts
@@ -1699,6 +1779,20 @@ mode_labels AS (
 ),
 mode_total AS (
   SELECT SUM(count) AS total_count FROM mode_counts
+),
+device_counts AS (
+  SELECT device_class, COUNTIF(is_core) AS count
+  FROM request_events
+  WHERE device_class IN ('desktop', 'mobile', 'unknown')
+  GROUP BY device_class
+),
+device_labels AS (
+  SELECT 'desktop' AS device_class UNION ALL
+  SELECT 'mobile' UNION ALL
+  SELECT 'unknown'
+),
+device_total AS (
+  SELECT SUM(count) AS total_count FROM device_counts
 ),
 request_trend AS (
   SELECT
@@ -1772,6 +1866,11 @@ answer_distribution AS (
   UNION ALL
   SELECT 'verificationVerdict' AS metric, verification_verdict AS label, COUNT(*) AS count FROM answer_events GROUP BY label
 ),
+question_category_distribution AS (
+  SELECT COALESCE(NULLIF(intent_family, ''), 'unknown') AS label, COUNT(*) AS count
+  FROM answer_events
+  GROUP BY label
+),
 followup_open AS (
   SELECT *
   FROM {self._view("v_followup_open_result_events")}
@@ -1844,6 +1943,29 @@ SELECT TO_JSON_STRING(STRUCT(
     FROM mode_labels m
     LEFT JOIN mode_counts c USING(mode)
   ) AS modeDistribution,
+  (
+    SELECT ARRAY_AGG(STRUCT(
+      CASE d.device_class
+        WHEN 'desktop' THEN 'PC'
+        WHEN 'mobile' THEN 'モバイル'
+        ELSE '不明'
+      END AS label,
+      d.device_class AS value,
+      COALESCE(c.count, 0) AS count,
+      SAFE_DIVIDE(COALESCE(c.count, 0), NULLIF((SELECT total_count FROM device_total), 0)) AS rate
+    ) ORDER BY COALESCE(c.count, 0) DESC, d.device_class)
+    FROM device_labels d
+    LEFT JOIN device_counts c USING(device_class)
+  ) AS deviceDistribution,
+  (
+    SELECT ARRAY_AGG(STRUCT(
+      label,
+      label AS value,
+      count,
+      SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate
+    ) ORDER BY count DESC, label)
+    FROM question_category_distribution
+  ) AS questionCategoryDistribution,
   STRUCT(
     (
       SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
@@ -1963,6 +2085,9 @@ summary AS (
     SUM(followup_recognized_count) AS followup_count,
     SUM(internal_message_count) AS internal_message_count,
     SUM(websearch_message_count) AS websearch_message_count,
+    SUM(desktop_request_count) AS desktop_request_count,
+    SUM(mobile_request_count) AS mobile_request_count,
+    SUM(unknown_request_count) AS unknown_request_count,
     SUM(followup_recognized_count) AS followup_recognized_count,
     SUM(followup_success_count) AS followup_success_count,
     SUM(explicit_correction_count) AS explicit_correction_count,
@@ -1997,6 +2122,14 @@ mode_rows AS (
 mode_total AS (
   SELECT SUM(COALESCE(count, 0)) AS total_count FROM mode_rows
 ),
+device_rows AS (
+  SELECT 'desktop' AS device_class, (SELECT desktop_request_count FROM summary) AS count UNION ALL
+  SELECT 'mobile', (SELECT mobile_request_count FROM summary) UNION ALL
+  SELECT 'unknown', (SELECT unknown_request_count FROM summary)
+),
+device_total AS (
+  SELECT SUM(COALESCE(count, 0)) AS total_count FROM device_rows
+),
 answer_events AS (
   SELECT *
   FROM {self._table("monitor_answer_events")}
@@ -2017,6 +2150,11 @@ answer_distribution AS (
   SELECT 'evidenceSufficiency' AS metric, evidence_sufficiency AS label, COUNT(*) AS count FROM answer_events GROUP BY label
   UNION ALL
   SELECT 'verificationVerdict' AS metric, verification_verdict AS label, COUNT(*) AS count FROM answer_events GROUP BY label
+),
+question_category_distribution AS (
+  SELECT COALESCE(NULLIF(intent_family, ''), 'unknown') AS label, COUNT(*) AS count
+  FROM answer_events
+  GROUP BY label
 ),
 answer_total AS (
   SELECT COUNT(*) AS total_count FROM answer_events
@@ -2059,6 +2197,28 @@ SELECT TO_JSON_STRING(STRUCT(
     ) ORDER BY mode)
     FROM mode_rows
   ) AS modeDistribution,
+  (
+    SELECT ARRAY_AGG(STRUCT(
+      CASE device_class
+        WHEN 'desktop' THEN 'PC'
+        WHEN 'mobile' THEN 'モバイル'
+        ELSE '不明'
+      END AS label,
+      device_class AS value,
+      COALESCE(count, 0) AS count,
+      SAFE_DIVIDE(COALESCE(count, 0), NULLIF((SELECT total_count FROM device_total), 0)) AS rate
+    ) ORDER BY COALESCE(count, 0) DESC, device_class)
+    FROM device_rows
+  ) AS deviceDistribution,
+  (
+    SELECT ARRAY_AGG(STRUCT(
+      label,
+      label AS value,
+      count,
+      SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate
+    ) ORDER BY count DESC, label)
+    FROM question_category_distribution
+  ) AS questionCategoryDistribution,
   STRUCT(
     (
       SELECT ARRAY_AGG(STRUCT(label, count, SAFE_DIVIDE(count, NULLIF((SELECT total_count FROM answer_total), 0)) AS rate) ORDER BY count DESC, label)
@@ -2852,6 +3012,7 @@ SELECT
   user_id,
   user_id_hash,
   mode,
+  intent_family,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -2889,6 +3050,7 @@ LIMIT @limit
                 "userId": str(row.get("user_id") or ""),
                 "userIdHash": str(row.get("user_id_hash") or ""),
                 "mode": str(row.get("mode") or ""),
+                "intentFamily": str(row.get("intent_family") or ""),
                 "conversationTurnKey": str(row.get("conversation_turn_key") or ""),
                 "conversationMessageKey": str(row.get("conversation_message_key") or ""),
                 "traceRequestKey": str(row.get("trace_request_key") or ""),

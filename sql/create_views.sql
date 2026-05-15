@@ -373,6 +373,7 @@ SELECT
   user_id,
   user_id_hash,
   mode,
+  intent_family,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -393,6 +394,7 @@ SELECT
   user_id,
   user_id_hash,
   mode,
+  CAST(NULL AS STRING) AS intent_family,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -413,6 +415,7 @@ SELECT
   user_id,
   user_id_hash,
   mode,
+  CAST(NULL AS STRING) AS intent_family,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -433,6 +436,7 @@ SELECT
   user_id,
   user_id_hash,
   mode,
+  intent_family,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -453,6 +457,7 @@ SELECT
   user_id,
   user_id_hash,
   mode,
+  CAST(NULL AS STRING) AS intent_family,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -473,6 +478,7 @@ SELECT
   user_id,
   user_id_hash,
   mode,
+  CAST(NULL AS STRING) AS intent_family,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key

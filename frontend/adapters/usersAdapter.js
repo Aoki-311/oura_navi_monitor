@@ -6,6 +6,7 @@ import {
   safeArray,
   truncateMiddle,
 } from "../viewModels/formatters.js";
+import { DEVICE_LABELS, questionCategoryLabel } from "../viewModels/labels.js";
 
 function activityKeyFromLevel(level, rawKey = "") {
   const key = String(rawKey || "").trim().toLowerCase();
@@ -63,6 +64,21 @@ export function toUserDetailViewModel(payload) {
       count: Number(row.count || 0),
       rate: row.rate,
     })),
+    questionCategoryDistribution: safeArray(payload?.questionCategoryDistribution).map((row) => ({
+      label: questionCategoryLabel(row.value || row.label || "unknown"),
+      rawLabel: row.value || row.label || "unknown",
+      count: Number(row.count || 0),
+      rate: row.rate,
+    })),
+    deviceDistribution: safeArray(payload?.deviceDistribution).map((row) => {
+      const raw = row.value || row.deviceClass || row.label || "unknown";
+      return {
+        label: DEVICE_LABELS[String(raw).toLowerCase()] || row.label || "不明",
+        rawLabel: raw,
+        count: Number(row.count || 0),
+        rate: row.rate,
+      };
+    }),
     conversations: safeArray(payload?.conversations).map((row) => ({
       conversationId: row.conversationId || "",
       title: row.title || "-",
@@ -81,27 +97,33 @@ export function toUserDetailViewModel(payload) {
 }
 
 export function toMessageRows(payload) {
-  return safeArray(payload?.messages).map((row) => ({
-    timestamp: row.timestampJst || displayDateTime(row.timestamp),
-    role: row.roleLabel || row.role || "-",
-    status: row.statusLabel || row.status || "-",
-    mode: row.modeAtSendLabel || row.modeAtSend || "-",
-    device: row.deviceLabel || row.deviceClass || "-",
-    feedback: row.feedback || "none",
-    contentPreview: row.content || row.contentPreview || "-",
-    coverageRate:
-      row.coverageRate === null || row.coverageRate === undefined
-        ? row.lowCoverageRate === null || row.lowCoverageRate === undefined
-          ? "-"
-          : displayRate(1 - Number(row.lowCoverageRate || 0))
-        : displayRate(row.coverageRate),
-    traceId: row.traceId || "",
-    requestId: row.requestId || "",
-    turnId: row.turnId || "",
-    messageId: row.messageId || "",
-    traceShort: truncateMiddle(row.traceId),
-    requestShort: truncateMiddle(row.requestId),
-    turnShort: truncateMiddle(row.turnId),
-    messageShort: truncateMiddle(row.messageId),
-  }));
+  return safeArray(payload?.messages).map((row) => {
+    const rawRole = String(row.roleRaw || row.role || "").toLowerCase();
+    const isUser = rawRole === "user" || row.role === "ユーザー" || row.roleLabel === "ユーザー";
+    const rawCategory = row.intentFamily || row.questionCategory || "unknown";
+    return {
+      timestamp: row.timestampJst || displayDateTime(row.timestamp),
+      role: row.roleLabel || row.role || "-",
+      status: row.statusLabel || row.status || "-",
+      mode: row.modeAtSendLabel || row.modeAtSend || "-",
+      device: row.deviceLabel || row.deviceClass || "-",
+      feedback: row.feedback || "none",
+      questionCategory: isUser ? questionCategoryLabel(rawCategory) : "",
+      contentPreview: row.content || row.contentPreview || "-",
+      coverageRate:
+        row.coverageRate === null || row.coverageRate === undefined
+          ? row.lowCoverageRate === null || row.lowCoverageRate === undefined
+            ? "-"
+            : displayRate(1 - Number(row.lowCoverageRate || 0))
+          : displayRate(row.coverageRate),
+      traceId: row.traceId || "",
+      requestId: row.requestId || "",
+      turnId: row.turnId || "",
+      messageId: row.messageId || "",
+      traceShort: truncateMiddle(row.traceId),
+      requestShort: truncateMiddle(row.requestId),
+      turnShort: truncateMiddle(row.turnId),
+      messageShort: truncateMiddle(row.messageId),
+    };
+  });
 }

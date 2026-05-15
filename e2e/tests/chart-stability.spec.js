@@ -68,6 +68,13 @@ function dashboardPayload(preset = "today") {
         { label: "insufficient", count: 7, rate: 0.07 },
       ],
     },
+    questionCategory: {
+      items: [
+        { label: "price", value: "price", count: 54, rate: 0.54 },
+        { label: "gpo", value: "gpo", count: 18, rate: 0.18 },
+        { label: "general", value: "general", count: 28, rate: 0.28 },
+      ],
+    },
     followup: {
       recognizedCount: 41,
       successCount: 34,
@@ -100,6 +107,16 @@ function usersPayload() {
         coverageRate: 0.5,
         badFeedbackRate: 0,
         activityLevel: "低アクティブ",
+      },
+      {
+        userId: "2401145",
+        userEmail: "2401145@tc.terumo.co.jp",
+        lastActiveAtJst: "2026/05/16 09:00:00",
+        activeDays7: 7,
+        messageCount7d: 80,
+        coverageRate: 1,
+        badFeedbackRate: 0,
+        activityLevel: "高アクティブ",
       },
       {
         userId: "lcs-agent@lcs-developer-483404.iam.gserviceaccount.com",
@@ -141,6 +158,14 @@ async function mockCurrentDashboardApis(page) {
           { label: "社内モード", count: 26, rate: 0.62 },
           { label: "Web検索モード", count: 16, rate: 0.38 },
         ],
+        questionCategoryDistribution: [
+          { label: "price", value: "price", count: 9, rate: 0.75 },
+          { label: "gpo", value: "gpo", count: 3, rate: 0.25 },
+        ],
+        deviceDistribution: [
+          { label: "PC", value: "desktop", count: 8, rate: 0.67 },
+          { label: "モバイル", value: "mobile", count: 4, rate: 0.33 },
+        ],
         conversations: [
           {
             conversationId: "conv-001",
@@ -164,6 +189,18 @@ async function mockCurrentDashboardApis(page) {
             deviceLabel: "PC",
             coverageRate: 0.94,
             feedback: "none",
+            intentFamily: "price",
+          },
+          {
+            timestampJst: "2026/05/16 09:21:00",
+            roleLabel: "アシスタント",
+            roleRaw: "assistant",
+            contentPreview: "価格関連の情報を確認しました。",
+            modeAtSendLabel: "社内モード",
+            deviceLabel: "PC",
+            coverageRate: 0.94,
+            feedback: "none",
+            intentFamily: "price",
           },
         ],
         page: { nextCursor: "" },
@@ -183,6 +220,8 @@ test("current dashboard renders stable operational monitor", async ({ page }) =>
   await expect(page.locator("#sectionUsageTrend")).toContainText("利用推移");
   await expect(page.locator("#sectionActivity")).toContainText("活性度分布");
   await expect(page.locator("#sectionUsers")).toContainText("ユーザー一覧");
+  await expect(page.locator("#sectionQuestionCategory")).toContainText("質問カテゴリ");
+  await expect(page.locator("#questionCategoryLegend")).toContainText("価格関連");
   await expect(page.locator("#sectionAnswerQuality")).toContainText("回答品質分析");
   await expect(page.locator("#sectionFollowup")).toContainText("連続質問分析");
 
@@ -190,6 +229,7 @@ test("current dashboard renders stable operational monitor", async ({ page }) =>
   await expect(page.locator("#usersTable tbody tr")).toHaveCount(1);
   await expect(page.locator("#usersTable")).not.toContainText("unknown");
   await expect(page.locator("#usersTable")).not.toContainText("lcs-agent");
+  await expect(page.locator("#usersTable")).not.toContainText("2401145@tc.terumo.co.jp");
 
   const canvasCount = await page.locator("canvas").count();
   expect(canvasCount).toBeGreaterThanOrEqual(7);
@@ -212,6 +252,9 @@ test("user detail route lazy-loads conversations and messages", async ({ page })
   await page.locator(".conversationRow").first().click();
   await expect(page.locator("#messagesTable")).toContainText("この製品の価格を確認してください。");
   await expect(page.locator("#messagesTable")).toContainText("根拠カバレッジ率");
+  await expect(page.locator("#messagesTable")).toContainText("質問カテゴリ");
+  await expect(page.locator("#messagesTable")).toContainText("価格関連");
+  await expect(page.locator("#messagesTable tbody tr").nth(1).locator("td").nth(3)).toBeEmpty();
 
   await page.locator("#dashboardPreset").selectOption("last_7d");
   await expect(page.locator("#userDetailView")).toBeVisible();

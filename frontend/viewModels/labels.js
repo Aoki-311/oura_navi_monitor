@@ -25,6 +25,45 @@ export const DEVICE_LABELS = {
   unknown: "不明",
 };
 
+export const QUESTION_CATEGORY_LABELS = {
+  price: "価格関連",
+  pricing: "価格関連",
+  gpo: "GPO関連",
+  product: "製品関連",
+  product_lookup: "製品関連",
+  product_master: "製品関連",
+  product_master_lookup: "製品関連",
+  comparison: "比較関連",
+  compare: "比較関連",
+  evidence: "根拠確認",
+  citation: "根拠確認",
+  fact: "事実確認",
+  fact_check: "事実確認",
+  feasibility: "実現性確認",
+  risk: "リスク確認",
+  mechanism: "仕組み確認",
+  benefit: "メリット確認",
+  pain: "課題確認",
+  switch: "切替検討",
+  access_barrier: "アクセス障壁",
+  hospital: "施設関連",
+  strategy: "戦略・提案関連",
+  timeliness: "最新情報・時事関連",
+  sales_support: "営業支援",
+  business_output: "資料作成",
+  workflow: "業務手順",
+  workflow_support: "業務手順",
+  asset_lookup: "資料検索",
+  asset_request: "資料作成・取得",
+  source_locator: "根拠確認",
+  support: "サポート関連",
+  policy_or_rule: "規定・ルール",
+  ops_guidance: "運用ガイダンス",
+  followup: "連続質問",
+  general: "一般質問",
+  unknown: "未分類",
+};
+
 export const ROLE_LABELS = {
   user: "ユーザー",
   assistant: "AI回答",
@@ -54,10 +93,10 @@ export const QUALITY_LABELS = {
 };
 
 export const ACTIVITY_DEFINITIONS = {
-  high: "表示期間内の利用頻度が高いユーザー",
-  middle: "表示期間内に一定の利用があるユーザー",
-  low: "表示期間内の利用が少ないユーザー",
-  dormant: "表示期間内にメッセージ送信がないユーザー",
+  high: "直近3日内にメッセージ送信が3回以上あるユーザーです。",
+  middle: "直近7日内にメッセージ送信が1〜2回あるユーザーです。",
+  low: "直近14日内にメッセージ送信が1回以上あり、高・中アクティブに該当しないユーザーです。",
+  dormant: "直近14日内にメッセージ送信がないユーザーです。",
 };
 
 export const KPI_HELP = {
@@ -68,9 +107,16 @@ export const KPI_HELP = {
   errorRate: "回答生成や通信処理でエラーになった割合です。",
   p95LatencyMs: "利用者の大半が待つ最大に近い応答時間の目安です。数値が大きいほど体感が遅くなります。",
   activityDistribution: "選択した表示期間内の利用頻度に基づき、ユーザーを高・中・低・休眠に分類しています。",
+  questionCategory: "ユーザーの質問内容を、回答ログの分類情報に基づいて大まかな業務カテゴリに分けたものです。",
+  usability: "回答内容が管理者や利用者にとって実際に使える状態かを示します。",
+  evidenceSufficiency: "回答に必要な根拠資料、引用、構造化データが十分に揃っているかを示します。",
 };
 
 export function labelOf(labels, raw, fallback = "不明") {
   const key = String(raw || "").trim().toLowerCase();
   return labels[key] || String(raw || "").trim() || fallback;
+}
+
+export function questionCategoryLabel(raw) {
+  return labelOf(QUESTION_CATEGORY_LABELS, raw, "未分類");
 }

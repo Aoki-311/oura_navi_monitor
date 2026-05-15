@@ -8,6 +8,7 @@ import {
 import { toDashboardViewModel } from "./adapters/dashboardAdapter.js";
 import { toMessageRows, toUserDetailViewModel, toUserRows } from "./adapters/usersAdapter.js";
 import { displayCount, displayDateTime, displayRate, truncateMiddle } from "./viewModels/formatters.js";
+import { KPI_HELP } from "./viewModels/labels.js";
 
 const $ = (id) => document.getElementById(id);
 const DASHBOARD_FETCH_TIMEOUT_MS = 18000;
@@ -211,7 +212,7 @@ function barLineChart(id, labels, barData, lineData, options = {}) {
   });
 }
 
-function doughnutChart(id, rows, centerText = "") {
+function doughnutChart(id, rows, centerText = "", options = {}) {
   const labels = rows.map((row) => row.label);
   const values = rows.map((row) => row.count);
   const centerPlugin = {
@@ -251,7 +252,7 @@ function doughnutChart(id, rows, centerText = "") {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { position: "bottom" },
+        legend: { display: options.legend !== false, position: options.legendPosition || "bottom" },
         tooltip: {
           callbacks: {
             label(ctx) {
@@ -319,6 +320,7 @@ function renderKpis(viewModel) {
     .join("");
   $("summaryWindowLabel").textContent = viewModel.windowLabel;
   $("environmentWindowLabel").textContent = viewModel.windowLabel;
+  $("questionCategoryWindowLabel").textContent = viewModel.windowLabel;
   $("qualityWindowLabel").textContent = viewModel.windowLabel;
   $("followupWindowLabel").textContent = viewModel.windowLabel;
   $("dataFreshness").textContent = `最終更新: ${displayDateTime(viewModel.generatedAt)}${viewModel.fetchMs !== undefined ? ` / API ${viewModel.fetchMs} ms` : ""}`;
@@ -340,20 +342,44 @@ function renderSystemUsageChart(viewModel) {
 
 function renderActivity(viewModel) {
   const rows = viewModel.activityDistribution.segments;
-  doughnutChart("activityChart", rows, ["総ユーザー数", displayCount(viewModel.activityDistribution.totalUserCount)]);
+  doughnutChart("activityChart", rows, ["総ユーザー数", displayCount(viewModel.activityDistribution.totalUserCount)], { legend: false });
   const legend = $("activityLegend");
   if (!legend) return;
   legend.innerHTML = rows
     .map(
       (row) => `
         <div class="legendItem">
-          <strong>${escapeHtml(row.label)}</strong>
+          <div class="legendTitle">
+            <strong>${escapeHtml(row.label)}</strong>
+            <span class="helpWrap legendHelp">
+              <button type="button" class="helpBtn" aria-label="${escapeHtml(row.label)}の説明">?</button>
+              <span class="helpTooltip">${escapeHtml(row.definition || "")}</span>
+            </span>
+          </div>
           <span>${displayRate(row.rate, 2)}（${displayCount(row.count)}）</span>
-          <small>${escapeHtml(row.definition || "")}</small>
         </div>
       `,
     )
     .join("");
+}
+
+function renderQuestionCategory(viewModel) {
+  const rows = viewModel.questionCategory || [];
+  doughnutChart("questionCategoryChart", rows, "", { legend: false });
+  const legend = $("questionCategoryLegend");
+  if (!legend) return;
+  legend.innerHTML = rows.length
+    ? rows
+        .map(
+          (row) => `
+            <div class="legendItem">
+              <strong>${escapeHtml(row.label)}</strong>
+              <span>${displayRate(row.rate, 2)}（${displayCount(row.count)}）</span>
+            </div>
+          `,
+        )
+        .join("")
+    : `<div class="emptyInline">対象データなし</div>`;
 }
 
 function renderEnvironment(viewModel) {
@@ -379,7 +405,13 @@ function renderAnswerQuality(viewModel) {
     .map(
       (metric) => `
         <article class="qualityCard">
-          <h3>${escapeHtml(metric.title)}</h3>
+          <h3>
+            <span>${escapeHtml(metric.title)}</span>
+            <span class="helpWrap legendHelp">
+              <button type="button" class="helpBtn" aria-label="${escapeHtml(metric.title)}の説明">?</button>
+              <span class="helpTooltip">${escapeHtml(KPI_HELP[metric.key] || "")}</span>
+            </span>
+          </h3>
           <div class="qualityRows">
             ${
               metric.rows.length
@@ -437,6 +469,7 @@ async function loadDashboard() {
     mainViewModel = toDashboardViewModel(mainResult.value, state.dashboardPreset);
     renderKpis(mainViewModel);
     renderEnvironment(mainViewModel);
+    renderQuestionCategory(mainViewModel);
     renderAnswerQuality(mainViewModel);
     renderFollowup(mainViewModel);
   }
@@ -470,7 +503,14 @@ function renderUsers(rows) {
   const filteredRows = rows.filter((row) => {
     const id = String(row.userId || "").toLowerCase();
     const email = String(row.userEmail || "").toLowerCase();
-    return id && id !== "unknown" && !id.includes("lcs-agent") && !email.includes("lcs-agent");
+    return (
+      id
+      && id !== "unknown"
+      && email !== "2401145@tc.terumo.co.jp"
+      && id !== "2401145@tc.terumo.co.jp"
+      && !id.includes("lcs-agent")
+      && !email.includes("lcs-agent")
+    );
   });
   state.userRows = filteredRows;
   const maxPage = Math.max(1, Math.ceil(filteredRows.length / USERS_PAGE_SIZE));
@@ -537,6 +577,8 @@ function renderUserDetail(viewModel) {
     },
   );
   doughnutChart("userModeChart", viewModel.modeDistribution);
+  doughnutChart("userQuestionCategoryChart", viewModel.questionCategoryDistribution, "", { legend: false });
+  doughnutChart("userDeviceChart", viewModel.deviceDistribution, "", { legend: false });
 
   const tbody = $("conversationTable")?.querySelector("tbody");
   if (!tbody) return;
@@ -585,6 +627,7 @@ function renderMessages(rows, append = false) {
           <td>${escapeHtml(row.timestamp)}</td>
           <td>${escapeHtml(row.role)}</td>
           <td class="contentCell">${escapeHtml(row.contentPreview)}</td>
+          <td>${escapeHtml(row.questionCategory)}</td>
           <td>${escapeHtml(row.mode)}</td>
           <td>${escapeHtml(row.device)}</td>
           <td>${escapeHtml(row.coverageRate)}</td>
@@ -596,7 +639,7 @@ function renderMessages(rows, append = false) {
   if (append) {
     tbody.insertAdjacentHTML("beforeend", html);
   } else {
-    tbody.innerHTML = html || `<tr><td colspan="7" class="emptyCell">対象メッセージがありません。</td></tr>`;
+    tbody.innerHTML = html || `<tr><td colspan="8" class="emptyCell">対象メッセージがありません。</td></tr>`;
   }
 }
 

@@ -797,6 +797,9 @@ class FirestoreHistoryService:
         candidate_pairs: List[Tuple[str, str]] = []
         candidate_turns_by_pair: Dict[Tuple[str, str], set[str]] = {}
         candidate_messages_by_pair: Dict[Tuple[str, str], set[str]] = {}
+        candidate_category_by_turn: Dict[Tuple[str, str, str], str] = {}
+        candidate_category_by_message: Dict[Tuple[str, str, str], str] = {}
+        candidate_category_by_trace: Dict[Tuple[str, str, str], str] = {}
         for event in candidates or []:
             candidate_uid = _as_text(event.get("userId"))
             candidate_conv = _as_text(event.get("conversationId"))
@@ -811,10 +814,18 @@ class FirestoreHistoryService:
                 candidate_pairs.append(pair)
             candidate_turn = _as_text(event.get("turnId"))
             candidate_message = _as_text(event.get("messageId"))
+            candidate_trace = _as_text(event.get("traceId"))
+            candidate_category = _as_text(event.get("intentFamily") or event.get("intent_family")).lower()
             if candidate_turn:
                 candidate_turns_by_pair.setdefault(pair, set()).add(candidate_turn)
+                if candidate_category:
+                    candidate_category_by_turn[(pair[0], pair[1], candidate_turn)] = candidate_category
             if candidate_message:
                 candidate_messages_by_pair.setdefault(pair, set()).add(candidate_message)
+                if candidate_category:
+                    candidate_category_by_message[(pair[0], pair[1], candidate_message)] = candidate_category
+            if candidate_trace and candidate_category:
+                candidate_category_by_trace[(pair[0], pair[1], candidate_trace)] = candidate_category
 
         def _load_user_row(uid: str) -> Dict[str, Any]:
             payload: Dict[str, Any] = {}
@@ -926,7 +937,17 @@ class FirestoreHistoryService:
                     if turn_lookup and msg_turn != turn_lookup and not scoped_match:
                         continue
                     role = _as_text(msg.get("role"))
+                    role_raw = role.lower()
                     device_raw = _message_device_class(msg)
+                    raw_category = ""
+                    if role_raw == "user":
+                        raw_category = (
+                            _as_text(msg.get("intentFamily") or msg.get("intent_family")).lower()
+                            or candidate_category_by_turn.get((uid, conv_doc.id, msg_turn), "")
+                            or candidate_category_by_message.get((uid, conv_doc.id, row_message_id), "")
+                            or candidate_category_by_trace.get((uid, conv_doc.id, msg_trace), "")
+                            or "unknown"
+                        )
                     tags: List[str] = []
                     if _question_kind_from_message(msg) == "followup":
                         tags.append("追問")
@@ -955,6 +976,8 @@ class FirestoreHistoryService:
                         "chatFlowType": _as_text(msg.get("chatFlowType")),
                         "clientOrigin": _as_text(msg.get("clientOrigin")),
                         "feedback": _as_text(msg.get("feedback")) or "none",
+                        "questionCategory": raw_category,
+                        "intentFamily": raw_category,
                         "contentPreview": _content_preview(msg.get("content"), max_len=260),
                         "conversationId": conv_doc.id,
                         "traceId": msg_trace,

@@ -519,6 +519,15 @@ def metrics_user_detail(
             conversation_page = conversation_future.result()
         if profile is None:
             raise HTTPException(status_code=404, detail="user not found")
+        profile_email = str(profile.get("userEmail") or "").strip().lower()
+        normalized_user_id = str(user_id or "").strip().lower()
+        if (
+            normalized_user_id in {"unknown", "2401145@tc.terumo.co.jp"}
+            or profile_email == "2401145@tc.terumo.co.jp"
+            or "lcs-agent" in normalized_user_id
+            or "lcs-agent" in profile_email
+        ):
+            raise HTTPException(status_code=404, detail="user not found")
     except HTTPException:
         raise
     except Exception as exc:
@@ -544,6 +553,8 @@ def metrics_user_detail(
         "summary": summary,
         "trend": summary_payload.get("trend") or [],
         "modeDistribution": summary_payload.get("modeDistribution") or [],
+        "deviceDistribution": summary_payload.get("deviceDistribution") or [],
+        "questionCategoryDistribution": summary_payload.get("questionCategoryDistribution") or [],
         "answerQualityDistribution": summary_payload.get("answerQualityDistribution") or {},
         "followup": summary_payload.get("followup") or {},
         "conversations": conversation_page.get("items") or [],

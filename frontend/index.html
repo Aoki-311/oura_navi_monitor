@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OurA Navi 運用モニター</title>
     <link rel="icon" type="image/svg+xml" href="/dashboard-assets/favicon.svg" />
-    <link rel="stylesheet" href="/dashboard-assets/styles.css?v=monitor-layout-v4" />
+    <link rel="stylesheet" href="/dashboard-assets/styles.css?v=monitor-layout-v5" />
     <script src="/dashboard-assets/vendor/chart.umd.min.js" defer></script>
-    <script type="module" src="/dashboard-assets/app.js?v=monitor-layout-v4"></script>
+    <script type="module" src="/dashboard-assets/app.js?v=monitor-layout-v5"></script>
   </head>
   <body>
     <header class="topbar">
@@ -160,17 +160,30 @@
         </div>
       </section>
 
-      <section class="panel" id="sectionAnswerQuality">
-        <div class="panelHead">
-          <h2><span class="sectionNo">06</span><span>回答品質分析</span></h2>
-          <span class="muted" id="qualityWindowLabel">今日</span>
-        </div>
-        <div class="qualityGrid" id="answerQualityGrid"></div>
+      <section class="twoColumn qualityCategoryRow">
+        <article class="panel" id="sectionQuestionCategory">
+          <div class="panelHead">
+            <h2><span class="sectionNo">06</span><span>質問カテゴリ</span></h2>
+            <span class="muted" id="questionCategoryWindowLabel">今日</span>
+          </div>
+          <div class="donutWithLegend categoryDonut">
+            <div class="chartWrap donut compactDonut"><canvas id="questionCategoryChart"></canvas></div>
+            <div class="legendList" id="questionCategoryLegend"></div>
+          </div>
+        </article>
+
+        <article class="panel" id="sectionAnswerQuality">
+          <div class="panelHead">
+            <h2><span class="sectionNo">07</span><span>回答品質分析</span></h2>
+            <span class="muted" id="qualityWindowLabel">今日</span>
+          </div>
+          <div class="qualityGrid qualityGridCompact" id="answerQualityGrid"></div>
+        </article>
       </section>
 
       <section class="panel" id="sectionFollowup">
         <div class="panelHead">
-          <h2><span class="sectionNo">07</span><span>連続質問分析</span></h2>
+          <h2><span class="sectionNo">08</span><span>連続質問分析</span></h2>
           <span class="muted" id="followupWindowLabel">今日</span>
         </div>
         <div class="followupGrid">
@@ -200,6 +213,14 @@
           <article class="subPanel">
             <h3>モード分布</h3>
             <div class="chartWrap"><canvas id="userModeChart"></canvas></div>
+          </article>
+          <article class="subPanel">
+            <h3>質問カテゴリ分布</h3>
+            <div class="chartWrap"><canvas id="userQuestionCategoryChart"></canvas></div>
+          </article>
+          <article class="subPanel">
+            <h3>デバイス分布</h3>
+            <div class="chartWrap"><canvas id="userDeviceChart"></canvas></div>
           </article>
         </div>
         <div class="conversationMessageGrid">
@@ -236,6 +257,7 @@
                     <th>created_at</th>
                     <th>役割</th>
                     <th>message_preview</th>
+                    <th>質問カテゴリ</th>
                     <th>モード</th>
                     <th>デバイス</th>
                     <th>根拠カバレッジ率</th>
@@ -291,6 +313,7 @@
             <label><input type="checkbox" checked /> 基本情報</label>
             <label><input type="checkbox" checked /> 利用状況</label>
             <label><input type="checkbox" checked /> 回答品質</label>
+            <label><input type="checkbox" checked /> 質問カテゴリ</label>
             <label><input type="checkbox" /> 追問状況</label>
             <label><input type="checkbox" /> フィードバック</label>
             <label><input type="checkbox" /> 会話情報</label>

@@ -80,6 +80,11 @@ answer_base AS (
     ON gturn.conversation_turn_key = NULLIF(a.conversation_turn_key, '#')
   LEFT JOIN gap_keys gmsg
     ON gmsg.conversation_message_key = NULLIF(a.conversation_message_key, '#')
+  WHERE NOT (
+    LOWER(COALESCE(a.user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(a.user_id, '')) = '2401145@tc.terumo.co.jp'
+    OR REGEXP_CONTAINS(LOWER(COALESCE(a.user_id, '')), r'lcs-agent')
+  )
 )
 SELECT
   event_ts,
@@ -207,6 +212,13 @@ WITH request_daily AS (
     COUNTIF(device_class = 'unknown') AS unknown_request_count,
     MAX(event_ts) AS last_active_at
   FROM `__PROJECT_ID__.__DATASET_ID__.v_request_user_metric_events`
+  WHERE NOT (
+    LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+    OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+    OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
+  )
   GROUP BY date_jst, user_id, user_email, user_id_hash
 ),
 answer_daily AS (
@@ -233,6 +245,12 @@ followup_open_daily AS (
     COUNTIF(event = 'recognized') AS followup_recognized_count,
     COUNTIF(event = 'success') AS followup_success_count
   FROM `__PROJECT_ID__.__DATASET_ID__.v_followup_open_result_events`
+  WHERE NOT (
+    LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+    OR REGEXP_CONTAINS(LOWER(COALESCE(user_id, '')), r'lcs-agent')
+  )
   GROUP BY date_jst, user_id, user_id_hash
 ),
 followup_resolution_daily AS (
@@ -244,6 +262,12 @@ followup_resolution_daily AS (
     COUNTIF(decision_normalized = 'clarify_before_carry') AS clarification_required_count,
     COUNTIF(followup_offtopic) AS followup_offtopic_count
   FROM `__PROJECT_ID__.__DATASET_ID__.v_followup_resolution_events`
+  WHERE NOT (
+    LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+    OR REGEXP_CONTAINS(LOWER(COALESCE(user_id, '')), r'lcs-agent')
+  )
   GROUP BY date_jst, user_id, user_id_hash
 ),
 keys AS (
@@ -331,8 +355,18 @@ request_user_hourly AS (
       event_ts,
       mode,
       is_core,
+      user_id,
+      user_email,
+      user_id_hash,
       COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown') AS user_key
     FROM `__PROJECT_ID__.__DATASET_ID__.v_request_user_metric_events`
+  )
+  WHERE NOT (
+    LOWER(COALESCE(user_key, 'unknown')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+    OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+    OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
   )
   GROUP BY bucket_ts
 ),
@@ -368,7 +402,8 @@ answer_hour_base AS (
     COALESCE(NULLIF(usability_level, ''), 'unknown') AS usability_level,
     COALESCE(NULLIF(delivery_readiness, ''), 'unknown') AS delivery_readiness,
     COALESCE(NULLIF(evidence_sufficiency, ''), 'unknown') AS evidence_sufficiency,
-    COALESCE(NULLIF(verification_verdict, ''), 'unknown') AS verification_verdict
+    COALESCE(NULLIF(verification_verdict, ''), 'unknown') AS verification_verdict,
+    COALESCE(NULLIF(intent_family, ''), 'unknown') AS intent_family
   FROM `__PROJECT_ID__.__DATASET_ID__.monitor_answer_events`
 ),
 answer_hourly AS (
@@ -433,6 +468,15 @@ verification_verdict_distribution_hourly AS (
   )
   GROUP BY bucket_ts
 ),
+question_category_distribution_hourly AS (
+  SELECT bucket_ts, ARRAY_AGG(STRUCT(label AS label, count AS count) ORDER BY count DESC, label) AS question_category_distribution
+  FROM (
+    SELECT bucket_ts, intent_family AS label, COUNT(*) AS count
+    FROM answer_hour_base
+    GROUP BY bucket_ts, label
+  )
+  GROUP BY bucket_ts
+),
 keys AS (
   SELECT bucket_ts FROM request_hourly
   UNION DISTINCT
@@ -483,6 +527,7 @@ SELECT
   drd.delivery_readiness_distribution,
   esd.evidence_sufficiency_distribution,
   vvd.verification_verdict_distribution,
+  qcd.question_category_distribution,
   CURRENT_TIMESTAMP() AS materialized_at
 FROM keys k
 LEFT JOIN request_hourly r USING(bucket_ts)
@@ -494,7 +539,8 @@ LEFT JOIN answerability_distribution_hourly ad USING(bucket_ts)
 LEFT JOIN usability_distribution_hourly ud USING(bucket_ts)
 LEFT JOIN delivery_readiness_distribution_hourly drd USING(bucket_ts)
 LEFT JOIN evidence_sufficiency_distribution_hourly esd USING(bucket_ts)
-LEFT JOIN verification_verdict_distribution_hourly vvd USING(bucket_ts);
+LEFT JOIN verification_verdict_distribution_hourly vvd USING(bucket_ts)
+LEFT JOIN question_category_distribution_hourly qcd USING(bucket_ts);
 
 CREATE OR REPLACE TABLE `__PROJECT_ID__.__DATASET_ID__.monitor_dashboard_snapshots`
 CLUSTER BY preset AS
@@ -720,6 +766,14 @@ answer_distribution AS (
   )
   GROUP BY preset, metric, label
 ),
+question_category_rollup AS (
+  SELECT preset, label, SUM(count) AS count
+  FROM (
+    SELECT preset, item.label AS label, item.count AS count
+    FROM hourly_window, UNNEST(IFNULL(question_category_distribution, ARRAY<STRUCT<label STRING, count INT64>>[])) AS item
+  )
+  GROUP BY preset, label
+),
 followup_summary AS (
   SELECT
     preset,
@@ -833,6 +887,19 @@ answer_metric_payload AS (
   FROM answer_distribution d
   LEFT JOIN answer_summary a USING(preset)
   GROUP BY d.preset, d.metric
+),
+question_category_payload AS (
+  SELECT
+    q.preset,
+    ARRAY_AGG(STRUCT(
+      q.label AS label,
+      q.label AS value,
+      q.count AS count,
+      SAFE_DIVIDE(q.count, NULLIF(a.answer_count, 0)) AS rate
+    ) ORDER BY q.count DESC, q.label) AS items
+  FROM question_category_rollup q
+  LEFT JOIN answer_summary a USING(preset)
+  GROUP BY q.preset
 )
 SELECT
   p.preset,
@@ -874,6 +941,9 @@ SELECT
       aq_verification.items AS verificationVerdict
     ) AS answerQuality,
     STRUCT(
+      qcp.items AS items
+    ) AS questionCategory,
+    STRUCT(
       fs.recognized_count AS recognizedCount,
       fs.success_count AS successCount,
       SAFE_DIVIDE(fs.success_count, NULLIF(fs.recognized_count, 0)) AS successRate,
@@ -907,5 +977,7 @@ LEFT JOIN answer_metric_payload aq_evidence
 LEFT JOIN answer_metric_payload aq_verification
   ON aq_verification.preset = p.preset
  AND aq_verification.metric = 'verificationVerdict'
+LEFT JOIN question_category_payload qcp
+  ON qcp.preset = p.preset
 LEFT JOIN followup_summary fs
   ON fs.preset = p.preset;

@@ -87,6 +87,7 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
             "device_class",
             "answer_action_json",
             "target_message_id",
+            "intent_family",
         ):
             self.assertIn(field_name, sql)
 
@@ -141,6 +142,9 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("enhance_requested", aggregate_sql)
         self.assertIn("correction_requested", aggregate_sql)
         self.assertIn("low_coverage_flag", aggregate_sql)
+        self.assertIn("question_category_distribution", aggregate_sql)
+        self.assertIn("questionCategory", aggregate_sql)
+        self.assertIn("2401145@tc.terumo.co.jp", aggregate_sql)
         self.assertIn("AGGREGATE_SQL_TEMPLATE", bootstrap)
         self.assertIn("ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS", bootstrap)
         self.assertIn("RETENTION_DAYS", bootstrap)
@@ -164,6 +168,8 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("executor.submit(\n                fs.list_user_conversation_summaries,", metrics_py)
         self.assertNotIn("fs.get_user_detail_metrics(user_id=user_id", metrics_py)
         self.assertIn('"endpoint": "/api/trace/messages"', metrics_py)
+        self.assertIn('"questionCategoryDistribution"', metrics_py)
+        self.assertIn('"deviceDistribution"', metrics_py)
         self.assertIn("def get_user_detail_summary", bq_py)
         self.assertIn("def get_user_profile", fs_py)
         self.assertIn("def list_user_conversation_summaries", fs_py)
@@ -185,6 +191,8 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn('"contentPreview": _content_preview', fs_py)
         self.assertIn('"nextCursor"', fs_py)
         self.assertIn("candidate_pairs", fs_py)
+        self.assertIn("candidate_category_by_turn", fs_py)
+        self.assertIn('"questionCategory"', fs_py)
         self.assertIn("include_content", api_doc)
         self.assertIn("通常画面では `contentPreview` のみ", api_doc)
 
@@ -216,6 +224,7 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("一部データの取得に失敗しました", js)
         self.assertIn("DASHBOARD_FETCH_TIMEOUT_MS", js)
         self.assertIn("renderSystemUsageChart", js)
+        self.assertIn("renderQuestionCategory", js)
         self.assertIn("core_request_count", js)
 
 if __name__ == "__main__":

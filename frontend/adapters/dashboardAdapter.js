@@ -1,5 +1,5 @@
 import { displayCount, displayMs, displayRate, safeArray } from "../viewModels/formatters.js";
-import { ACTIVITY_DEFINITIONS, KPI_HELP, PRESET_LABELS, QUALITY_LABELS } from "../viewModels/labels.js";
+import { ACTIVITY_DEFINITIONS, KPI_HELP, PRESET_LABELS, QUALITY_LABELS, questionCategoryLabel } from "../viewModels/labels.js";
 import { toMetricStatusBadge } from "../viewModels/metricStatus.js";
 
 function firstDefined(...values) {
@@ -26,6 +26,21 @@ function qualityRows(rows) {
   }));
 }
 
+function distributionRows(rows, labelFn = (value) => value || "不明") {
+  const normalizedRows = safeArray(rows);
+  const total = normalizedRows.reduce((sum, row) => sum + numberValue(row.count, row.value, row.requestCount), 0);
+  return normalizedRows.map((row) => {
+    const rawValue = row.value || row.label || "unknown";
+    const count = numberValue(row.count, row.requestCount, row.valueCount);
+    return {
+      label: labelFn(rawValue),
+      rawLabel: rawValue,
+      count,
+      rate: firstDefined(row.rate, row.ratio, total ? count / total : null),
+    };
+  });
+}
+
 function activityKeyFromLabel(row) {
   const rawKey = String(row.activityKey || row.key || "").trim().toLowerCase();
   if (rawKey) return rawKey;
@@ -48,6 +63,7 @@ export function toDashboardViewModel(payload, preset = "today") {
   const activity = payload?.activityDistribution || payload?.activity || {};
   const environment = payload?.environmentMode || payload?.environment || payload?.modeDevice || {};
   const answerQuality = payload?.answerQuality || payload?.distributions || {};
+  const questionCategory = payload?.questionCategory || payload?.questionCategoryDistribution || payload?.intentFamilyDistribution || {};
   const followup = payload?.followup || payload?.followupSummary || {};
   const generatedAt = payload?.meta?.generatedAt || "";
   const usageTrendRows = safeArray(firstDefined(payload?.usageTrend, payload?.usage?.trend, payload?.trends?.usage, payload?.requestTrend));
@@ -158,11 +174,13 @@ export function toDashboardViewModel(payload, preset = "today") {
       }),
     },
     answerQuality: [
-      { key: "answerability", title: "回答可能性", rows: qualityRows(answerQuality.answerability) },
       { key: "usability", title: "回答利用可能性", rows: qualityRows(answerQuality.usability) },
-      { key: "deliveryReadiness", title: "業務利用可能性", rows: qualityRows(answerQuality.deliveryReadiness) },
       { key: "evidenceSufficiency", title: "根拠十分性", rows: qualityRows(answerQuality.evidenceSufficiency) },
     ],
+    questionCategory: distributionRows(
+      firstDefined(questionCategory.items, questionCategory.segments, questionCategory),
+      questionCategoryLabel,
+    ),
     followup: {
       cards: [
         { label: "追問認識数", value: displayCount(recognizedCount) },
