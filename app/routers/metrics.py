@@ -58,6 +58,40 @@ def _safe_float(value: object) -> float | None:
     return parsed
 
 
+def _safe_rate(numerator: int, denominator: int) -> float | None:
+    return (numerator / denominator) if denominator > 0 else None
+
+
+def _answer_success_proxy_from_fs(fs_metrics: dict) -> float | None:
+    assistant_count = _safe_int(fs_metrics.get("assistantMessageCount"))
+    if assistant_count <= 0:
+        return None
+    failure_count = _safe_int(fs_metrics.get("messageFailureCount"))
+    feedback_total = _safe_int(fs_metrics.get("feedbackTotalCount"))
+    feedback_good = _safe_int(fs_metrics.get("feedbackGoodCount"))
+    bad_feedback = max(0, feedback_total - feedback_good)
+    success_count = max(0, assistant_count - failure_count - bad_feedback)
+    return success_count / assistant_count
+
+
+def _user_key(user_id: str, user_email: str) -> str:
+    return f"{str(user_id or '').strip()}::{str(user_email or '').strip().lower()}"
+
+
+def _dashboard_cache_key(*, window: MetricsTimeWindow, user: str) -> str:
+    return "|".join(
+        [
+            str(window.start_utc.isoformat()),
+            str(window.end_utc.isoformat()),
+            str(window.timezone),
+            str(window.source),
+            str(window.preset),
+            str(window.bucket_minutes),
+            str(user or "").strip().lower(),
+        ]
+    )
+
+
 def _window_payload(window: MetricsTimeWindow) -> dict:
     return {
         "source": window.source,
@@ -559,21 +593,288 @@ def metrics_dashboard(
     _admin: AdminIdentity = Depends(require_admin),
     settings: Settings = Depends(get_settings),
     bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
+    fs: FirestoreHistoryService = Depends(get_firestore_history_service),
 ) -> dict:
-    payload = metrics_system_dashboard(
-        days=days,
-        preset=preset,
-        start=start,
-        end=end,
-        _admin=_admin,
-        settings=settings,
-        bq=bq,
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
+    now_mono = time.monotonic()
+    cache_ttl_sec = max(0, int(settings.monitor_dashboard_cache_ttl_sec or 0))
+    cache_key = _dashboard_cache_key(window=window, user=user)
+    if cache_ttl_sec > 0:
+        cached = _dashboard_cache_get(key=cache_key, now_mono=now_mono)
+        if cached is not None:
+            cached_meta = cached.get("meta") or {}
+            cached["meta"] = {
+                "cacheHit": True,
+                "fetchMs": 0,
+                "taskMs": cached_meta.get("taskMs", {}),
+                "selectedUserTimeseriesMs": 0,
+                "deprecated": True,
+                "legacyEndpoint": "/api/metrics/dashboard",
+                "replacementEndpoint": "/api/metrics/system-dashboard",
+            }
+            return cached
+
+    fetch_started = time.monotonic()
+    task_ms: dict[str, int] = {}
+    try:
+        with ThreadPoolExecutor(max_workers=7) as executor:
+            def _submit_timed(fn):
+                def _wrapped():
+                    started = time.monotonic()
+                    result = fn(window=window)
+                    elapsed = int((time.monotonic() - started) * 1000)
+                    return result, elapsed
+
+                return executor.submit(_wrapped)
+
+            futures = {
+                "bq_overview": _submit_timed(bq.get_overview),
+                "usage_timeseries": _submit_timed(bq.get_usage_timeseries),
+                "error_report": _submit_timed(bq.get_error_report),
+                "device_report": _submit_timed(bq.get_device_report),
+                "fs_metrics": _submit_timed(fs.aggregate_monitor_metrics),
+                "followup_report": _submit_timed(bq.get_followup_open_aggregates),
+                "request_user_rows": _submit_timed(bq.get_request_user_aggregates),
+            }
+
+            def _result(name: str):
+                try:
+                    result, elapsed = futures[name].result()
+                    task_ms[name] = elapsed
+                    return result
+                except Exception as exc:  # pragma: no cover - error path
+                    raise HTTPException(status_code=500, detail=f"dashboard {name} failed: {exc}") from exc
+
+            bq_overview = _result("bq_overview")
+            usage_timeseries = _result("usage_timeseries")
+            error_report = _result("error_report")
+            device_report = _result("device_report")
+            fs_metrics = _result("fs_metrics")
+            followup_report = _result("followup_report")
+            request_user_rows = _result("request_user_rows")
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        raise HTTPException(status_code=500, detail=f"dashboard query failed: {exc}") from exc
+
+    request_user_map: dict[str, dict] = {}
+    for row in request_user_rows:
+        user_id = str(row.get("user_id") or "").strip() or "unknown"
+        user_email = str(row.get("user_email") or "").strip().lower()
+        key = _user_key(user_id, user_email)
+        request_user_map[key] = {
+            "totalRequestCount": _safe_int(row.get("request_count")),
+            "coreRequestCount": _safe_int(row.get("core_request_count")),
+            "systemRequestCount": _safe_int(row.get("system_request_count")),
+            "desktopRequestCount": _safe_int(row.get("desktop_request_count")),
+            "mobileRequestCount": _safe_int(row.get("mobile_request_count")),
+            "unknownRequestCount": _safe_int(row.get("unknown_request_count")),
+        }
+
+    followup_user_map: dict[str, dict] = {}
+    for row in followup_report.get("users", []) or []:
+        user_id = str(row.get("userId") or "").strip() or "unknown"
+        user_email = str(row.get("userEmail") or "").strip().lower()
+        key = _user_key(user_id, user_email)
+        followup_user_map[key] = {
+            "followupRecognizedCount": _safe_int(row.get("recognizedCount")),
+            "followupSuccessCount": _safe_int(row.get("successCount")),
+            "followupOpenSuccessRate": _safe_float(row.get("successRate")),
+        }
+
+    users: list[dict] = []
+    for user_row in fs_metrics.get("users", []) or []:
+        user_id = str(user_row.get("userId") or "").strip()
+        user_email = str(user_row.get("userEmail") or "").strip().lower()
+        key = _user_key(user_id, user_email)
+        merged = dict(user_row)
+        request_metrics = request_user_map.get(key, {})
+        followup_metrics = followup_user_map.get(key, {})
+        merged.update(request_metrics)
+        merged.update(followup_metrics)
+
+        total_request_count = _safe_int(merged.get("totalRequestCount"))
+        desktop_request_count = _safe_int(merged.get("desktopRequestCount"))
+        mobile_request_count = _safe_int(merged.get("mobileRequestCount"))
+        merged["desktopRequestRate"] = (
+            desktop_request_count / total_request_count if total_request_count > 0 else None
+        )
+        merged["mobileRequestRate"] = mobile_request_count / total_request_count if total_request_count > 0 else None
+        users.append(merged)
+
+    existing_keys = {_user_key(str(u.get("userId") or ""), str(u.get("userEmail") or "")) for u in users}
+    for key, request_metrics in request_user_map.items():
+        if key in existing_keys:
+            continue
+        user_id, user_email = key.split("::", 1)
+        fallback_user = {
+            "userId": user_id,
+            "userEmail": user_email,
+            "subject": "",
+            "updatedAt": "",
+            "updatedAtJst": "",
+            "conversationCount": 0,
+            "activeConversationCount": 0,
+            "messageCount": 0,
+            "activeSessionStickiness": None,
+            "feedbackGoodCount": 0,
+            "feedbackTotalCount": 0,
+            "feedbackLikeRate": None,
+            "messageFailureCount": 0,
+            "messageFailureRate": None,
+            "assistantMessageCount": 0,
+            "citationCoveredCount": 0,
+            "citationCoverageRate": None,
+            "favoriteConversationCount": 0,
+            "favoriteConversationRate": None,
+            "integrityRiskConversationCount": 0,
+            "integrityRiskRate": None,
+            "modeCounts": {"internal": 0, "websearch": 0},
+            "modeDistribution": [],
+            "newQuestionCount": 0,
+            "followupCount": 0,
+            "followupRate": None,
+            "topMessageErrors": [],
+            **request_metrics,
+        }
+        followup_metrics = followup_user_map.get(key, {})
+        fallback_user.update(followup_metrics)
+        total_request_count = _safe_int(fallback_user.get("totalRequestCount"))
+        desktop_request_count = _safe_int(fallback_user.get("desktopRequestCount"))
+        mobile_request_count = _safe_int(fallback_user.get("mobileRequestCount"))
+        fallback_user["desktopRequestRate"] = (
+            desktop_request_count / total_request_count if total_request_count > 0 else None
+        )
+        fallback_user["mobileRequestRate"] = (
+            mobile_request_count / total_request_count if total_request_count > 0 else None
+        )
+        users.append(fallback_user)
+
+    users.sort(
+        key=lambda item: (
+            _safe_int(item.get("messageCount")),
+            _safe_int(item.get("totalRequestCount")),
+            _safe_int(item.get("conversationCount")),
+        ),
+        reverse=True,
     )
-    payload["meta"] = {
-        **(payload.get("meta") or {}),
-        "deprecated": True,
-        "legacyEndpoint": "/api/metrics/dashboard",
-        "replacementEndpoint": "/api/metrics/system-dashboard",
-        **({"ignoredParameters": ["user"]} if str(user or "").strip() else {}),
+    users_all = list(users)
+    users = [
+        item
+        for item in users_all
+        if (
+            _safe_int(item.get("messageCount")) > 0
+            or _safe_int(item.get("conversationCount")) > 0
+            or _safe_int(item.get("totalRequestCount")) > 0
+            or _safe_int(item.get("coreRequestCount")) > 0
+        )
+    ]
+    if not users and users_all:
+        users = users_all
+
+    lookup = str(user or "").strip().lower()
+    selected_user = None
+    for candidate in users_all:
+        uid = str(candidate.get("userId") or "").lower()
+        email = str(candidate.get("userEmail") or "").lower()
+        if not lookup:
+            continue
+        if lookup == uid or lookup == email or lookup in uid or lookup in email:
+            selected_user = candidate
+            break
+
+    selected_user_timeseries: list[dict] = []
+    selected_user_request_metrics_ready = False
+    selected_user_timeseries_ms = 0
+    if selected_user is not None:
+        selected_total_request_count = _safe_int(selected_user.get("totalRequestCount"))
+        selected_core_request_count = _safe_int(selected_user.get("coreRequestCount"))
+        selected_user_request_metrics_ready = selected_total_request_count > 0 or selected_core_request_count > 0
+        if selected_user_request_metrics_ready:
+            selected_key = str(selected_user.get("userId") or "").strip() or str(selected_user.get("userEmail") or "").strip()
+            started = time.monotonic()
+            try:
+                selected_user_timeseries = bq.get_request_user_timeseries(window=window, user_key=selected_key)
+            except Exception:
+                selected_user_timeseries = []
+            selected_user_timeseries_ms = int((time.monotonic() - started) * 1000)
+
+    summary = {
+        "dau": _safe_int(fs_metrics.get("dau")),
+        "wau": _safe_int(fs_metrics.get("wau")),
+        "activeUsersInWindow": _safe_int(fs_metrics.get("activeUsersInWindow")),
+        "activeSessionStickiness": _safe_float(fs_metrics.get("activeSessionStickiness")),
+        "conversationCount": _safe_int(fs_metrics.get("conversationCount")),
+        "messageCount": _safe_int(fs_metrics.get("messageCount")),
+        "firstAnswerAvgMs": _safe_float(bq_overview.get("first_answer_avg_ms")),
+        "enhanceAnswerAvgMs": _safe_float(bq_overview.get("enhance_answer_avg_ms")),
+        "followupOpenSuccessRate": _safe_float(followup_report.get("successRate")),
+        "followupRecognizedCount": _safe_int(followup_report.get("recognizedCount")),
+        "followupSuccessCount": _safe_int(followup_report.get("successCount")),
+        "feedbackLikeRate": _safe_float(fs_metrics.get("feedbackLikeRate")),
+        "querySuggestStableRate": _safe_float(bq_overview.get("qs_stable_rate")),
+        "querySuggestAvgLatencyMs": _safe_float(bq_overview.get("qs_avg_latency_ms")),
+        "messageFailureRate": _safe_float(fs_metrics.get("messageFailureRate")),
+        "citationCoverageRate": _safe_float(fs_metrics.get("citationCoverageRate")),
+        "restoreSuccessRate": _safe_float(bq_overview.get("restore_success_rate")),
+        "requestCount": _safe_int(bq_overview.get("request_count")),
+        "coreRequestCount": _safe_int(bq_overview.get("core_request_count")),
+        "error5xxRate": _safe_float(bq_overview.get("error_5xx_rate")),
+        "requestP95LatencyMs": _safe_float(bq_overview.get("request_p95_latency_ms")),
     }
+
+    payload = {
+        "days": window.requested_days,
+        "window": {
+            "source": window.source,
+            "preset": window.preset,
+            "start": window.start_utc.isoformat(),
+            "end": window.end_utc.isoformat(),
+            "timezone": window.timezone,
+            "bucketMinutes": window.bucket_minutes,
+        },
+        "summary": summary,
+        "charts": {
+            "requestTrend": usage_timeseries,
+            "coreRequestTrend": usage_timeseries,
+            "deviceQuality": device_report,
+            "modeDistribution": fs_metrics.get("modeDistribution", []),
+            "questionFlow": {
+                "newQuestionCount": _safe_int(fs_metrics.get("newQuestionCount")),
+                "followupCount": _safe_int(fs_metrics.get("followupCount")),
+                "followupRate": _safe_float(fs_metrics.get("followupRate")),
+            },
+            "favoriteConversation": {
+                "count": _safe_int(fs_metrics.get("favoriteConversationCount")),
+                "total": _safe_int(fs_metrics.get("conversationCount")),
+                "rate": _safe_float(fs_metrics.get("favoriteConversationRate")),
+            },
+            "integrityRisk": {
+                "count": _safe_int(fs_metrics.get("integrityRiskConversationCount")),
+                "total": _safe_int(fs_metrics.get("conversationCount")),
+                "rate": _safe_float(fs_metrics.get("integrityRiskRate")),
+            },
+            "citationCoverage": {
+                "covered": _safe_int(fs_metrics.get("citationCoveredCount")),
+                "assistantTotal": _safe_int(fs_metrics.get("assistantMessageCount")),
+                "rate": _safe_float(fs_metrics.get("citationCoverageRate")),
+            },
+            "topErrorEndpoints": error_report.get("topEndpoints", []),
+            "topMessageErrors": fs_metrics.get("topMessageErrors", []),
+        },
+        "users": users,
+        "selectedUser": selected_user,
+        "selectedUserTimeseries": selected_user_timeseries,
+        "selectedUserRequestMetricsReady": selected_user_request_metrics_ready,
+        "meta": {
+            "cacheHit": False,
+            "fetchMs": int((time.monotonic() - fetch_started) * 1000),
+            "taskMs": task_ms,
+            "selectedUserTimeseriesMs": selected_user_timeseries_ms,
+            "deprecated": True,
+            "legacyEndpoint": "/api/metrics/dashboard",
+            "replacementEndpoint": "/api/metrics/system-dashboard",
+        },
+    }
+    _dashboard_cache_set(key=cache_key, payload=payload, ttl_sec=cache_ttl_sec, now_mono=now_mono)
     return payload

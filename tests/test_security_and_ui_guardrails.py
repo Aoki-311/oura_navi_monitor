@@ -110,7 +110,8 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("cacheHit", metrics_py)
         self.assertIn('"replacementEndpoint": "/api/metrics/system-dashboard"', metrics_py)
         self.assertIn('"deprecated": True', metrics_py)
-        self.assertNotIn("fs.aggregate_monitor_metrics", metrics_py)
+        self.assertIn('"legacyEndpoint": "/api/metrics/dashboard"', metrics_py)
+        self.assertIn("fs.aggregate_monitor_metrics", metrics_py)
 
     def test_physical_aggregate_tables_are_defined_and_used(self) -> None:
         aggregate_sql = (ROOT / "sql" / "create_aggregate_tables.sql").read_text(encoding="utf-8")
