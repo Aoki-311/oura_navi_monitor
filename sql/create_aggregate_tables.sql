@@ -23,7 +23,7 @@ answer_actions AS (
 answer_success_cutover AS (
   SELECT
     -- lcs-rag-app was cut over to the answer-action capable revision at this time.
-    TIMESTAMP('2026-05-15T03:59:21Z') AS official_cutover_ts
+    TIMESTAMP('__ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS__') AS official_cutover_ts
 ),
 answer_base AS (
   SELECT
@@ -150,19 +150,33 @@ SELECT
     OR evidence_sufficiency = 'insufficient'
     OR COALESCE(coverage_score, 1.0) < 0.60
   ) AS low_coverage_flag,
-  (
-    error_code IS NULL
-    AND NOT has_bad_feedback
-    AND NOT has_regenerate_request
-    AND NOT has_enhance_request
-    AND NOT has_correction_request
-  ) AS answer_success_flag,
+  CASE
+    WHEN event_ts >= (SELECT official_cutover_ts FROM answer_success_cutover) THEN
+      error_code IS NULL
+      AND NOT has_bad_feedback
+      AND NOT has_regenerate_request
+      AND NOT has_enhance_request
+      AND NOT has_correction_request
+    ELSE
+      error_code IS NULL
+      AND answerability_level NOT IN ('not_answerable', 'clarification_blocked')
+      AND NOT has_bad_feedback
+      AND NOT has_regenerate_request
+      AND NOT has_enhance_request
+      AND NOT has_correction_request
+  END AS answer_success_flag,
   ARRAY_CONCAT(
     IF(error_code IS NOT NULL, ['error'], []),
     IF(has_bad_feedback, ['bad_feedback'], []),
     IF(has_regenerate_request, ['regenerate_requested'], []),
     IF(has_enhance_request, ['enhance_requested'], []),
-    IF(has_correction_request, ['correction_requested'], [])
+    IF(has_correction_request, ['correction_requested'], []),
+    IF(
+      event_ts < (SELECT official_cutover_ts FROM answer_success_cutover)
+      AND answerability_level IN ('not_answerable', 'clarification_blocked'),
+      ['proxy_answerability_failure'],
+      []
+    )
   ) AS answer_success_reason_codes,
   CASE
     WHEN event_ts >= (SELECT official_cutover_ts FROM answer_success_cutover) THEN 'official'

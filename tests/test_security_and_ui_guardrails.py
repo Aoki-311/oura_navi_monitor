@@ -108,6 +108,9 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn('self._view("v_followup_open_result_events")', bq_py)
         self.assertIn("system-dashboard", metrics_py)
         self.assertIn("cacheHit", metrics_py)
+        self.assertIn('"replacementEndpoint": "/api/metrics/system-dashboard"', metrics_py)
+        self.assertIn('"deprecated": True', metrics_py)
+        self.assertNotIn("fs.aggregate_monitor_metrics", metrics_py)
 
     def test_physical_aggregate_tables_are_defined_and_used(self) -> None:
         aggregate_sql = (ROOT / "sql" / "create_aggregate_tables.sql").read_text(encoding="utf-8")
@@ -124,7 +127,9 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("answer_success_flag", aggregate_sql)
         self.assertIn("answer_success_metric_status", aggregate_sql)
         self.assertIn("answer_success_cutover", aggregate_sql)
-        self.assertIn("TIMESTAMP('2026-05-15T03:59:21Z')", aggregate_sql)
+        self.assertIn("TIMESTAMP('__ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS__')", aggregate_sql)
+        self.assertIn("answerability_level NOT IN ('not_answerable', 'clarification_blocked')", aggregate_sql)
+        self.assertIn("proxy_answerability_failure", aggregate_sql)
         self.assertNotIn("first_answer_action_event_ts", aggregate_sql)
         self.assertIn("v_answer_action_events", aggregate_sql)
         self.assertIn("has_bad_feedback", aggregate_sql)
@@ -133,6 +138,7 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("correction_requested", aggregate_sql)
         self.assertIn("low_coverage_flag", aggregate_sql)
         self.assertIn("AGGREGATE_SQL_TEMPLATE", bootstrap)
+        self.assertIn("ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS", bootstrap)
         self.assertTrue((ROOT / "scripts" / "refresh_aggregate_tables.sh").exists())
         self.assertTrue((ROOT / "scripts" / "setup_aggregate_refresh.sh").exists())
         self.assertIn('self._table_exists("monitor_user_daily")', bq_py)

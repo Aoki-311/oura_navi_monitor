@@ -43,11 +43,11 @@
 | 値 | 定義 |
 | --- | --- |
 | `official` | `lcs-rag-app` が answer action event 対応 revision に正式切替された後の回答です。ユーザーが低評価を押していない場合も、再生成・強化・修正・低評価の捕捉対象として扱います。 |
-| `proxy` | 正式切替前の過去回答です。action event が完全ではないため、暫定集計として扱います。 |
+| `proxy` | 正式切替前の過去回答です。action event が完全ではないため、`answerability_level` を含む暫定品質口径で集計します。 |
 | `mixed` | 選択期間内に `official` と `proxy` が混在しています。 |
 | `unknown` | 選択期間内に回答データがありません。 |
 
-現在の official cutover は `2026-05-15T03:59:21Z` です。
+現在の official cutover 既定値は `2026-05-15T03:59:21Z` です。運用環境では aggregate refresh 時に `ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS` で上書きできます。
 
 ### 3.3 `低カバレッジ率`
 

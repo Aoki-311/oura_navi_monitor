@@ -8,6 +8,7 @@ BQ_DATASET="${BQ_DATASET:-oura_navi_monitor}"
 BQ_LOCATION="${BQ_LOCATION:-US}"
 SINK_NAME="${SINK_NAME:-oura_navi_monitor_sink}"
 RETENTION_DAYS="${RETENTION_DAYS:-180}"
+ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS="${ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS:-2026-05-15T03:59:21Z}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -70,6 +71,7 @@ sed \
   -e "s/__PROJECT_ID__/${PROJECT_ID}/g" \
   -e "s/__DATASET_ID__/${BQ_DATASET}/g" \
   -e "s/__SERVICE_NAME__/${SOURCE_SERVICE}/g" \
+  -e "s|__ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS__|${ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS}|g" \
   "${AGGREGATE_SQL_TEMPLATE}" > "${TMP_SQL}"
 bq --location="${BQ_LOCATION}" query --use_legacy_sql=false < "${TMP_SQL}" >/dev/null
 rm -f "${TMP_SQL}"
