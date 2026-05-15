@@ -122,6 +122,15 @@ button:disabled {
   letter-spacing: 0.03em;
 }
 
+.brand h1 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.brand h1 a:hover {
+  color: #ffffff;
+}
+
 .brand p {
   margin: 5px 0 0;
   color: var(--muted);

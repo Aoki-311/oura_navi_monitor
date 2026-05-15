@@ -66,12 +66,13 @@ def trace_messages(
 ) -> dict:
     window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
     try:
+        candidate_user_id = "" if conversation_id else user_id
         payload_events = bq.search_trace_payloads(
             window=window,
             conversation_id=conversation_id,
             trace_id=trace_id,
             turn_id=turn_id,
-            user_id=user_id,
+            user_id=candidate_user_id,
             limit=limit,
         ) if any([conversation_id, trace_id, turn_id, user_id]) else []
         result = fs.search_messages(

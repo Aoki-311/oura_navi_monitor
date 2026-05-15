@@ -128,6 +128,26 @@ function usersPayload() {
         badFeedbackRate: 0,
         activityLevel: "高アクティブ",
       },
+      {
+        userId: "109382080128482733156",
+        userEmail: "2401145@tc.terumo.co.jp",
+        lastActiveAtJst: "2026/05/16 09:00:00",
+        activeDays7: 7,
+        messageCount7d: 90,
+        coverageRate: 1,
+        badFeedbackRate: 0,
+        activityLevel: "高アクティブ",
+      },
+      {
+        userId: "102048678887357191337",
+        userEmail: "lcs-agent@lcs-developer-483404.iam.gserviceaccount.com",
+        lastActiveAtJst: "2026/05/16 09:00:00",
+        activeDays7: 7,
+        messageCount7d: 100,
+        coverageRate: 1,
+        badFeedbackRate: 0,
+        activityLevel: "高アクティブ",
+      },
     ],
   };
 }
@@ -223,6 +243,8 @@ test("current dashboard renders stable operational monitor", async ({ page }) =>
   await expect(page.locator("#sectionQuestionCategory")).toContainText("質問カテゴリ");
   await expect(page.locator("#questionCategoryLegend")).toContainText("価格関連");
   await expect(page.locator("#sectionAnswerQuality")).toContainText("回答品質分析");
+  await expect(page.locator("#sectionAnswerQuality")).not.toContainText("回答可能性");
+  await expect(page.locator("#sectionAnswerQuality")).not.toContainText("業務利用可能性");
   await expect(page.locator("#sectionFollowup")).toContainText("連続質問分析");
 
   await expect(page.locator("#activityLegend")).toContainText("14.33%（1,842）");
@@ -230,6 +252,8 @@ test("current dashboard renders stable operational monitor", async ({ page }) =>
   await expect(page.locator("#usersTable")).not.toContainText("unknown");
   await expect(page.locator("#usersTable")).not.toContainText("lcs-agent");
   await expect(page.locator("#usersTable")).not.toContainText("2401145@tc.terumo.co.jp");
+  await expect(page.locator("#usersTable")).not.toContainText("109382080128482733156");
+  await expect(page.locator("#usersTable")).not.toContainText("102048678887357191337");
 
   const canvasCount = await page.locator("canvas").count();
   expect(canvasCount).toBeGreaterThanOrEqual(7);
@@ -242,7 +266,7 @@ test("current dashboard renders stable operational monitor", async ({ page }) =>
 
 test("user detail route lazy-loads conversations and messages", async ({ page }) => {
   await mockCurrentDashboardApis(page);
-  await page.goto("/dashboard?user_id=1000001");
+  await page.goto("/dashboard?user_id=1000001&user_email=1000001%40tc.terumo.co.jp");
 
   await expect(page.locator("#dashboardView")).toBeHidden();
   await expect(page.locator("#userDetailView")).toBeVisible();
@@ -256,7 +280,14 @@ test("user detail route lazy-loads conversations and messages", async ({ page })
   await expect(page.locator("#messagesTable")).toContainText("価格関連");
   await expect(page.locator("#messagesTable tbody tr").nth(1).locator("td").nth(3)).toBeEmpty();
 
+  await page.getByRole("button", { name: "再読込" }).click();
+  await expect(page.locator("#messagesTable")).toContainText("この製品の価格を確認してください。");
+
   await page.locator("#dashboardPreset").selectOption("last_7d");
   await expect(page.locator("#userDetailView")).toBeVisible();
   await expect(page.locator("#dashboardView")).toBeHidden();
+
+  await page.getByRole("link", { name: "OurA Navi 運用モニター" }).click();
+  await expect(page.locator("#dashboardView")).toBeVisible();
+  await expect(page).toHaveURL(/\/dashboard$/);
 });

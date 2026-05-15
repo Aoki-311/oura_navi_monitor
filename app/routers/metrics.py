@@ -78,6 +78,31 @@ def _user_key(user_id: str, user_email: str) -> str:
     return f"{str(user_id or '').strip()}::{str(user_email or '').strip().lower()}"
 
 
+_EXCLUDED_USER_IDS = {
+    "109382080128482733156",
+    "102048678887357191337",
+    "2401145",
+    "2401145@tc.terumo.co.jp",
+}
+_EXCLUDED_USER_EMAILS = {
+    "2401145@tc.terumo.co.jp",
+    "lcs-agent@lcs-developer-483404.iam.gserviceaccount.com",
+}
+
+
+def _is_excluded_identity(*, user_id: object = "", user_email: object = "", user_id_hash: object = "") -> bool:
+    identity = str(user_id or "").strip().lower()
+    email = str(user_email or "").strip().lower()
+    user_hash = str(user_id_hash or "").strip().lower()
+    combined = f"{identity} {email}"
+    return (
+        identity in {"unknown", *_EXCLUDED_USER_IDS}
+        or user_hash in _EXCLUDED_USER_IDS
+        or email in _EXCLUDED_USER_EMAILS
+        or "lcs-agent" in combined
+    )
+
+
 def _dashboard_cache_key(*, window: MetricsTimeWindow, user: str) -> str:
     return "|".join(
         [
@@ -464,6 +489,8 @@ def metrics_user_detail(
     preset: str = Query(default="today"),
     start: str = Query(default=""),
     end: str = Query(default=""),
+    user_email: str = Query(default=""),
+    user_id_hash: str = Query(default=""),
     conversation_limit: int = Query(default=50, ge=1, le=200),
     conversation_cursor: str = Query(default=""),
     include_hidden: bool = Query(default=False),
@@ -486,6 +513,8 @@ def metrics_user_detail(
             str(days),
             str(start or ""),
             str(end or ""),
+            str(user_email or "").strip().lower(),
+            str(user_id_hash or "").strip().lower(),
             window.start_utc.isoformat(),
             str(conversation_limit),
             str(conversation_cursor or ""),
@@ -505,29 +534,39 @@ def metrics_user_detail(
     fetch_started = time.monotonic()
     try:
         with ThreadPoolExecutor(max_workers=3) as executor:
-            profile_future = executor.submit(fs.get_user_profile, user_id=user_id)
-            summary_future = executor.submit(bq.get_user_detail_summary, window=window, user_key=user_id)
+            profile_future = executor.submit(
+                fs.resolve_user_profile,
+                user_id=user_id,
+                user_email=user_email,
+                user_id_hash=user_id_hash,
+            )
+            profile = profile_future.result()
+            if profile is None:
+                raise HTTPException(status_code=404, detail="user not found")
+            profile_email = str(profile.get("userEmail") or "").strip().lower()
+            canonical_user_id = str(profile.get("userId") or user_id).strip()
+            normalized_user_id = str(user_id or "").strip().lower()
+            if _is_excluded_identity(user_id=normalized_user_id, user_email=profile_email, user_id_hash=user_id_hash) or _is_excluded_identity(
+                user_id=canonical_user_id,
+                user_email=profile_email,
+                user_id_hash=user_id_hash,
+            ):
+                raise HTTPException(status_code=404, detail="user not found")
+            summary_future = executor.submit(
+                bq.get_user_detail_summary,
+                window=window,
+                user_key=user_id,
+                user_keys=[canonical_user_id, user_id, user_email, user_id_hash, profile_email],
+            )
             conversation_future = executor.submit(
                 fs.list_user_conversation_summaries,
-                user_id=user_id,
+                user_id=canonical_user_id,
                 include_hidden=include_hidden,
                 limit=conversation_limit,
                 cursor=conversation_cursor,
             )
-            profile = profile_future.result()
             summary_payload = summary_future.result()
             conversation_page = conversation_future.result()
-        if profile is None:
-            raise HTTPException(status_code=404, detail="user not found")
-        profile_email = str(profile.get("userEmail") or "").strip().lower()
-        normalized_user_id = str(user_id or "").strip().lower()
-        if (
-            normalized_user_id in {"unknown", "2401145@tc.terumo.co.jp"}
-            or profile_email == "2401145@tc.terumo.co.jp"
-            or "lcs-agent" in normalized_user_id
-            or "lcs-agent" in profile_email
-        ):
-            raise HTTPException(status_code=404, detail="user not found")
     except HTTPException:
         raise
     except Exception as exc:

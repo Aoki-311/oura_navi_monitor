@@ -107,9 +107,21 @@ class BigQueryMetricsService:
             if not raw:
                 continue
             try:
-                return json.loads(str(raw))
+                payload = json.loads(str(raw))
             except Exception:
                 return {}
+            if not isinstance(payload.get("questionCategory"), dict):
+                # Older snapshots do not include the question category payload.
+                # Fall back to aggregate tables instead of serving stale UI data.
+                continue
+            if payload.get("snapshotContract") != "monitor_exclusions_v2":
+                # Older snapshots may include excluded service/test users.
+                # Fall back until the snapshot table is refreshed with the current contract.
+                continue
+            answer_quality = payload.get("answerQuality") or {}
+            if "usability" not in answer_quality or "evidenceSufficiency" not in answer_quality:
+                continue
+            return payload
         return {}
 
     def get_overview(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
@@ -202,6 +214,12 @@ hourly_window AS (
   WHERE bucket_ts >= TIMESTAMP_TRUNC(@start_ts, HOUR)
     AND bucket_ts < @end_ts
 ),
+aggregate_contract AS (
+  SELECT
+    COUNT(*) AS row_count,
+    COUNTIF(aggregate_contract_version = 'monitor_exclusions_v2') AS current_contract_row_count
+  FROM hourly_window
+),
 request_summary AS (
   SELECT
     SUM(request_count) AS request_count,
@@ -243,8 +261,11 @@ daily_window AS (
     AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
     AND NOT (
       LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+      OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
       OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
       OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = 'lcs-agent@lcs-developer-483404.iam.gserviceaccount.com'
       OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
     )
 ),
@@ -255,8 +276,11 @@ daily_14d AS (
     AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
     AND NOT (
       LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+      OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
       OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
       OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = 'lcs-agent@lcs-developer-483404.iam.gserviceaccount.com'
       OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
     )
 ),
@@ -371,6 +395,10 @@ mode_total AS (
   SELECT SUM(request_count) AS total_count FROM mode_distribution
 )
 SELECT TO_JSON_STRING(STRUCT(
+  (
+    SELECT IF(row_count = 0 OR current_contract_row_count = row_count, 'monitor_exclusions_v2', 'legacy')
+    FROM aggregate_contract
+  ) AS snapshotContract,
   STRUCT(
     (SELECT active_user_count FROM active_users) AS activeUserCount,
     (SELECT answer_success_rate FROM answer_summary) AS answerSuccessRate,
@@ -510,7 +538,14 @@ SELECT TO_JSON_STRING(STRUCT(
             and self._table_exists("monitor_user_daily")
             and self._table_exists("monitor_answer_events")
         ):
-            return self._get_system_dashboard_metrics_from_tables(window=window)
+            try:
+                table_payload = self._get_system_dashboard_metrics_from_tables(window=window)
+                if table_payload:
+                    return table_payload
+            except Exception:
+                # A freshly deployed API can see old aggregate schemas before the refresh job runs.
+                # Degrade to view-based SQL instead of failing the dashboard.
+                pass
 
         params = self._window_params(window) + [
             bigquery.ScalarQueryParameter("coverage_threshold", "FLOAT64", 0.60),
@@ -540,13 +575,22 @@ dates AS (
 ),
 req AS (
   SELECT
-    ts,
+    event_ts AS ts,
     status,
     latency_ms,
     COALESCE(NULLIF(device_class, ''), 'unknown') AS device_class
-  FROM {self._view("v_requests")}
-  WHERE ts >= @start_ts
-    AND ts < @end_ts
+  FROM {self._view("v_request_user_metric_events")}
+  WHERE event_ts >= @start_ts
+    AND event_ts < @end_ts
+    AND NOT (
+      LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+      OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
+      OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = 'lcs-agent@lcs-developer-483404.iam.gserviceaccount.com'
+      OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
+    )
 ),
 request_summary AS (
   SELECT
@@ -584,8 +628,11 @@ request_user_window AS (
     AND event_ts < @end_ts
     AND NOT (
       LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+      OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
       OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
       OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = 'lcs-agent@lcs-developer-483404.iam.gserviceaccount.com'
       OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
     )
 ),
@@ -599,8 +646,11 @@ request_user_14d AS (
     AND event_ts < @end_ts
     AND NOT (
       LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+      OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
       OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
       OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = 'lcs-agent@lcs-developer-483404.iam.gserviceaccount.com'
       OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
     )
 ),
@@ -667,6 +717,8 @@ answer_events AS (
     AND event_ts < @end_ts
     AND NOT (
       LOWER(COALESCE(user_id, '')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+      OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
       OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
       OR REGEXP_CONTAINS(LOWER(COALESCE(user_id, '')), r'lcs-agent')
     )
@@ -754,12 +806,26 @@ followup_open AS (
   FROM {self._view("v_followup_open_result_events")}
   WHERE event_ts >= @start_ts
     AND event_ts < @end_ts
+    AND NOT (
+      LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+      OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
+      OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+      OR REGEXP_CONTAINS(LOWER(COALESCE(user_id, '')), r'lcs-agent')
+    )
 ),
 followup_resolution AS (
   SELECT *
   FROM {self._view("v_followup_resolution_events")}
   WHERE event_ts >= @start_ts
     AND event_ts < @end_ts
+    AND NOT (
+      LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+      OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
+      OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+      OR REGEXP_CONTAINS(LOWER(COALESCE(user_id, '')), r'lcs-agent')
+    )
 ),
 followup_summary AS (
   SELECT
@@ -1511,8 +1577,11 @@ WITH events AS (
   WHERE payload IS NOT NULL
     AND NOT (
       LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.user_id'), ''), NULLIF(JSON_VALUE(payload, '$.user_email'), ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(JSON_VALUE(payload, '$.user_id'), '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+      OR LOWER(COALESCE(JSON_VALUE(payload, '$.user_id_hash'), '')) IN ('109382080128482733156', '102048678887357191337')
       OR LOWER(COALESCE(JSON_VALUE(payload, '$.user_id'), '')) = '2401145@tc.terumo.co.jp'
       OR LOWER(COALESCE(JSON_VALUE(payload, '$.user_email'), '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(JSON_VALUE(payload, '$.user_email'), '')) = 'lcs-agent@lcs-developer-483404.iam.gserviceaccount.com'
       OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(JSON_VALUE(payload, '$.user_id'), ''), ' ', COALESCE(JSON_VALUE(payload, '$.user_email'), ''))), r'lcs-agent')
     )
     AND (
@@ -1608,8 +1677,11 @@ WITH events AS (
     AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
     AND NOT (
       LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+      OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+      OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
       OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
       OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+      OR LOWER(COALESCE(user_email, '')) = 'lcs-agent@lcs-developer-483404.iam.gserviceaccount.com'
       OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
     )
     AND (
@@ -1695,15 +1767,20 @@ LIMIT @limit
             for row in rows
         ]
 
-    def get_user_detail_summary(self, *, window: MetricsTimeWindow, user_key: str) -> Dict[str, Any]:
-        if self._table_exists("monitor_user_daily") and self._table_exists("monitor_answer_events"):
-            return self._get_user_detail_summary_from_tables(window=window, user_key=user_key)
-
-        lookup = str(user_key or "").strip().lower()
-        if not lookup:
+    def get_user_detail_summary(self, *, window: MetricsTimeWindow, user_key: str, user_keys: List[str] | None = None) -> Dict[str, Any]:
+        lookup_values = {
+            str(value or "").strip().lower()
+            for value in ([user_key] + list(user_keys or []))
+            if str(value or "").strip()
+        }
+        lookup_list = sorted(lookup_values)
+        if not lookup_list:
             return {}
+        if self._table_exists("monitor_user_daily") and self._table_exists("monitor_answer_events"):
+            return self._get_user_detail_summary_from_tables(window=window, user_key=user_key, user_keys=lookup_list)
+
         params = self._window_params(window) + [
-            bigquery.ScalarQueryParameter("user_key", "STRING", lookup),
+            bigquery.ArrayQueryParameter("user_keys", "STRING", lookup_list),
             bigquery.ScalarQueryParameter("coverage_threshold", "FLOAT64", 0.60),
         ]
         sql = f"""
@@ -1731,9 +1808,9 @@ request_events AS (
   WHERE event_ts >= @start_ts
     AND event_ts < @end_ts
     AND (
-      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
-      OR LOWER(COALESCE(NULLIF(user_email, ''), '')) = @user_key
-      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(NULLIF(user_email, ''), '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) IN UNNEST(@user_keys)
     )
 ),
 request_events_14d AS (
@@ -1747,9 +1824,9 @@ request_events_14d AS (
   WHERE event_ts >= TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY)
     AND event_ts < @end_ts
     AND (
-      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
-      OR LOWER(COALESCE(NULLIF(user_email, ''), '')) = @user_key
-      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(NULLIF(user_email, ''), '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) IN UNNEST(@user_keys)
     )
 ),
 request_summary AS (
@@ -1807,8 +1884,8 @@ answer_events AS (
   WHERE event_ts >= @start_ts
     AND event_ts < @end_ts
     AND (
-      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
-      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) IN UNNEST(@user_keys)
     )
 ),
 coverage_gap_keys AS (
@@ -1817,8 +1894,8 @@ coverage_gap_keys AS (
   WHERE event_ts >= @start_ts
     AND event_ts < @end_ts
     AND (
-      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
-      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) IN UNNEST(@user_keys)
     )
 ),
 answer_flags AS (
@@ -1877,8 +1954,8 @@ followup_open AS (
   WHERE event_ts >= @start_ts
     AND event_ts < @end_ts
     AND (
-      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
-      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) IN UNNEST(@user_keys)
     )
 ),
 followup_resolution AS (
@@ -1887,8 +1964,8 @@ followup_resolution AS (
   WHERE event_ts >= @start_ts
     AND event_ts < @end_ts
     AND (
-      LOWER(COALESCE(NULLIF(user_id, ''), '')) = @user_key
-      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) = @user_key
+      LOWER(COALESCE(NULLIF(user_id, ''), '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(NULLIF(user_id_hash, ''), '')) IN UNNEST(@user_keys)
     )
 ),
 followup_summary AS (
@@ -2034,12 +2111,23 @@ SELECT TO_JSON_STRING(STRUCT(
         payload["summary"] = summary
         return payload
 
-    def _get_user_detail_summary_from_tables(self, *, window: MetricsTimeWindow, user_key: str) -> Dict[str, Any]:
-        lookup = str(user_key or "").strip().lower()
-        if not lookup:
+    def _get_user_detail_summary_from_tables(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        user_key: str,
+        user_keys: List[str] | None = None,
+    ) -> Dict[str, Any]:
+        lookup_values = {
+            str(value or "").strip().lower()
+            for value in ([user_key] + list(user_keys or []))
+            if str(value or "").strip()
+        }
+        lookup_list = sorted(lookup_values)
+        if not lookup_list:
             return {}
         params = self._window_params(window) + [
-            bigquery.ScalarQueryParameter("user_key", "STRING", lookup),
+            bigquery.ArrayQueryParameter("user_keys", "STRING", lookup_list),
         ]
         sql = f"""
 WITH dates AS (
@@ -2058,9 +2146,9 @@ daily_window AS (
   WHERE date_jst >= DATE(@start_ts, @tz)
     AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
     AND (
-      LOWER(COALESCE(user_id, '')) = @user_key
-      OR LOWER(COALESCE(user_email, '')) = @user_key
-      OR LOWER(COALESCE(user_id_hash, '')) = @user_key
+      LOWER(COALESCE(user_id, '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(user_email, '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(user_id_hash, '')) IN UNNEST(@user_keys)
     )
 ),
 daily_14d AS (
@@ -2069,9 +2157,9 @@ daily_14d AS (
   WHERE date_jst >= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 14 DAY), @tz)
     AND date_jst <= DATE(TIMESTAMP_SUB(@end_ts, INTERVAL 1 SECOND), @tz)
     AND (
-      LOWER(COALESCE(user_id, '')) = @user_key
-      OR LOWER(COALESCE(user_email, '')) = @user_key
-      OR LOWER(COALESCE(user_id_hash, '')) = @user_key
+      LOWER(COALESCE(user_id, '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(user_email, '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(user_id_hash, '')) IN UNNEST(@user_keys)
     )
 ),
 summary AS (
@@ -2136,8 +2224,8 @@ answer_events AS (
   WHERE event_ts >= @start_ts
     AND event_ts < @end_ts
     AND (
-      LOWER(COALESCE(user_id, '')) = @user_key
-      OR LOWER(COALESCE(user_id_hash, '')) = @user_key
+      LOWER(COALESCE(user_id, '')) IN UNNEST(@user_keys)
+      OR LOWER(COALESCE(user_id_hash, '')) IN UNNEST(@user_keys)
     )
 ),
 answer_distribution AS (

@@ -74,6 +74,7 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
             "v_request_user_metric_events",
             "v_answer_action_events",
             "v_monitor_event_message_join_keys",
+            "v_monitor_excluded_identities",
         ):
             self.assertIn(view_name, sql)
         for field_name in (
@@ -100,9 +101,12 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("def _get_system_dashboard_metrics_from_tables", bq_py)
         self.assertIn('self._table_exists("monitor_dashboard_snapshots")', bq_py)
         self.assertIn("list_rows(table, max_results=50)", bq_py)
+        self.assertIn('payload.get("questionCategory")', bq_py)
+        self.assertIn('payload.get("snapshotContract") != "monitor_exclusions_v2"', bq_py)
+        self.assertIn("aggregate_contract_version = 'monitor_exclusions_v2'", bq_py)
+        self.assertIn('"usability" not in answer_quality', bq_py)
         self.assertIn('self._table_exists("monitor_system_hourly")', bq_py)
         self.assertIn('self._table("monitor_system_hourly")', bq_py)
-        self.assertIn('self._view("v_requests")', bq_py)
         self.assertIn('self._view("v_request_user_metric_events")', bq_py)
         self.assertIn('self._view("v_ask_audit_events")', bq_py)
         self.assertIn('self._view("v_followup_resolution_events")', bq_py)
@@ -144,7 +148,13 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("low_coverage_flag", aggregate_sql)
         self.assertIn("question_category_distribution", aggregate_sql)
         self.assertIn("questionCategory", aggregate_sql)
+        self.assertIn("'monitor_exclusions_v2' AS aggregate_contract_version", aggregate_sql)
+        self.assertIn("'monitor_exclusions_v2' AS snapshotContract", aggregate_sql)
         self.assertIn("2401145@tc.terumo.co.jp", aggregate_sql)
+        self.assertIn("109382080128482733156", aggregate_sql)
+        self.assertIn("102048678887357191337", aggregate_sql)
+        self.assertIn("lcs-agent@lcs-developer-483404.iam.gserviceaccount.com", aggregate_sql)
+        self.assertIn("v_request_user_metric_events", aggregate_sql)
         self.assertIn("AGGREGATE_SQL_TEMPLATE", bootstrap)
         self.assertIn("ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS", bootstrap)
         self.assertIn("RETENTION_DAYS", bootstrap)
@@ -162,16 +172,21 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         bq_py = (ROOT / "app" / "services" / "bigquery_metrics.py").read_text(encoding="utf-8")
         fs_py = (ROOT / "app" / "services" / "firestore_history.py").read_text(encoding="utf-8")
         self.assertIn("conversation_limit: int = Query(default=50", metrics_py)
+        self.assertIn('user_email: str = Query(default="")', metrics_py)
+        self.assertIn('user_id_hash: str = Query(default="")', metrics_py)
         self.assertIn("include_messages: bool = Query(default=False)", metrics_py)
-        self.assertIn("executor.submit(bq.get_user_detail_summary, window=window, user_key=user_id)", metrics_py)
-        self.assertIn("executor.submit(fs.get_user_profile, user_id=user_id)", metrics_py)
+        self.assertIn("fs.resolve_user_profile", metrics_py)
+        self.assertIn("user_keys=[canonical_user_id, user_id, user_email, user_id_hash, profile_email]", metrics_py)
         self.assertIn("executor.submit(\n                fs.list_user_conversation_summaries,", metrics_py)
         self.assertNotIn("fs.get_user_detail_metrics(user_id=user_id", metrics_py)
         self.assertIn('"endpoint": "/api/trace/messages"', metrics_py)
         self.assertIn('"questionCategoryDistribution"', metrics_py)
         self.assertIn('"deviceDistribution"', metrics_py)
         self.assertIn("def get_user_detail_summary", bq_py)
+        self.assertIn("user_keys: List[str] | None = None", bq_py)
+        self.assertIn('bigquery.ArrayQueryParameter("user_keys"', bq_py)
         self.assertIn("def get_user_profile", fs_py)
+        self.assertIn("def resolve_user_profile", fs_py)
         self.assertIn("def list_user_conversation_summaries", fs_py)
 
     def test_trace_messages_is_paginated_and_preview_only_by_default(self) -> None:
@@ -192,6 +207,7 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn('"nextCursor"', fs_py)
         self.assertIn("candidate_pairs", fs_py)
         self.assertIn("candidate_category_by_turn", fs_py)
+        self.assertIn("candidate_category_by_conv_turn", fs_py)
         self.assertIn('"questionCategory"', fs_py)
         self.assertIn("include_content", api_doc)
         self.assertIn("通常画面では `contentPreview` のみ", api_doc)
@@ -226,6 +242,21 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("renderSystemUsageChart", js)
         self.assertIn("renderQuestionCategory", js)
         self.assertIn("core_request_count", js)
+        self.assertIn("isExcludedUser", js)
+        self.assertIn("109382080128482733156", js)
+        self.assertIn("102048678887357191337", js)
+        self.assertIn("currentUserDetailContext", js)
+        self.assertIn("user_id_hash=", js)
+        self.assertIn("preserveConversation: true", js)
+
+    def test_dashboard_answer_quality_ui_is_reduced_to_two_business_metrics(self) -> None:
+        dashboard_adapter = (ROOT / "frontend" / "adapters" / "dashboardAdapter.js").read_text(encoding="utf-8")
+        index_html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('title: "回答利用可能性"', dashboard_adapter)
+        self.assertIn('title: "根拠十分性"', dashboard_adapter)
+        self.assertNotIn('title: "回答可能性"', dashboard_adapter)
+        self.assertNotIn('title: "業務利用可能性"', dashboard_adapter)
+        self.assertIn("OurA Navi 運用モニター</a>", index_html)
 
 if __name__ == "__main__":
     unittest.main()

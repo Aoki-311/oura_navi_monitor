@@ -82,6 +82,8 @@ answer_base AS (
     ON gmsg.conversation_message_key = NULLIF(a.conversation_message_key, '#')
   WHERE NOT (
     LOWER(COALESCE(a.user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(a.user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+    OR LOWER(COALESCE(a.user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
     OR LOWER(COALESCE(a.user_id, '')) = '2401145@tc.terumo.co.jp'
     OR REGEXP_CONTAINS(LOWER(COALESCE(a.user_id, '')), r'lcs-agent')
   )
@@ -215,8 +217,11 @@ WITH request_daily AS (
   WHERE NOT (
     LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
     OR LOWER(COALESCE(user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+    OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
     OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
     OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+    OR LOWER(COALESCE(user_email, '')) = 'lcs-agent@lcs-developer-483404.iam.gserviceaccount.com'
     OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
   )
   GROUP BY date_jst, user_id, user_email, user_id_hash
@@ -248,6 +253,8 @@ followup_open_daily AS (
   WHERE NOT (
     LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
     OR LOWER(COALESCE(user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+    OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
     OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
     OR REGEXP_CONTAINS(LOWER(COALESCE(user_id, '')), r'lcs-agent')
   )
@@ -265,6 +272,8 @@ followup_resolution_daily AS (
   WHERE NOT (
     LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
     OR LOWER(COALESCE(user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+    OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
     OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
     OR REGEXP_CONTAINS(LOWER(COALESCE(user_id, '')), r'lcs-agent')
   )
@@ -330,7 +339,7 @@ PARTITION BY bucket_date_jst
 CLUSTER BY bucket_hour_jst AS
 WITH request_hourly AS (
   SELECT
-    TIMESTAMP_TRUNC(ts, HOUR) AS bucket_ts,
+    TIMESTAMP_TRUNC(event_ts, HOUR) AS bucket_ts,
     COUNT(*) AS request_count,
     COUNTIF(status >= 500) AS error_count,
     COUNTIF(device_class = 'desktop') AS desktop_request_count,
@@ -339,7 +348,17 @@ WITH request_hourly AS (
     COUNTIF(latency_ms IS NOT NULL) AS latency_count,
     SUM(COALESCE(latency_ms, 0.0)) AS latency_sum_ms,
     APPROX_QUANTILES(latency_ms, 100 IGNORE NULLS)[OFFSET(95)] AS p95_latency_ms
-  FROM `__PROJECT_ID__.__DATASET_ID__.v_requests`
+  FROM `__PROJECT_ID__.__DATASET_ID__.v_request_user_metric_events`
+  WHERE NOT (
+    LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_email, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+    OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
+    OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+    OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+    OR LOWER(COALESCE(user_email, '')) = 'lcs-agent@lcs-developer-483404.iam.gserviceaccount.com'
+    OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
+  )
   GROUP BY bucket_ts
 ),
 request_user_hourly AS (
@@ -364,8 +383,11 @@ request_user_hourly AS (
   WHERE NOT (
     LOWER(COALESCE(user_key, 'unknown')) = 'unknown'
     OR LOWER(COALESCE(user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+    OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
     OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
     OR LOWER(COALESCE(user_email, '')) = '2401145@tc.terumo.co.jp'
+    OR LOWER(COALESCE(user_email, '')) = 'lcs-agent@lcs-developer-483404.iam.gserviceaccount.com'
     OR REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(user_id, ''), ' ', COALESCE(user_email, ''))), r'lcs-agent')
   )
   GROUP BY bucket_ts
@@ -376,6 +398,14 @@ followup_open_hourly AS (
     COUNTIF(event = 'recognized') AS followup_recognized_count,
     COUNTIF(event = 'success') AS followup_success_count
   FROM `__PROJECT_ID__.__DATASET_ID__.v_followup_open_result_events`
+  WHERE NOT (
+    LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+    OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
+    OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+    OR REGEXP_CONTAINS(LOWER(COALESCE(user_id, '')), r'lcs-agent')
+  )
   GROUP BY bucket_ts
 ),
 followup_resolution_hourly AS (
@@ -385,6 +415,14 @@ followup_resolution_hourly AS (
     COUNTIF(decision_normalized = 'clarify_before_carry') AS clarification_required_count,
     COUNTIF(followup_offtopic) AS followup_offtopic_count
   FROM `__PROJECT_ID__.__DATASET_ID__.v_followup_resolution_events`
+  WHERE NOT (
+    LOWER(COALESCE(NULLIF(user_id, ''), NULLIF(user_id_hash, ''), 'unknown')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) = 'unknown'
+    OR LOWER(COALESCE(user_id, '')) IN ('109382080128482733156', '102048678887357191337', '2401145')
+    OR LOWER(COALESCE(user_id_hash, '')) IN ('109382080128482733156', '102048678887357191337')
+    OR LOWER(COALESCE(user_id, '')) = '2401145@tc.terumo.co.jp'
+    OR REGEXP_CONTAINS(LOWER(COALESCE(user_id, '')), r'lcs-agent')
+  )
   GROUP BY bucket_ts
 ),
 answer_hour_base AS (
@@ -490,6 +528,7 @@ keys AS (
 )
 SELECT
   k.bucket_ts,
+  'monitor_exclusions_v2' AS aggregate_contract_version,
   DATE(k.bucket_ts, 'Asia/Tokyo') AS bucket_date_jst,
   EXTRACT(HOUR FROM DATETIME(k.bucket_ts, 'Asia/Tokyo')) AS bucket_hour_jst,
   COALESCE(r.request_count, 0) AS request_count,
@@ -907,6 +946,7 @@ SELECT
   p.source_start_ts,
   p.source_end_ts,
   TO_JSON_STRING(STRUCT(
+    'monitor_exclusions_v2' AS snapshotContract,
     STRUCT(
       COALESCE(au.active_user_count, 0) AS activeUserCount,
       ans.answer_success_rate AS answerSuccessRate,

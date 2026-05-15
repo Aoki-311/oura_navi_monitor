@@ -33,6 +33,31 @@ def _as_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+_EXCLUDED_USER_IDS = {
+    "109382080128482733156",
+    "102048678887357191337",
+    "2401145",
+    "2401145@tc.terumo.co.jp",
+}
+_EXCLUDED_USER_EMAILS = {
+    "2401145@tc.terumo.co.jp",
+    "lcs-agent@lcs-developer-483404.iam.gserviceaccount.com",
+}
+
+
+def _is_excluded_identity(*, user_id: Any = "", user_email: Any = "", user_id_hash: Any = "") -> bool:
+    identity = _as_text(user_id).lower()
+    email = _as_text(user_email).lower()
+    user_hash = _as_text(user_id_hash).lower()
+    combined = f"{identity} {email}"
+    return (
+        identity in {"unknown", *_EXCLUDED_USER_IDS}
+        or user_hash in _EXCLUDED_USER_IDS
+        or email in _EXCLUDED_USER_EMAILS
+        or "lcs-agent" in combined
+    )
+
+
 def _normalize_mode(value: Any) -> str:
     mode = _as_text(value).lower()
     if mode in {"internal", "websearch", "deepthinking", "standard"}:
@@ -699,6 +724,45 @@ class FirestoreHistoryService:
             "updatedAtJst": self._to_local_text(updated_at),
         }
 
+    def resolve_user_profile(
+        self,
+        *,
+        user_id: str = "",
+        user_email: str = "",
+        user_id_hash: str = "",
+    ) -> Dict[str, Any] | None:
+        raw_user_id = _as_text(user_id)
+        raw_email = _as_text(user_email).lower()
+        raw_hash = _as_text(user_id_hash)
+        if _is_excluded_identity(user_id=raw_user_id, user_email=raw_email, user_id_hash=raw_hash):
+            return None
+
+        direct = self.get_user_profile(user_id=raw_user_id) if raw_user_id else None
+        if direct is not None:
+            return direct
+
+        lookup_terms = [term for term in (raw_email, raw_user_id) if term]
+        seen: set[str] = set()
+        for term in lookup_terms:
+            if term in seen:
+                continue
+            seen.add(term)
+            for row in self.list_users(limit=self._settings.monitor_max_users_scan, q=term):
+                candidate_id = _as_text(row.get("userId"))
+                candidate_email = _as_text(row.get("userEmail")).lower()
+                candidate_subject = _as_text(row.get("subject")).lower()
+                if _is_excluded_identity(user_id=candidate_id, user_email=candidate_email):
+                    continue
+                if (
+                    (raw_email and candidate_email == raw_email)
+                    or (raw_user_id and candidate_id == raw_user_id)
+                    or (raw_user_id and candidate_email == raw_user_id.lower())
+                    or (raw_user_id and candidate_subject == raw_user_id.lower())
+                ):
+                    return self.get_user_profile(user_id=candidate_id)
+
+        return None
+
     def list_user_conversation_summaries(
         self,
         *,
@@ -800,22 +864,31 @@ class FirestoreHistoryService:
         candidate_category_by_turn: Dict[Tuple[str, str, str], str] = {}
         candidate_category_by_message: Dict[Tuple[str, str, str], str] = {}
         candidate_category_by_trace: Dict[Tuple[str, str, str], str] = {}
+        candidate_category_by_conv_turn: Dict[Tuple[str, str], str] = {}
+        candidate_category_by_conv_message: Dict[Tuple[str, str], str] = {}
+        candidate_category_by_conv_trace: Dict[Tuple[str, str], str] = {}
         for event in candidates or []:
             candidate_uid = _as_text(event.get("userId"))
             candidate_conv = _as_text(event.get("conversationId"))
             if not candidate_uid or not candidate_conv:
                 continue
-            if user_lookup and candidate_uid != user_lookup:
-                continue
             if conv_lookup and candidate_conv != conv_lookup:
                 continue
-            pair = (candidate_uid, candidate_conv)
-            if pair not in candidate_pairs:
-                candidate_pairs.append(pair)
             candidate_turn = _as_text(event.get("turnId"))
             candidate_message = _as_text(event.get("messageId"))
             candidate_trace = _as_text(event.get("traceId"))
             candidate_category = _as_text(event.get("intentFamily") or event.get("intent_family")).lower()
+            if candidate_turn and candidate_category:
+                candidate_category_by_conv_turn[(candidate_conv, candidate_turn)] = candidate_category
+            if candidate_message and candidate_category:
+                candidate_category_by_conv_message[(candidate_conv, candidate_message)] = candidate_category
+            if candidate_trace and candidate_category:
+                candidate_category_by_conv_trace[(candidate_conv, candidate_trace)] = candidate_category
+            if user_lookup and candidate_uid != user_lookup:
+                continue
+            pair = (candidate_uid, candidate_conv)
+            if pair not in candidate_pairs:
+                candidate_pairs.append(pair)
             if candidate_turn:
                 candidate_turns_by_pair.setdefault(pair, set()).add(candidate_turn)
                 if candidate_category:
@@ -946,6 +1019,9 @@ class FirestoreHistoryService:
                             or candidate_category_by_turn.get((uid, conv_doc.id, msg_turn), "")
                             or candidate_category_by_message.get((uid, conv_doc.id, row_message_id), "")
                             or candidate_category_by_trace.get((uid, conv_doc.id, msg_trace), "")
+                            or candidate_category_by_conv_turn.get((conv_doc.id, msg_turn), "")
+                            or candidate_category_by_conv_message.get((conv_doc.id, row_message_id), "")
+                            or candidate_category_by_conv_trace.get((conv_doc.id, msg_trace), "")
                             or "unknown"
                         )
                     tags: List[str] = []

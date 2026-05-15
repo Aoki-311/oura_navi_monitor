@@ -26,6 +26,7 @@ export function toUserRows(payload) {
     return {
       userId: row.userId || "",
       userEmail: row.userEmail || "",
+      userIdHash: row.userIdHash || "",
       lastActiveAtJst: displayNullable(row.lastActiveAtJst),
       activeDays7: displayCount(row.activeDays7),
       messageCount7d: displayCount(row.messageCount7d),

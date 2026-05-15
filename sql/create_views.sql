@@ -1,3 +1,19 @@
+CREATE OR REPLACE VIEW `__PROJECT_ID__.__DATASET_ID__.v_monitor_excluded_identities` AS
+SELECT
+  '109382080128482733156' AS user_id,
+  '2401145@tc.terumo.co.jp' AS user_email,
+  'excluded_business_user' AS reason
+UNION ALL
+SELECT
+  '2401145' AS user_id,
+  '2401145@tc.terumo.co.jp' AS user_email,
+  'excluded_business_user_legacy_short_id' AS reason
+UNION ALL
+SELECT
+  '102048678887357191337' AS user_id,
+  'lcs-agent@lcs-developer-483404.iam.gserviceaccount.com' AS user_email,
+  'excluded_service_account' AS reason;
+
 CREATE OR REPLACE VIEW `__PROJECT_ID__.__DATASET_ID__.v_requests` AS
 SELECT
   timestamp AS ts,

@@ -41,6 +41,16 @@ const COLORS = {
 };
 
 const USERS_PAGE_SIZE = 10;
+const EXCLUDED_USER_IDS = new Set([
+  "109382080128482733156",
+  "102048678887357191337",
+  "2401145",
+  "2401145@tc.terumo.co.jp",
+]);
+const EXCLUDED_USER_EMAILS = new Set([
+  "2401145@tc.terumo.co.jp",
+  "lcs-agent@lcs-developer-483404.iam.gserviceaccount.com",
+]);
 
 function toast(message) {
   const el = $("toast");
@@ -61,10 +71,36 @@ function currentUserDetailId() {
   return new URLSearchParams(window.location.search).get("user_id") || "";
 }
 
+function currentUserDetailContext() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    userId: params.get("user_id") || "",
+    userEmail: params.get("user_email") || "",
+    userIdHash: params.get("user_id_hash") || "",
+  };
+}
+
+function isExcludedUser(row) {
+  const id = String(row?.userId || row?.user_id || "").toLowerCase();
+  const email = String(row?.userEmail || row?.user_email || "").toLowerCase();
+  return (
+    !id
+    || id === "unknown"
+    || EXCLUDED_USER_IDS.has(id)
+    || EXCLUDED_USER_EMAILS.has(email)
+    || id.includes("lcs-agent")
+    || email.includes("lcs-agent")
+  );
+}
+
 async function reloadCurrentView() {
-  const userId = currentUserDetailId();
-  if (userId) {
-    await openUserDetail(userId);
+  const detail = currentUserDetailContext();
+  if (detail.userId) {
+    await openUserDetail(detail.userId, {
+      userEmail: detail.userEmail,
+      userIdHash: detail.userIdHash,
+      preserveConversation: true,
+    });
     return;
   }
   await loadAll();
@@ -501,16 +537,7 @@ function renderUsers(rows) {
     return;
   }
   const filteredRows = rows.filter((row) => {
-    const id = String(row.userId || "").toLowerCase();
-    const email = String(row.userEmail || "").toLowerCase();
-    return (
-      id
-      && id !== "unknown"
-      && email !== "2401145@tc.terumo.co.jp"
-      && id !== "2401145@tc.terumo.co.jp"
-      && !id.includes("lcs-agent")
-      && !email.includes("lcs-agent")
-    );
+    return !isExcludedUser(row);
   });
   state.userRows = filteredRows;
   const maxPage = Math.max(1, Math.ceil(filteredRows.length / USERS_PAGE_SIZE));
@@ -532,7 +559,7 @@ function renderUsers(rows) {
             <td class="numericCell">${escapeHtml(row.coverageRate)}</td>
             <td class="numericCell">${escapeHtml(row.badFeedbackRate)}</td>
             <td><span class="activityBadge ${escapeHtml(row.activityKey)}">${escapeHtml(row.activityLevel)}</span></td>
-            <td><a class="detailBtn" href="/dashboard?user_id=${encodeURIComponent(row.userId)}" data-user-id="${escapeHtml(row.userId)}">詳細</a></td>
+            <td><a class="detailBtn" href="/dashboard?user_id=${encodeURIComponent(row.userId)}&user_email=${encodeURIComponent(row.userEmail || "")}&user_id_hash=${encodeURIComponent(row.userIdHash || "")}" data-user-id="${escapeHtml(row.userId)}" data-user-email="${escapeHtml(row.userEmail || "")}" data-user-id-hash="${escapeHtml(row.userIdHash || "")}">詳細</a></td>
           </tr>
         `,
       )
@@ -600,19 +627,31 @@ function renderUserDetail(viewModel) {
     .join("");
 }
 
-async function openUserDetail(userId) {
+async function openUserDetail(userId, options = {}) {
+  const previousConversationId = options.preserveConversation ? state.selectedConversationId : "";
   state.selectedUserId = userId;
-  state.selectedConversationId = "";
+  state.selectedConversationId = options.preserveConversation ? state.selectedConversationId : "";
   state.messageCursor = "";
   state.includeMessageContent = false;
   setStatus("ユーザー詳細取得中", "loading");
   const payload = await getUserDetail(userId, {
     ...timeRangeQuery(state.dashboardPreset),
+    user_email: options.userEmail || "",
+    user_id_hash: options.userIdHash || "",
     conversation_limit: 200,
     include_hidden: false,
     include_messages: false,
   });
+  state.selectedUserId = payload?.user?.userId || userId;
   renderUserDetail(toUserDetailViewModel(payload));
+  if (previousConversationId) {
+    const previousRow = document.querySelector(`[data-conversation-id="${CSS.escape(previousConversationId)}"]`);
+    if (previousRow) {
+      state.selectedConversationId = previousConversationId;
+      previousRow.classList.add("active");
+      await loadMessages({ includeContent: false });
+    }
+  }
   $("userDetailView")?.scrollIntoView({ behavior: "smooth", block: "start" });
   setStatus("表示中", "success");
 }
@@ -682,7 +721,15 @@ function bindEvents() {
     state.activityPreset = event.target.value;
     await loadDashboard();
   });
-  $("refreshAll")?.addEventListener("click", reloadCurrentView);
+  $("refreshAll")?.addEventListener("click", async () => {
+    try {
+      await reloadCurrentView();
+    } catch (error) {
+      console.error(error);
+      setStatus("再読込に失敗しました", "error");
+      toast("再読込に失敗しました。時間をおいて再試行してください。");
+    }
+  });
   $("activityFilter")?.addEventListener("change", async (event) => {
     state.userFilter = event.target.value;
     state.usersPage = 1;
@@ -759,13 +806,17 @@ async function loadAll() {
 function startApp() {
   configureChartTheme();
   bindEvents();
-  const userId = currentUserDetailId();
-  if (userId) {
+  const detail = currentUserDetailContext();
+  if (detail.userId) {
     $("dashboardView")?.classList.add("hidden");
     $("userDetailView")?.classList.remove("hidden");
-    openUserDetail(userId).catch((error) => {
+    openUserDetail(detail.userId, {
+      userEmail: detail.userEmail,
+      userIdHash: detail.userIdHash,
+    }).catch((error) => {
       console.error(error);
       setStatus("ユーザー詳細の取得に失敗しました", "error");
+      toast("ユーザー詳細の取得に失敗しました。ユーザーIDまたはメールを確認してください。");
     });
   } else {
     loadAll();
