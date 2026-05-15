@@ -12,7 +12,7 @@
 
 | Parameter | 型 | 説明 |
 | --- | --- | --- |
-| `preset` | string | `today`, `last_6h`, `last_12h`, `last_3d`, `last_7d`, `last_14d`, `last_30d`, `custom` |
+| `preset` | string | `today`, `last_6h`, `last_12h`, `last_3d`, `last_7d`, `last_14d`, `last_30d`, `last_60d`, `all`, `custom` |
 | `start` | string | custom range start。ISO datetime。 |
 | `end` | string | custom range end。ISO datetime。 |
 | `timezone` | string | 既定 `Asia/Tokyo`。 |
@@ -197,7 +197,7 @@
 
 | Parameter | 型 | 説明 |
 | --- | --- | --- |
-| `preset` | string | `today`, `last_3d`, `last_7d`, `last_14d`, `last_30d` |
+| `preset` | string | `today`, `last_3d`, `last_7d`, `last_14d`, `last_30d`, `last_60d`, `all` |
 | `start` / `end` | string | custom range |
 | `conversation_limit` | int | 会話一覧の返却件数。既定 50、最大 200 |
 | `conversation_cursor` | string | 次ページ取得用 cursor |

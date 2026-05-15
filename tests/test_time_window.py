@@ -73,6 +73,21 @@ class TimeWindowResolveTest(unittest.TestCase):
                 end="",
             )
 
+    def test_extended_presets_resolve(self) -> None:
+        settings = _FakeSettings(monitor_retention_days=180)
+        for preset in ("last_60d", "all"):
+            with self.subTest(preset=preset):
+                window = resolve_time_window(
+                    settings=settings,
+                    days=7,
+                    preset=preset,
+                    start="",
+                    end="",
+                )
+                self.assertEqual(window.source, "preset")
+                self.assertEqual(window.preset, preset)
+                self.assertGreater(window.end_utc, window.start_utc)
+
     def test_end_earlier_than_start_raises(self) -> None:
         settings = _FakeSettings()
         with self.assertRaises(TimeWindowValidationError):

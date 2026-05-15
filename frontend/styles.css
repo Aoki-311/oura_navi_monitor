@@ -639,8 +639,7 @@ tbody tr:hover {
   display: none !important;
 }
 
-.exportDialog,
-.helpDialog {
+.exportDialog {
   width: min(780px, calc(100vw - 32px));
   color: var(--text);
   border: 1px solid var(--line-strong);
@@ -651,12 +650,7 @@ tbody tr:hover {
   box-shadow: 0 36px 120px rgba(0, 0, 0, 0.48);
 }
 
-.helpDialog {
-  width: min(520px, calc(100vw - 32px));
-}
-
-.exportDialog::backdrop,
-.helpDialog::backdrop {
+.exportDialog::backdrop {
   background: rgba(2, 6, 16, 0.72);
   backdrop-filter: blur(5px);
 }
@@ -711,12 +705,268 @@ fieldset label {
   gap: 12px;
 }
 
+.dashboardView {
+  display: grid;
+  gap: 16px;
+}
+
+.panelHead h2 {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.sectionNo {
+  margin-bottom: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.helpWrap {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+}
+
+.helpWrap .helpBtn {
+  width: 19px;
+  height: 19px;
+  min-height: 19px;
+  color: #b8c6e6;
+  border-color: rgba(148, 163, 184, 0.34);
+  background: rgba(15, 25, 45, 0.78);
+  box-shadow: none;
+}
+
+.helpTooltip {
+  position: absolute;
+  right: 0;
+  top: 27px;
+  z-index: 25;
+  width: 275px;
+  padding: 10px 12px;
+  color: #eaf2ff;
+  border: 1px solid rgba(119, 151, 204, 0.44);
+  border-radius: 12px;
+  background: rgba(8, 14, 27, 0.98);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.44);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.helpWrap:hover .helpTooltip,
+.helpWrap:focus-within .helpTooltip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.compactGraphRow {
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.85fr);
+}
+
+.chartWrap.compactChart {
+  height: clamp(205px, 18vw, 270px);
+}
+
+.chartWrap.trendChart {
+  height: clamp(240px, 21vw, 315px);
+}
+
+.chartWrap.compactDonut {
+  height: clamp(210px, 19vw, 270px);
+}
+
+.donutWithLegend {
+  grid-template-columns: minmax(180px, 0.9fr) minmax(190px, 1.1fr);
+  align-items: center;
+}
+
+.legendList {
+  align-content: center;
+}
+
+.legendItem {
+  grid-template-columns: 12px minmax(0, 1fr);
+  column-gap: 8px;
+  row-gap: 2px;
+  padding: 7px 9px;
+  background: transparent;
+  border-color: transparent;
+}
+
+.legendItem::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--legend-dot, var(--cyan));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--legend-dot, var(--cyan)) 60%, transparent);
+}
+
+.legendItem:nth-child(1) { --legend-dot: #23d28f; }
+.legendItem:nth-child(2) { --legend-dot: #ffb340; }
+.legendItem:nth-child(3) { --legend-dot: #386dff; }
+.legendItem:nth-child(4) { --legend-dot: #5f6285; }
+
+.legendItem strong {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.legendItem span {
+  color: #d6e2ff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.legendItem small {
+  grid-column: 2;
+  color: #8190b1;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.usersTableWrap {
+  max-height: 506px;
+}
+
+#usersTable {
+  min-width: 1080px;
+  table-layout: fixed;
+}
+
+#usersTable .colUserId { width: 150px; }
+#usersTable .colEmail { width: 185px; }
+#usersTable .colLastActive { width: 170px; }
+#usersTable .colNumeric { width: 118px; }
+#usersTable .colActivity { width: 120px; }
+#usersTable .colAction { width: 82px; }
+
+#usersTable th {
+  height: 48px;
+  vertical-align: middle;
+}
+
+#usersTable td {
+  height: 43px;
+  vertical-align: middle;
+}
+
+.numericCell {
+  text-align: center;
+}
+
+.paginationBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.detailBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 6px 11px;
+  border-radius: 10px;
+  text-decoration: none;
+}
+
+.userDetailView {
+  display: grid;
+  gap: 16px;
+}
+
+.conversationMessageGrid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(0, 3fr);
+  gap: 16px;
+}
+
+.conversationListPanel,
+.messageListPanel {
+  padding: 14px;
+}
+
+.conversationScroller {
+  max-height: 620px;
+  overflow: auto;
+  border: 1px solid rgba(100, 127, 177, 0.24);
+  border-radius: 14px;
+}
+
+.messageScroller {
+  max-height: 516px;
+  overflow: auto;
+  border: 1px solid rgba(100, 127, 177, 0.24);
+  border-radius: 14px;
+}
+
+.xscroll {
+  overflow-x: auto;
+}
+
+.conversationTable {
+  min-width: 620px;
+}
+
+.conversationTable th,
+.conversationTable td {
+  vertical-align: middle;
+}
+
+.conversationRow {
+  cursor: pointer;
+}
+
+.conversationRow.active,
+.conversationRow:hover {
+  background: rgba(39, 217, 210, 0.1);
+}
+
+.ellipsisCell {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.messagesTable {
+  min-width: 980px;
+}
+
+.messagesTable th:nth-child(1) { width: 160px; }
+.messagesTable th:nth-child(2) { width: 92px; }
+.messagesTable th:nth-child(3) { width: 410px; }
+.messagesTable th:nth-child(4) { width: 120px; }
+.messagesTable th:nth-child(5) { width: 100px; }
+.messagesTable th:nth-child(6) { width: 130px; }
+.messagesTable th:nth-child(7) { width: 110px; }
+
+td.contentCell {
+  max-width: 420px;
+  line-height: 1.55;
+}
+
 @media (max-width: 1180px) {
   .topbar,
   .twoColumn,
+  .compactGraphRow,
   .threeColumn,
   .qualityGrid,
-  .followupGrid {
+  .followupGrid,
+  .conversationMessageGrid,
+  .donutWithLegend {
     grid-template-columns: 1fr;
   }
 

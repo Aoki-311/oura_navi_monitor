@@ -1,97 +1,88 @@
 const { test, expect } = require("@playwright/test");
 
-async function mockApisWithUsageFailure(page) {
-  await page.route("**/api/metrics/overview?**", async (route) =>
-    route.fulfill({
-      json: {
-        days: 1,
-        overview: {
-          request_count: 120,
-          error_5xx_count: 2,
-          error_5xx_rate: 0.016,
-          request_p95_latency_ms: 240,
-          qs_stable_rate: 0.92,
-          first_answer_avg_ms: 810,
-          enhance_answer_avg_ms: 1120,
-        },
-        usage: {
-          days: 1,
-          dau: 8,
-          wau: 22,
-          conversationCount: 35,
-          messageCount: 220,
-          feedbackLikeRate: 0.77,
-        },
-      },
-    }),
-  );
-
-  await page.route("**/api/metrics/usage?**", async (route) =>
-    route.fulfill({
-      status: 500,
-      contentType: "application/json",
-      body: JSON.stringify({ detail: "usage query failed: test fixture" }),
-    }),
-  );
-
-  await page.route("**/api/metrics/errors?**", async (route) =>
-    route.fulfill({
-      json: {
-        trend: [
-          { bucket_label: "09:00", error_5xx_count: 1 },
-          { bucket_label: "09:30", error_5xx_count: 0 },
-        ],
-        topEndpoints: [{ endpoint: "/api/metrics/usage", error_5xx_count: 2 }],
-        topErrors: [{ error_type: "RuntimeError", count: 2 }],
-      },
-    }),
-  );
-
-  await page.route("**/api/metrics/devices?**", async (route) =>
-    route.fulfill({
-      json: {
-        devices: [
-          { device_class: "desktop", request_count: 90, error_5xx_count: 1, error_5xx_rate: 0.011, p95_latency_ms: 210 },
-          { device_class: "mobile", request_count: 30, error_5xx_count: 1, error_5xx_rate: 0.033, p95_latency_ms: 290 },
-        ],
-      },
-    }),
-  );
-
-  await page.route("**/api/metrics/query-suggest?**", async (route) =>
-    route.fulfill({
-      json: {
-        logs: {
-          stages: [
-            { stage: "stable", count: 90, avg_latency_ms: 250, avg_suggestion_count: 4 },
-            { stage: "degraded", count: 10, avg_latency_ms: 430, avg_suggestion_count: 3 },
-          ],
-          fallbackSources: [{ fallback_source: "local", reason: "timeout", count: 3 }],
-        },
-        facts: {
-          impressions: 200,
-          clicks: 40,
-          adoptions: 14,
-          clickRate: 0.2,
-          adoptionRate: 0.35,
-        },
-      },
-    }),
-  );
-
-  await page.route("**/api/history/users?**", async (route) =>
-    route.fulfill({ json: { count: 0, users: [] } }),
-  );
+function minimalDashboardPayload() {
+  return {
+    meta: {
+      generatedAt: "2026-05-16T01:00:00Z",
+      fetchMs: 55,
+      metricStatus: { answerSuccessRate: "proxy" },
+    },
+    kpis: {
+      activeUserCount: 8,
+      answerSuccessRate: 0.88,
+      lowCoverageRate: 0.11,
+      errorRate: 0.02,
+      p95LatencyMs: 1480,
+    },
+    usageTrend: [{ date: "05-16", activeUserCount: 8, messageCount: 42 }],
+    activityDistribution: {
+      totalUserCount: 12,
+      segments: [
+        { label: "高アクティブ", count: 2, rate: 0.1667, activityKey: "high" },
+        { label: "中アクティブ", count: 4, rate: 0.3333, activityKey: "middle" },
+        { label: "低アクティブ", count: 3, rate: 0.25, activityKey: "low" },
+        { label: "休眠ユーザー", count: 3, rate: 0.25, activityKey: "dormant" },
+      ],
+    },
+    environmentMode: {
+      requestByHour: Array.from({ length: 24 }, (_, hour) => ({
+        hour: `${String(hour).padStart(2, "0")}:00`,
+        requestCount: hour,
+      })),
+      deviceDistribution: [{ label: "PC", count: 42, rate: 1 }],
+      modeDistribution: [{ label: "社内モード", count: 42, rate: 1 }],
+    },
+    answerQuality: {
+      answerability: [{ label: "fully_answerable", count: 8, rate: 1 }],
+      usability: [{ label: "ready", count: 8, rate: 1 }],
+      deliveryReadiness: [{ label: "ready", count: 8, rate: 1 }],
+      evidenceSufficiency: [{ label: "sufficient", count: 8, rate: 1 }],
+    },
+    followup: {
+      recognizedCount: 4,
+      successCount: 3,
+      successRate: 0.75,
+      explicitCorrectionCount: 1,
+      clarificationRequiredCount: 0,
+    },
+  };
 }
 
-test("dashboard keeps rendering when one metrics module fails", async ({ page }) => {
-  await mockApisWithUsageFailure(page);
-  await page.goto("/dashboard");
+test("dashboard keeps visible partial data when one module API fails", async ({ page }) => {
+  await page.route("**/api/metrics/system-dashboard?**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("preset") === "last_7d") {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "test usage/activity failure" }),
+      });
+      return;
+    }
+    await route.fulfill({ json: minimalDashboardPayload() });
+  });
+  await page.route("**/api/metrics/users?**", async (route) =>
+    route.fulfill({
+      json: {
+        users: [
+          {
+            userId: "1000002",
+            userEmail: "1000002@tc.terumo.co.jp",
+            lastActiveAtJst: "2026/05/16 08:00:00",
+            activeDays7: 2,
+            messageCount7d: 6,
+            coverageRate: 0.9,
+            badFeedbackRate: 0,
+            activityLevel: "中アクティブ",
+          },
+        ],
+      },
+    }),
+  );
 
-  await expect(page.locator("#kpiCardsPrimary .card")).toHaveCount(6);
-  await expect(page.locator("#kpiCardsSecondary .card")).toHaveCount(4);
-  await expect(page.locator("#topEndpointsTable tbody tr")).toContainText("/api/metrics/usage");
-  await expect(page.locator("#usageChart")).toBeVisible();
-  await expect(page.locator("#systemUsageChart")).toBeVisible();
-  await expect(page.locator("#toast")).toContainText("一部データの取得に失敗しました");
+  await page.goto("/dashboard");
+  await expect(page.locator("#sectionKpi")).toContainText("回答成功率");
+  await expect(page.locator("#sectionEnvironment")).toContainText("利用環境・モード分析");
+  await expect(page.locator("#sectionUsers")).toContainText("1000002@tc.terumo.co.jp");
+  await expect(page.locator("#loadingStatus")).toContainText("一部表示中");
 });

@@ -16,6 +16,8 @@ PresetType = Literal[
     "last_7d",
     "last_14d",
     "last_30d",
+    "last_60d",
+    "all",
 ]
 SourceType = Literal["days", "preset", "custom"]
 
@@ -40,6 +42,8 @@ _PRESET_SET = {
     "last_7d",
     "last_14d",
     "last_30d",
+    "last_60d",
+    "all",
 }
 
 
@@ -167,6 +171,8 @@ def resolve_time_window(
                 "last_7d": 7,
                 "last_14d": 14,
                 "last_30d": 30,
+                "last_60d": 60,
+                "all": settings.monitor_retention_days,
             }[cleaned_preset]
             local_start = now_local - timedelta(days=preset_days)
             local_end = now_local

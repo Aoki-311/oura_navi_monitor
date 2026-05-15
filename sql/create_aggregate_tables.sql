@@ -522,6 +522,10 @@ preset_windows AS (
   SELECT 'last_14d', timezone, TIMESTAMP_SUB(now_ts, INTERVAL 14 DAY), now_ts FROM clock
   UNION ALL
   SELECT 'last_30d', timezone, TIMESTAMP_SUB(now_ts, INTERVAL 30 DAY), now_ts FROM clock
+  UNION ALL
+  SELECT 'last_60d', timezone, TIMESTAMP_SUB(now_ts, INTERVAL 60 DAY), now_ts FROM clock
+  UNION ALL
+  SELECT 'all', timezone, TIMESTAMP_SUB(now_ts, INTERVAL __MONITOR_RETENTION_DAYS__ DAY), now_ts FROM clock
 ),
 hours AS (
   SELECT hour FROM UNNEST(GENERATE_ARRAY(0, 23)) AS hour

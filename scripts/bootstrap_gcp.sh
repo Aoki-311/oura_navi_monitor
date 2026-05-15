@@ -71,6 +71,7 @@ sed \
   -e "s/__PROJECT_ID__/${PROJECT_ID}/g" \
   -e "s/__DATASET_ID__/${BQ_DATASET}/g" \
   -e "s/__SERVICE_NAME__/${SOURCE_SERVICE}/g" \
+  -e "s/__MONITOR_RETENTION_DAYS__/${RETENTION_DAYS}/g" \
   -e "s|__ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS__|${ANSWER_SUCCESS_OFFICIAL_CUTOVER_TS}|g" \
   "${AGGREGATE_SQL_TEMPLATE}" > "${TMP_SQL}"
 bq --location="${BQ_LOCATION}" query --use_legacy_sql=false < "${TMP_SQL}" >/dev/null

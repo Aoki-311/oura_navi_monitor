@@ -20,7 +20,7 @@ function activityKeyFromLevel(level, rawKey = "") {
 
 export function toUserRows(payload) {
   return safeArray(payload?.users).map((row) => {
-    const coverageRate = row.coverageRate;
+    const coverageRate = row.coverageRate ?? (row.lowCoverageRate === null || row.lowCoverageRate === undefined ? null : 1 - Number(row.lowCoverageRate || 0));
     const activityLevel = row.activityLevel || "不明";
     return {
       userId: row.userId || "",
@@ -66,6 +66,7 @@ export function toUserDetailViewModel(payload) {
     conversations: safeArray(payload?.conversations).map((row) => ({
       conversationId: row.conversationId || "",
       title: row.title || "-",
+      titleShort: truncateMiddle(row.title || "-", 18, 8),
       mode: row.mode || "-",
       visibility: row.visibility || "-",
       createdAtJst: row.createdAtJst || displayDateTime(row.createdAt),
@@ -88,6 +89,12 @@ export function toMessageRows(payload) {
     device: row.deviceLabel || row.deviceClass || "-",
     feedback: row.feedback || "none",
     contentPreview: row.content || row.contentPreview || "-",
+    coverageRate:
+      row.coverageRate === null || row.coverageRate === undefined
+        ? row.lowCoverageRate === null || row.lowCoverageRate === undefined
+          ? "-"
+          : displayRate(1 - Number(row.lowCoverageRate || 0))
+        : displayRate(row.coverageRate),
     traceId: row.traceId || "",
     requestId: row.requestId || "",
     turnId: row.turnId || "",

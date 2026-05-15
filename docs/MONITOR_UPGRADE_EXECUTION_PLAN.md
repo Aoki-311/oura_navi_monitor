@@ -55,14 +55,14 @@ MVP の第一階層は `ダッシュボード` に集約します。左側ナビ
 ダッシュボード表示順は以下で固定します。
 
 1. `KPIサマリー`
-2. `利用推移`
-3. `活性度分布（14日）`
-4. `利用環境・モード分析`
-5. `回答品質分析`
-6. `追問分析`
-7. `ユーザー監視一覧`
+2. `利用環境・モード分析`
+3. `利用推移`
+4. `活性度分布`
+5. `ユーザー一覧`
+6. `回答品質分析`
+7. `連続質問分析`
 
-`ユーザー詳細` は `ユーザー監視一覧` の `詳細` から遷移します。会話・メッセージ確認は `ユーザー詳細` 内で行います。
+`ユーザー詳細` は `ユーザー一覧` の `詳細` から `/dashboard?user_id={user_id}` へ遷移します。会話・メッセージ確認は `ユーザー詳細` 内で行います。
 
 ## 4. MVP では作らないもの
 
@@ -71,7 +71,7 @@ MVP の第一階層は `ダッシュボード` に集約します。左側ナビ
 | 対象 | MVP で作らない理由 |
 | --- | --- |
 | 独立 `回答品質` ページ | 回答品質はまず dashboard セクションとして十分に確認できる状態を優先する。 |
-| 独立 `追問分析` ページ | 追問分析は dashboard セクションとして表示し、詳細化は後続に回す。 |
+| 独立 `連続質問分析` ページ | 連続質問分析は dashboard セクションとして表示し、詳細化は後続に回す。 |
 | 独立 `チャット記録確認` ページ | ユーザー詳細からの lazy load と export で要件を満たす。 |
 | 独立 `データ健全性` ページ | 非技術管理者向け第一階層では情報量が多く、BigQuery / Cloud Logging / export で保持する。 |
 | Evidence / Governance 詳細 drawer | 技術調査には有用だが、初期 UI には情報量が多すぎる。 |
@@ -127,19 +127,19 @@ MVP の第一階層は `ダッシュボード` に集約します。左側ナビ
 | P3-1 | 画面 shell を作る。 | 左 nav なし、上部 toolbar、期間選択、`エクスポート` ボタンを持つ。 |
 | P3-2 | `KPIサマリー` を実装する。 | 5 KPI、`?` 説明、metric status badge、stale 表示が出る。 |
 | P3-3 | `利用推移` を実装する。 | アクティブユーザー数を縦棒、メッセージ数を折れ線で表示する。 |
-| P3-4 | `活性度分布（14日）` を実装する。 | 円グラフ中央に `総ユーザー数` を表示し、ユーザー一覧と同一活性度定義を使う。 |
+| P3-4 | `活性度分布` を実装する。 | 円グラフ中央に `総ユーザー数` を表示し、表示期間を `3日`、`7日`、`14日`、`30日`、`全部` から選べる。 |
 | P3-5 | `利用環境・モード分析` を実装する。 | 時間帯別リクエスト、利用デバイス分布、利用モード分布を同一期間で表示する。 |
 | P3-6 | `回答品質分析` を実装する。 | 回答可能性、回答利用可能性、業務利用可能性、根拠十分性を表示する。 |
-| P3-7 | `追問分析` を実装する。 | 追問認識数、追問成功率、明示的な訂正、確認が必要な追問を表示する。 |
+| P3-7 | `連続質問分析` を実装する。 | 追問認識数、追問成功率、明示的な訂正、確認が必要な追問を表示する。 |
 | P3-8 | dashboard の partial failure を実装する。 | 一部データ取得失敗時に画面全体を空にしない。 |
 
-### Phase 4: ユーザー監視一覧
+### Phase 4: ユーザー一覧
 
 目的: dashboard 下部で、ユーザー別の利用状況とリスクを一覧確認できるようにする。
 
 | ID | タスク | 完了条件 |
 | --- | --- | --- |
-| P4-1 | `ユーザー監視一覧` toolbar を実装する。 | `活性度で絞り込み`、`ユーザーID / メールで検索`、`エクスポート` を表示する。 |
+| P4-1 | `ユーザー一覧` toolbar を実装する。 | `活性度で絞り込み`、`ユーザーID / メールで検索`、`エクスポート` を表示する。 |
 | P4-2 | user table を実装する。 | 指定カラム、sticky header、pagination、copy ID、empty/error state を持つ。 |
 | P4-3 | 活性度定義を共通化する。 | 円グラフと user table の `活性度区分` が必ず同一定義になる。 |
 | P4-4 | `詳細` 遷移を実装する。 | ユーザー row から `ユーザー詳細` へ遷移できる。 |
@@ -191,7 +191,7 @@ MVP の第一階層は `ダッシュボード` に集約します。左側ナビ
 | P8-1 | `POST /api/export/jobs` を実装する。 | preset、custom range、outputData、includedFields、personalInfoMode、filters を受け取る。 |
 | P8-2 | job status を実装する。 | queued、running、completed、failed を返せる。 |
 | P8-3 | `GET /api/export/jobs/{job_id}/download` を実装する。 | CSV または ZIP を download できる。 |
-| P8-4 | user list export を aggregate から出力する。 | UI の `ユーザー監視一覧` と同じ口径になる。 |
+| P8-4 | user list export を aggregate から出力する。 | UI の `ユーザー一覧` と同じ口径になる。 |
 | P8-5 | message detail export を trace/messages 系 projection から出力する。 | UI の会話・メッセージ確認と同じ口径になる。 |
 | P8-6 | audit log を残す。 | 本文出力、個人情報出力、管理者ID、対象期間、出力対象を記録する。 |
 | P8-7 | TTL を設定する。 | export 生成物を長期保存しない。 |
@@ -227,11 +227,11 @@ MVP の第一階層は `ダッシュボード` に集約します。左側ナビ
 | --- | --- | --- |
 | `KPIサマリー` | `GET /api/metrics/system-dashboard` | snapshot fallback を含めて安定して返る。 |
 | `利用推移` | `GET /api/metrics/system-dashboard` | usageTrend を返す。 |
-| `活性度分布（14日）` | `GET /api/metrics/system-dashboard` | activityDistribution を返す。 |
+| `活性度分布` | `GET /api/metrics/system-dashboard` | activityDistribution を返す。 |
 | `利用環境・モード分析` | `GET /api/metrics/system-dashboard` | requestByHour、deviceDistribution、modeDistribution を返す。 |
 | `回答品質分析` | `GET /api/metrics/system-dashboard` | answerQuality を返す。 |
-| `追問分析` | `GET /api/metrics/system-dashboard` | followup を返す。 |
-| `ユーザー監視一覧` | `GET /api/metrics/users` | pagination、activity filter、q search を返す。 |
+| `連続質問分析` | `GET /api/metrics/system-dashboard` | followup を返す。 |
+| `ユーザー一覧` | `GET /api/metrics/users` | pagination、activity filter、q search を返す。 |
 | `ユーザー詳細` | `GET /api/metrics/users/{user_id}` | `include_messages=false` で軽量に返す。 |
 | `会話・メッセージ確認` | `GET /api/trace/messages` | `include_content=false` 初期、cursor pagination を返す。 |
 | `エクスポート` | `POST /api/export/jobs` | 後続実装。UI は先に modal と payload 生成まで作る。 |
@@ -289,7 +289,7 @@ MVP の第一階層は `ダッシュボード` に集約します。左側ナビ
 2. Cloud Run の最新 revision と主要 API smoke を確認する。
 3. frontend foundation を実装する。
 4. dashboard UI を新 API / adapter に切り替える。
-5. `ユーザー監視一覧` と `ユーザー詳細` を実装する。
+5. `ユーザー一覧` と `ユーザー詳細` を実装する。
 6. user detail 内の message lazy load を実装する。
 7. `エクスポート設定` UI を実装する。
 8. export/jobs backend を実装する。

@@ -80,6 +80,8 @@ class BigQueryMetricsService:
             "last_7d",
             "last_14d",
             "last_30d",
+            "last_60d",
+            "all",
         }
         preset = str(window.preset or "").strip().lower()
         if window.source != "preset" or preset not in supported_presets:

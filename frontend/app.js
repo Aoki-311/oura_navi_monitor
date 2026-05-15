@@ -16,8 +16,11 @@ const LEGACY_DASHBOARD_FIELD_COMPAT = "core_request_count";
 const state = {
   dashboardPreset: "today",
   usagePreset: "last_7d",
+  activityPreset: "last_7d",
   userFilter: "",
   userQuery: "",
+  userRows: [],
+  usersPage: 1,
   selectedUserId: "",
   selectedConversationId: "",
   messageCursor: "",
@@ -36,6 +39,8 @@ const COLORS = {
   cyan: "#0891b2",
 };
 
+const USERS_PAGE_SIZE = 10;
+
 function toast(message) {
   const el = $("toast");
   if (!el) return;
@@ -49,6 +54,19 @@ function setStatus(message, tone = "idle") {
   if (!el) return;
   el.textContent = message;
   el.dataset.tone = tone;
+}
+
+function currentUserDetailId() {
+  return new URLSearchParams(window.location.search).get("user_id") || "";
+}
+
+async function reloadCurrentView() {
+  const userId = currentUserDetailId();
+  if (userId) {
+    await openUserDetail(userId);
+    return;
+  }
+  await loadAll();
 }
 
 function escapeHtml(value) {
@@ -67,7 +85,7 @@ function destroyChart(id) {
 }
 
 function chartColors(count) {
-  const palette = [COLORS.blue, COLORS.teal, COLORS.amber, COLORS.violet, COLORS.cyan, COLORS.slate, COLORS.red];
+  const palette = ["#23d28f", "#ffb340", "#386dff", "#5f6285", "#27d9d2", "#7c5cff", "#ff5b74"];
   return Array.from({ length: count }, (_, index) => palette[index % palette.length]);
 }
 
@@ -93,6 +111,41 @@ function configureChartTheme() {
   window.Chart.defaults.font.family = '"DIN 2014", "BIZ UDPGothic", "Noto Sans JP", sans-serif';
   window.Chart.defaults.plugins.legend.labels.usePointStyle = true;
 }
+
+const doughnutPercentLabels = {
+  id: "doughnutPercentLabels",
+  afterDatasetsDraw(chart) {
+    if (chart.config.type !== "doughnut" && chart.config.type !== "pie") return;
+    const dataset = chart.data?.datasets?.[0];
+    const arcs = chart.getDatasetMeta(0)?.data || [];
+    const values = (dataset?.data || []).map((value) => Math.max(0, Number(value || 0)));
+    const total = values.reduce((sum, value) => sum + value, 0);
+    if (!total) return;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.fillStyle = "#ffffff";
+    ctx.strokeStyle = "rgba(5, 10, 20, 0.62)";
+    ctx.lineWidth = 3;
+    ctx.font = '800 11px "DIN 2014", "BIZ UDPGothic", sans-serif';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    arcs.forEach((arc, index) => {
+      const value = values[index] || 0;
+      if (!value) return;
+      const pct = (value / total) * 100;
+      if (pct < 3.5) return;
+      const props = arc.getProps(["x", "y", "startAngle", "endAngle", "innerRadius", "outerRadius"], true);
+      const angle = (props.startAngle + props.endAngle) / 2;
+      const radius = props.innerRadius + (props.outerRadius - props.innerRadius) * 0.62;
+      const x = props.x + Math.cos(angle) * radius;
+      const y = props.y + Math.sin(angle) * radius;
+      const text = `${pct.toFixed(1)}%`;
+      ctx.strokeText(text, x, y);
+      ctx.fillText(text, x, y);
+    });
+    ctx.restore();
+  },
+};
 
 function lineChart(id, labels, datasets) {
   createChart(id, {
@@ -170,11 +223,21 @@ function doughnutChart(id, rows, centerText = "") {
       if (!arc) return;
       const { x, y } = arc;
       const ctx = chart.ctx;
+      const centerLines = Array.isArray(centerText) ? centerText : [centerText];
       ctx.save();
       ctx.textAlign = "center";
       ctx.fillStyle = chartTextColor();
-      ctx.font = '700 18px "Noto Sans JP", sans-serif';
-      ctx.fillText(centerText, x, y + 4);
+      ctx.font = '800 11px "BIZ UDPGothic", "Noto Sans JP", sans-serif';
+      if (centerLines.length > 1) {
+        ctx.fillStyle = "rgba(220, 232, 255, 0.74)";
+        ctx.fillText(centerLines[0], x, y - 8);
+        ctx.fillStyle = chartTextColor();
+        ctx.font = '900 18px "DIN 2014", "Noto Sans JP", sans-serif';
+        ctx.fillText(centerLines[1], x, y + 14);
+      } else {
+        ctx.font = '900 16px "DIN 2014", "Noto Sans JP", sans-serif';
+        ctx.fillText(centerLines[0], x, y + 4);
+      }
       ctx.restore();
     },
   };
@@ -200,7 +263,7 @@ function doughnutChart(id, rows, centerText = "") {
       },
       cutout: "62%",
     },
-    plugins: [centerPlugin],
+    plugins: [centerPlugin, doughnutPercentLabels],
   });
 }
 
@@ -243,7 +306,10 @@ function renderKpis(viewModel) {
         <article class="kpiCard ${card.tone || "neutral"}">
           <div class="kpiLabel">
             <span>${escapeHtml(card.label)}</span>
-            <button type="button" class="helpBtn" data-help-title="${escapeHtml(card.label)}" data-help-body="${escapeHtml(card.help)}" aria-label="${escapeHtml(card.label)}の説明">?</button>
+            <span class="helpWrap">
+              <button type="button" class="helpBtn" aria-label="${escapeHtml(card.label)}の説明">?</button>
+              <span class="helpTooltip">${escapeHtml(card.help)}</span>
+            </span>
           </div>
           <div class="kpiValue">${escapeHtml(card.value)}</div>
           ${badge}
@@ -252,6 +318,9 @@ function renderKpis(viewModel) {
     })
     .join("");
   $("summaryWindowLabel").textContent = viewModel.windowLabel;
+  $("environmentWindowLabel").textContent = viewModel.windowLabel;
+  $("qualityWindowLabel").textContent = viewModel.windowLabel;
+  $("followupWindowLabel").textContent = viewModel.windowLabel;
   $("dataFreshness").textContent = `最終更新: ${displayDateTime(viewModel.generatedAt)}${viewModel.fetchMs !== undefined ? ` / API ${viewModel.fetchMs} ms` : ""}`;
 }
 
@@ -271,7 +340,7 @@ function renderSystemUsageChart(viewModel) {
 
 function renderActivity(viewModel) {
   const rows = viewModel.activityDistribution.segments;
-  doughnutChart("activityChart", rows, displayCount(viewModel.activityDistribution.totalUserCount));
+  doughnutChart("activityChart", rows, ["総ユーザー数", displayCount(viewModel.activityDistribution.totalUserCount)]);
   const legend = $("activityLegend");
   if (!legend) return;
   legend.innerHTML = rows
@@ -279,7 +348,8 @@ function renderActivity(viewModel) {
       (row) => `
         <div class="legendItem">
           <strong>${escapeHtml(row.label)}</strong>
-          <span>${displayCount(row.count)}人 / ${displayRate(row.rate)}${row.definition ? ` / ${escapeHtml(row.definition)}` : ""}</span>
+          <span>${displayRate(row.rate, 2)}（${displayCount(row.count)}）</span>
+          <small>${escapeHtml(row.definition || "")}</small>
         </div>
       `,
     )
@@ -343,12 +413,6 @@ function renderFollowup(viewModel) {
   horizontalBarChart("followupFunnelChart", viewModel.followup.funnel);
 }
 
-function openHelpDialog(title, body) {
-  $("helpDialogTitle").textContent = title || "指標の説明";
-  $("helpDialogBody").textContent = body || "-";
-  $("helpDialog")?.showModal();
-}
-
 function openExportDialog(scope = "global") {
   const isUser = scope === "user";
   $("globalExportData")?.classList.toggle("hidden", isUser);
@@ -361,9 +425,10 @@ async function loadDashboard() {
   const results = await Promise.allSettled([
     getSystemDashboard(timeRangeQuery(state.dashboardPreset), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }),
     getSystemDashboard(timeRangeQuery(state.usagePreset), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }),
+    getSystemDashboard(timeRangeQuery(state.activityPreset), { timeoutMs: DASHBOARD_FETCH_TIMEOUT_MS }),
   ]);
-  const [mainResult, usageResult] = results;
-  if (mainResult.status === "rejected" && usageResult.status === "rejected") {
+  const [mainResult, usageResult, activityResult] = results;
+  if (mainResult.status === "rejected" && usageResult.status === "rejected" && activityResult.status === "rejected") {
     throw mainResult.reason;
   }
 
@@ -371,7 +436,6 @@ async function loadDashboard() {
   if (mainResult.status === "fulfilled") {
     mainViewModel = toDashboardViewModel(mainResult.value, state.dashboardPreset);
     renderKpis(mainViewModel);
-    renderActivity(mainViewModel);
     renderEnvironment(mainViewModel);
     renderAnswerQuality(mainViewModel);
     renderFollowup(mainViewModel);
@@ -383,33 +447,60 @@ async function loadDashboard() {
     renderSystemUsageChart(mainViewModel);
   }
 
-  setStatus(mainResult.status === "fulfilled" && usageResult.status === "fulfilled" ? "表示中" : "一部表示中", mainResult.status === "fulfilled" ? "success" : "error");
+  if (activityResult.status === "fulfilled") {
+    renderActivity(toDashboardViewModel(activityResult.value, state.activityPreset));
+  } else if (mainViewModel) {
+    renderActivity(mainViewModel);
+  }
+
+  setStatus(results.every((result) => result.status === "fulfilled") ? "表示中" : "一部表示中", mainResult.status === "fulfilled" ? "success" : "error");
 }
 
 function renderUsers(rows) {
   const tbody = $("usersTable")?.querySelector("tbody");
   if (!tbody) return;
   if (!rows.length) {
+    state.userRows = [];
     tbody.innerHTML = `<tr><td colspan="9" class="emptyCell">対象ユーザーがありません。</td></tr>`;
+    $("usersPageStatus").textContent = "0件 / 1ページ目";
+    $("prevUsersPage").disabled = true;
+    $("nextUsersPage").disabled = true;
     return;
   }
-  tbody.innerHTML = rows
-    .map(
-      (row) => `
-        <tr>
-          <td><button class="copyBtn" data-copy="${escapeHtml(row.userId)}">${escapeHtml(truncateMiddle(row.userId, 12, 8))}</button></td>
-          <td>${escapeHtml(row.userEmail || "-")}</td>
-          <td>${escapeHtml(row.lastActiveAtJst)}</td>
-          <td>${escapeHtml(row.activeDays7)}</td>
-          <td>${escapeHtml(row.messageCount7d)}</td>
-          <td>${escapeHtml(row.coverageRate)}</td>
-          <td>${escapeHtml(row.badFeedbackRate)}</td>
-          <td><span class="activityBadge ${escapeHtml(row.activityKey)}">${escapeHtml(row.activityLevel)}</span></td>
-          <td><button class="detailBtn" data-user-id="${escapeHtml(row.userId)}">詳細</button></td>
-        </tr>
-      `,
-    )
-    .join("");
+  const filteredRows = rows.filter((row) => {
+    const id = String(row.userId || "").toLowerCase();
+    const email = String(row.userEmail || "").toLowerCase();
+    return id && id !== "unknown" && !id.includes("lcs-agent") && !email.includes("lcs-agent");
+  });
+  state.userRows = filteredRows;
+  const maxPage = Math.max(1, Math.ceil(filteredRows.length / USERS_PAGE_SIZE));
+  if (state.usersPage > maxPage) state.usersPage = maxPage;
+  const start = (state.usersPage - 1) * USERS_PAGE_SIZE;
+  const pageRows = filteredRows.slice(start, start + USERS_PAGE_SIZE);
+  if (!pageRows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="emptyCell">対象ユーザーがありません。</td></tr>`;
+  } else {
+    tbody.innerHTML = pageRows
+      .map(
+        (row) => `
+          <tr>
+            <td><button class="copyBtn" data-copy="${escapeHtml(row.userId)}">${escapeHtml(truncateMiddle(row.userId, 12, 8))}</button></td>
+            <td>${escapeHtml(row.userEmail || "-")}</td>
+            <td>${escapeHtml(row.lastActiveAtJst)}</td>
+            <td class="numericCell">${escapeHtml(row.activeDays7)}</td>
+            <td class="numericCell">${escapeHtml(row.messageCount7d)}</td>
+            <td class="numericCell">${escapeHtml(row.coverageRate)}</td>
+            <td class="numericCell">${escapeHtml(row.badFeedbackRate)}</td>
+            <td><span class="activityBadge ${escapeHtml(row.activityKey)}">${escapeHtml(row.activityLevel)}</span></td>
+            <td><a class="detailBtn" href="/dashboard?user_id=${encodeURIComponent(row.userId)}" data-user-id="${escapeHtml(row.userId)}">詳細</a></td>
+          </tr>
+        `,
+      )
+      .join("");
+  }
+  $("usersPageStatus").textContent = `${displayCount(filteredRows.length)}件 / ${state.usersPage}ページ目`;
+  $("prevUsersPage").disabled = state.usersPage <= 1;
+  $("nextUsersPage").disabled = state.usersPage >= maxPage;
 }
 
 async function loadUsersTable() {
@@ -417,7 +508,7 @@ async function loadUsersTable() {
     ...timeRangeQuery("last_7d"),
     activity: state.userFilter,
     q: state.userQuery,
-    limit: 100,
+    limit: 1000,
   });
   renderUsers(toUserRows(payload));
 }
@@ -429,7 +520,8 @@ function renderMiniCards(containerId, cards) {
 }
 
 function renderUserDetail(viewModel) {
-  $("userDetailPanel")?.classList.remove("hidden");
+  $("dashboardView")?.classList.add("hidden");
+  $("userDetailView")?.classList.remove("hidden");
   $("userDetailTitle").textContent = viewModel.user.title;
   renderMiniCards("userSummaryCards", viewModel.summaryCards);
   barLineChart(
@@ -449,24 +541,17 @@ function renderUserDetail(viewModel) {
   const tbody = $("conversationTable")?.querySelector("tbody");
   if (!tbody) return;
   if (!viewModel.conversations.length) {
-    tbody.innerHTML = `<tr><td colspan="11" class="emptyCell">会話データがありません。</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="emptyCell">会話データがありません。</td></tr>`;
     return;
   }
   tbody.innerHTML = viewModel.conversations
     .map(
       (row) => `
-        <tr>
-          <td><button class="copyBtn" data-copy="${escapeHtml(row.conversationId)}">${escapeHtml(truncateMiddle(row.conversationId, 14, 8))}</button></td>
-          <td>${escapeHtml(row.title)}</td>
-          <td>${escapeHtml(row.mode)}</td>
-          <td>${escapeHtml(row.visibility)}</td>
-          <td>${escapeHtml(row.createdAtJst)}</td>
+        <tr class="conversationRow" data-conversation-id="${escapeHtml(row.conversationId)}">
+          <td><button class="copyBtn" data-copy="${escapeHtml(row.conversationId)}">${escapeHtml(truncateMiddle(row.conversationId, 9, 5))}</button></td>
+          <td class="ellipsisCell" title="${escapeHtml(row.title)}">${escapeHtml(row.titleShort || row.title)}</td>
+          <td class="numericCell">${escapeHtml(row.messageCount)}</td>
           <td>${escapeHtml(row.updatedAtJst)}</td>
-          <td>${escapeHtml(row.messageCount)}</td>
-          <td>${escapeHtml(row.integrityState)}</td>
-          <td>${escapeHtml(row.isFavorite)}</td>
-          <td>${escapeHtml(row.followupRuntimeSummary)}</td>
-          <td><button class="messageBtn" data-conversation-id="${escapeHtml(row.conversationId)}">確認</button></td>
         </tr>
       `,
     )
@@ -481,12 +566,12 @@ async function openUserDetail(userId) {
   setStatus("ユーザー詳細取得中", "loading");
   const payload = await getUserDetail(userId, {
     ...timeRangeQuery(state.dashboardPreset),
-    conversation_limit: 50,
+    conversation_limit: 200,
     include_hidden: false,
     include_messages: false,
   });
   renderUserDetail(toUserDetailViewModel(payload));
-  $("userDetailPanel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  $("userDetailView")?.scrollIntoView({ behavior: "smooth", block: "start" });
   setStatus("表示中", "success");
 }
 
@@ -499,15 +584,11 @@ function renderMessages(rows, append = false) {
         <tr>
           <td>${escapeHtml(row.timestamp)}</td>
           <td>${escapeHtml(row.role)}</td>
-          <td>${escapeHtml(row.status)}</td>
+          <td class="contentCell">${escapeHtml(row.contentPreview)}</td>
           <td>${escapeHtml(row.mode)}</td>
           <td>${escapeHtml(row.device)}</td>
+          <td>${escapeHtml(row.coverageRate)}</td>
           <td>${escapeHtml(row.feedback)}</td>
-          <td class="contentCell">${escapeHtml(row.contentPreview)}</td>
-          <td><button class="copyBtn" data-copy="${escapeHtml(row.traceId)}">${escapeHtml(row.traceShort)}</button></td>
-          <td><button class="copyBtn" data-copy="${escapeHtml(row.requestId)}">${escapeHtml(row.requestShort)}</button></td>
-          <td><button class="copyBtn" data-copy="${escapeHtml(row.turnId)}">${escapeHtml(row.turnShort)}</button></td>
-          <td><button class="copyBtn" data-copy="${escapeHtml(row.messageId)}">${escapeHtml(row.messageShort)}</button></td>
         </tr>
       `,
     )
@@ -515,7 +596,7 @@ function renderMessages(rows, append = false) {
   if (append) {
     tbody.insertAdjacentHTML("beforeend", html);
   } else {
-    tbody.innerHTML = html || `<tr><td colspan="11" class="emptyCell">対象メッセージがありません。</td></tr>`;
+    tbody.innerHTML = html || `<tr><td colspan="7" class="emptyCell">対象メッセージがありません。</td></tr>`;
   }
 }
 
@@ -526,16 +607,14 @@ async function loadMessages({ append = false, includeContent = state.includeMess
     ...timeRangeQuery(state.dashboardPreset),
     user_id: state.selectedUserId,
     conversation_id: state.selectedConversationId,
-    limit: 100,
+    limit: 500,
     cursor: append ? state.messageCursor : "",
     include_content: includeContent,
   });
   state.messageCursor = payload?.page?.nextCursor || "";
-  $("loadMoreMessages").disabled = !state.messageCursor;
-  $("messagePanel")?.classList.remove("hidden");
   $("messagePanelTitle").textContent = includeContent
     ? "本文を表示しています。取り扱いに注意してください。"
-    : "プレビューのみ表示しています。本文は取得していません。";
+    : "プレビューのみ表示しています。";
   renderMessages(toMessageRows(payload), append);
   setStatus("表示中", "success");
 }
@@ -550,38 +629,45 @@ async function copyText(value) {
 function bindEvents() {
   $("dashboardPreset")?.addEventListener("change", async (event) => {
     state.dashboardPreset = event.target.value;
-    await loadAll();
+    await reloadCurrentView();
   });
   $("usagePreset")?.addEventListener("change", async (event) => {
     state.usagePreset = event.target.value;
     await loadDashboard();
   });
-  $("refreshAll")?.addEventListener("click", loadAll);
+  $("activityPreset")?.addEventListener("change", async (event) => {
+    state.activityPreset = event.target.value;
+    await loadDashboard();
+  });
+  $("refreshAll")?.addEventListener("click", reloadCurrentView);
   $("activityFilter")?.addEventListener("change", async (event) => {
     state.userFilter = event.target.value;
+    state.usersPage = 1;
     await loadUsersTable();
   });
   $("loadUsers")?.addEventListener("click", async () => {
     state.userQuery = $("userSearch")?.value || "";
+    state.usersPage = 1;
     await loadUsersTable();
   });
   $("userSearch")?.addEventListener("keydown", async (event) => {
     if (event.key === "Enter") {
       state.userQuery = event.target.value || "";
+      state.usersPage = 1;
       await loadUsersTable();
     }
   });
-  $("closeUserDetail")?.addEventListener("click", () => {
-    $("userDetailPanel")?.classList.add("hidden");
+  $("prevUsersPage")?.addEventListener("click", () => {
+    state.usersPage = Math.max(1, state.usersPage - 1);
+    renderUsers(state.userRows);
   });
-  $("showMessageContent")?.addEventListener("click", async () => {
-    const ok = window.confirm("メッセージ本文には個人情報や業務情報が含まれる可能性があります。本文を表示しますか？");
-    if (!ok) return;
-    state.includeMessageContent = true;
-    state.messageCursor = "";
-    await loadMessages({ includeContent: true });
+  $("nextUsersPage")?.addEventListener("click", () => {
+    state.usersPage += 1;
+    renderUsers(state.userRows);
   });
-  $("loadMoreMessages")?.addEventListener("click", () => loadMessages({ append: true }));
+  $("backToDashboard")?.addEventListener("click", () => {
+    window.location.href = "/dashboard";
+  });
   $("openExportDialog")?.addEventListener("click", () => openExportDialog("global"));
   $("exportUserDetail")?.addEventListener("click", () => openExportDialog("user"));
   $("confirmExport")?.addEventListener("click", () => {
@@ -598,19 +684,17 @@ function bindEvents() {
       await copyText(copyBtn.dataset.copy);
       return;
     }
-    const helpBtn = event.target.closest("[data-help-title]");
-    if (helpBtn) {
-      openHelpDialog(helpBtn.dataset.helpTitle, helpBtn.dataset.helpBody);
-      return;
-    }
     const detailBtn = event.target.closest("[data-user-id]");
     if (detailBtn) {
-      await openUserDetail(detailBtn.dataset.userId);
+      if (detailBtn.tagName === "A") return;
+      window.location.href = `/dashboard?user_id=${encodeURIComponent(detailBtn.dataset.userId)}`;
       return;
     }
     const messageBtn = event.target.closest("[data-conversation-id]");
     if (messageBtn) {
       state.selectedConversationId = messageBtn.dataset.conversationId;
+      document.querySelectorAll(".conversationRow.active").forEach((row) => row.classList.remove("active"));
+      messageBtn.classList.add("active");
       state.messageCursor = "";
       state.includeMessageContent = false;
       await loadMessages({ includeContent: false });
@@ -632,7 +716,17 @@ async function loadAll() {
 function startApp() {
   configureChartTheme();
   bindEvents();
-  loadAll();
+  const userId = currentUserDetailId();
+  if (userId) {
+    $("dashboardView")?.classList.add("hidden");
+    $("userDetailView")?.classList.remove("hidden");
+    openUserDetail(userId).catch((error) => {
+      console.error(error);
+      setStatus("ユーザー詳細の取得に失敗しました", "error");
+    });
+  } else {
+    loadAll();
+  }
 }
 
 if (document.readyState === "complete") {

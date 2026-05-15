@@ -6,6 +6,8 @@ export const PRESET_LABELS = {
   last_7d: "過去7日",
   last_14d: "過去14日",
   last_30d: "過去30日",
+  last_60d: "過去60日",
+  all: "全部",
   custom: "カスタム",
 };
 
@@ -52,10 +54,10 @@ export const QUALITY_LABELS = {
 };
 
 export const ACTIVITY_DEFINITIONS = {
-  high: "直近3日内メッセージ送信が3回以上",
-  middle: "直近7日内メッセージ送信が1-2回",
-  low: "直近14日内メッセージ送信が1回以上、かつ中/高に該当しない",
-  dormant: "直近14日内メッセージ送信が0回",
+  high: "表示期間内の利用頻度が高いユーザー",
+  middle: "表示期間内に一定の利用があるユーザー",
+  low: "表示期間内の利用が少ないユーザー",
+  dormant: "表示期間内にメッセージ送信がないユーザー",
 };
 
 export const KPI_HELP = {
@@ -65,7 +67,7 @@ export const KPI_HELP = {
   lowCoverageRate: "根拠資料や引用が不足している可能性がある回答の割合です。",
   errorRate: "回答生成や通信処理でエラーになった割合です。",
   p95LatencyMs: "利用者の大半が待つ最大に近い応答時間の目安です。数値が大きいほど体感が遅くなります。",
-  activityDistribution: "直近14日間の利用頻度に基づき、ユーザーを高・中・低・休眠に分類しています。",
+  activityDistribution: "選択した表示期間内の利用頻度に基づき、ユーザーを高・中・低・休眠に分類しています。",
 };
 
 export function labelOf(labels, raw, fallback = "不明") {
