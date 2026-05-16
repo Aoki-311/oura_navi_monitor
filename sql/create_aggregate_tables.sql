@@ -158,10 +158,10 @@ SELECT
   has_coverage_gap,
   (
     has_coverage_gap
-    OR COALESCE(citation_count, 0) = 0
+    OR COALESCE(citation_count = 0, FALSE)
     OR evidence_sufficiency = 'insufficient'
-    OR COALESCE(coverage_score, 1.0) < 0.60
   ) AS low_coverage_flag,
+  COALESCE(coverage_score < 0.50, FALSE) AS coverage_attention_flag,
   CASE
     WHEN event_ts >= (SELECT official_cutover_ts FROM answer_success_cutover) THEN
       error_code IS NULL
@@ -239,6 +239,7 @@ answer_daily AS (
     COUNT(*) AS answer_count,
     COUNTIF(answer_success_flag) AS answer_success_count,
     COUNTIF(low_coverage_flag) AS low_coverage_count,
+    COUNTIF(coverage_attention_flag) AS coverage_attention_count,
     COUNTIF(has_error) AS answer_error_count,
     COUNTIF(has_bad_feedback) AS bad_feedback_count,
     COUNTIF(has_bad_feedback OR has_regenerate_request OR has_enhance_request OR has_correction_request) AS feedback_count,
@@ -309,6 +310,7 @@ SELECT
   COALESCE(a.answer_count, 0) AS answer_count,
   COALESCE(a.answer_success_count, 0) AS answer_success_count,
   COALESCE(a.low_coverage_count, 0) AS low_coverage_count,
+  COALESCE(a.coverage_attention_count, 0) AS coverage_attention_count,
   COALESCE(a.answer_error_count, 0) AS answer_error_count,
   COALESCE(a.structured_led_count, 0) AS structured_led_count,
   COALESCE(a.citation_count_sum, 0) AS citation_count_sum,
@@ -435,6 +437,7 @@ answer_hour_base AS (
     TIMESTAMP_TRUNC(event_ts, HOUR) AS bucket_ts,
     answer_success_flag,
     low_coverage_flag,
+    coverage_attention_flag,
     coverage_score,
     alignment_score,
     structured_led,
@@ -456,6 +459,7 @@ answer_hourly AS (
     COUNT(*) AS answer_count,
     COUNTIF(answer_success_flag) AS answer_success_count,
     COUNTIF(low_coverage_flag) AS low_coverage_count,
+    COUNTIF(coverage_attention_flag) AS coverage_attention_count,
     SUM(coverage_score) AS coverage_score_sum,
     COUNTIF(coverage_score IS NOT NULL) AS coverage_score_count,
     SUM(alignment_score) AS alignment_score_sum,
@@ -559,6 +563,7 @@ SELECT
   COALESCE(a.answer_count, 0) AS answer_count,
   COALESCE(a.answer_success_count, 0) AS answer_success_count,
   COALESCE(a.low_coverage_count, 0) AS low_coverage_count,
+  COALESCE(a.coverage_attention_count, 0) AS coverage_attention_count,
   COALESCE(a.coverage_score_sum, 0.0) AS coverage_score_sum,
   COALESCE(a.coverage_score_count, 0) AS coverage_score_count,
   COALESCE(a.alignment_score_sum, 0.0) AS alignment_score_sum,
@@ -780,6 +785,8 @@ answer_summary AS (
     SAFE_DIVIDE(SUM(answer_success_count), SUM(answer_count)) AS answer_success_rate,
     SUM(low_coverage_count) AS low_coverage_count,
     SAFE_DIVIDE(SUM(low_coverage_count), SUM(answer_count)) AS low_coverage_rate,
+    SUM(coverage_attention_count) AS coverage_attention_count,
+    SAFE_DIVIDE(SUM(coverage_attention_count), SUM(answer_count)) AS coverage_attention_rate,
     SAFE_DIVIDE(SUM(coverage_score_sum), SUM(coverage_score_count)) AS average_coverage_score,
     SAFE_DIVIDE(SUM(alignment_score_sum), SUM(alignment_score_count)) AS average_alignment_score,
     SUM(structured_led_count) AS structured_led_count,
@@ -957,6 +964,7 @@ SELECT
       COALESCE(au.active_user_count, 0) AS activeUserCount,
       ans.answer_success_rate AS answerSuccessRate,
       ans.low_coverage_rate AS lowCoverageRate,
+      ans.coverage_attention_rate AS coverageAttentionRate,
       req.error_rate AS errorRate,
       req.p95_latency_ms AS p95LatencyMs
     ) AS kpis,

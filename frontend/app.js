@@ -350,6 +350,7 @@ function renderKpis(viewModel) {
             </span>
           </div>
           <div class="kpiValue">${escapeHtml(card.value)}</div>
+          ${card.note ? `<div class="kpiNote">${escapeHtml(card.note)}</div>` : ""}
           ${badge}
         </article>
       `;
@@ -438,7 +439,7 @@ function renderEnvironment(viewModel) {
 function renderAnswerQuality(viewModel) {
   const grid = $("answerQualityGrid");
   if (!grid) return;
-  grid.innerHTML = viewModel.answerQuality
+  const qualityCards = viewModel.answerQuality
     .map(
       (metric) => `
         <article class="qualityCard">
@@ -470,6 +471,12 @@ function renderAnswerQuality(viewModel) {
       `,
     )
     .join("");
+  const attention = viewModel.coverageAttention || {};
+  const attentionHtml =
+    attention.value && attention.value !== "-"
+      ? `<div class="coverageAttentionNote">${escapeHtml(attention.label || "参考：カバレッジ注意")} <strong>${escapeHtml(attention.value)}</strong></div>`
+      : "";
+  grid.innerHTML = `${qualityCards}${attentionHtml}`;
 }
 
 function renderFollowup(viewModel) {

@@ -41,6 +41,21 @@ function distributionRows(rows, labelFn = (value) => value || "不明") {
   });
 }
 
+function mergedDistributionRows(rows, labelFn = (value) => value || "不明") {
+  const merged = new Map();
+  for (const row of distributionRows(rows, labelFn)) {
+    const key = row.label || "不明";
+    const current = merged.get(key) || { ...row, count: 0 };
+    current.count += Number(row.count || 0);
+    current.rawLabel = current.rawLabel || row.rawLabel;
+    merged.set(key, current);
+  }
+  const total = Array.from(merged.values()).reduce((sum, row) => sum + Number(row.count || 0), 0);
+  return Array.from(merged.values())
+    .map((row) => ({ ...row, rate: total ? Number(row.count || 0) / total : null }))
+    .sort((a, b) => Number(b.count || 0) - Number(a.count || 0) || String(a.label).localeCompare(String(b.label), "ja"));
+}
+
 function activityKeyFromLabel(row) {
   const rawKey = String(row.activityKey || row.key || "").trim().toLowerCase();
   if (rawKey) return rawKey;
@@ -52,8 +67,8 @@ function activityKeyFromLabel(row) {
   return "";
 }
 
-function buildKpi(key, label, value, help, statusBadge = null, tone = "neutral") {
-  return { key, label, value, help, statusBadge, tone };
+function buildKpi(key, label, value, help, statusBadge = null, tone = "neutral", note = "") {
+  return { key, label, value, help, statusBadge, tone, note };
 }
 
 export function toDashboardViewModel(payload, preset = "today") {
@@ -95,6 +110,7 @@ export function toDashboardViewModel(payload, preset = "today") {
   const successCount = numberValue(followup.successCount, followup.followupSuccessCount, followup.success_count);
   const explicitCorrectionCount = numberValue(followup.explicitCorrectionCount, followup.explicit_correction_count);
   const clarificationRequiredCount = numberValue(followup.clarificationRequiredCount, followup.clarification_required_count);
+  const coverageAttentionRate = firstDefined(kpis.coverageAttentionRate, kpis.coverage_attention_rate);
 
   return {
     windowLabel: PRESET_LABELS[preset] || PRESET_LABELS.today,
@@ -122,6 +138,7 @@ export function toDashboardViewModel(payload, preset = "today") {
         KPI_HELP.lowCoverageRate,
         null,
         Number(firstDefined(kpis.lowCoverageRate, kpis.low_coverage_rate, 0)) >= 0.25 ? "warning" : "success",
+        coverageAttentionRate === undefined || coverageAttentionRate === null ? "" : `参考：カバレッジ注意 ${displayRate(coverageAttentionRate)}`,
       ),
       buildKpi(
         "errorRate",
@@ -177,7 +194,12 @@ export function toDashboardViewModel(payload, preset = "today") {
       { key: "usability", title: "回答利用可能性", rows: qualityRows(answerQuality.usability) },
       { key: "evidenceSufficiency", title: "根拠十分性", rows: qualityRows(answerQuality.evidenceSufficiency) },
     ],
-    questionCategory: distributionRows(
+    coverageAttention: {
+      label: "参考：カバレッジ注意",
+      value: displayRate(coverageAttentionRate),
+      rawValue: coverageAttentionRate,
+    },
+    questionCategory: mergedDistributionRows(
       firstDefined(questionCategory.items, questionCategory.segments, questionCategory),
       questionCategoryLabel,
     ),

@@ -41,6 +41,14 @@ export function toUserRows(payload) {
 export function toUserDetailViewModel(payload) {
   const user = payload?.user || {};
   const summary = payload?.summary || {};
+  const questionCategoryMap = new Map();
+  for (const row of safeArray(payload?.questionCategoryDistribution)) {
+    const label = questionCategoryLabel(row.value || row.label || "topic_ideation");
+    const current = questionCategoryMap.get(label) || { label, rawLabel: row.value || row.label || "topic_ideation", count: 0 };
+    current.count += Number(row.count || 0);
+    questionCategoryMap.set(label, current);
+  }
+  const questionCategoryTotal = Array.from(questionCategoryMap.values()).reduce((sum, row) => sum + row.count, 0);
   return {
     user: {
       userId: user.userId || "",
@@ -65,12 +73,9 @@ export function toUserDetailViewModel(payload) {
       count: Number(row.count || 0),
       rate: row.rate,
     })),
-    questionCategoryDistribution: safeArray(payload?.questionCategoryDistribution).map((row) => ({
-      label: questionCategoryLabel(row.value || row.label || "unknown"),
-      rawLabel: row.value || row.label || "unknown",
-      count: Number(row.count || 0),
-      rate: row.rate,
-    })),
+    questionCategoryDistribution: Array.from(questionCategoryMap.values())
+      .map((row) => ({ ...row, rate: questionCategoryTotal ? row.count / questionCategoryTotal : null }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "ja")),
     deviceDistribution: safeArray(payload?.deviceDistribution).map((row) => {
       const raw = row.value || row.deviceClass || row.label || "unknown";
       return {

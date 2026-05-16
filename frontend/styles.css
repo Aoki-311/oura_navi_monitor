@@ -289,7 +289,7 @@ button:disabled {
 .panel,
 .subPanel {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background:
@@ -428,6 +428,16 @@ button:disabled {
   font-weight: 950;
   letter-spacing: -0.035em;
   text-shadow: 0 0 24px rgba(111, 140, 255, 0.26);
+}
+
+.kpiNote {
+  position: absolute;
+  left: 16px;
+  bottom: 13px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
 }
 
 .statusBadge,
@@ -589,6 +599,21 @@ button:disabled {
 .qualityRows {
   display: grid;
   gap: 8px;
+}
+
+.coverageAttentionNote {
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.coverageAttentionNote strong {
+  color: #dce8ff;
+  font-size: 12px;
 }
 
 .qualityRow {
@@ -759,7 +784,7 @@ fieldset label {
   position: absolute;
   right: 0;
   top: 27px;
-  z-index: 25;
+  z-index: 1000;
   width: 275px;
   padding: 10px 12px;
   color: #eaf2ff;
@@ -780,6 +805,11 @@ fieldset label {
 .helpWrap:focus-within .helpTooltip {
   opacity: 1;
   transform: translateY(0);
+}
+
+.helpWrap:hover,
+.helpWrap:focus-within {
+  z-index: 1001;
 }
 
 .compactGraphRow {

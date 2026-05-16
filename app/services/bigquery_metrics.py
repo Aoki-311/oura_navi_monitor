@@ -121,6 +121,10 @@ class BigQueryMetricsService:
             answer_quality = payload.get("answerQuality") or {}
             if "usability" not in answer_quality or "evidenceSufficiency" not in answer_quality:
                 continue
+            kpis = payload.get("kpis") or {}
+            if "coverageAttentionRate" not in kpis:
+                # Keep the low-coverage KPI and auxiliary coverage caution in sync.
+                continue
             return payload
         return {}
 
@@ -335,6 +339,8 @@ answer_summary AS (
     SAFE_DIVIDE(SUM(answer_success_count), SUM(answer_count)) AS answer_success_rate,
     SUM(low_coverage_count) AS low_coverage_count,
     SAFE_DIVIDE(SUM(low_coverage_count), SUM(answer_count)) AS low_coverage_rate,
+    SUM(coverage_attention_count) AS coverage_attention_count,
+    SAFE_DIVIDE(SUM(coverage_attention_count), SUM(answer_count)) AS coverage_attention_rate,
     SAFE_DIVIDE(SUM(coverage_score_sum), SUM(coverage_score_count)) AS average_coverage_score,
     SAFE_DIVIDE(SUM(alignment_score_sum), SUM(alignment_score_count)) AS average_alignment_score,
     SUM(structured_led_count) AS structured_led_count,
@@ -403,6 +409,7 @@ SELECT TO_JSON_STRING(STRUCT(
     (SELECT active_user_count FROM active_users) AS activeUserCount,
     (SELECT answer_success_rate FROM answer_summary) AS answerSuccessRate,
     (SELECT low_coverage_rate FROM answer_summary) AS lowCoverageRate,
+    (SELECT coverage_attention_rate FROM answer_summary) AS coverageAttentionRate,
     (SELECT error_rate FROM request_summary) AS errorRate,
     (SELECT p95_latency_ms FROM request_summary) AS p95LatencyMs
   ) AS kpis,
@@ -764,19 +771,19 @@ answer_summary AS (
     ) AS answer_success_rate,
     COUNTIF(
       has_coverage_gap
-      OR COALESCE(citation_count, 0) = 0
+      OR COALESCE(citation_count = 0, FALSE)
       OR evidence_sufficiency = 'insufficient'
-      OR COALESCE(coverage_score, 1.0) < @coverage_threshold
     ) AS low_coverage_count,
     SAFE_DIVIDE(
       COUNTIF(
         has_coverage_gap
-        OR COALESCE(citation_count, 0) = 0
+        OR COALESCE(citation_count = 0, FALSE)
         OR evidence_sufficiency = 'insufficient'
-        OR COALESCE(coverage_score, 1.0) < @coverage_threshold
       ),
       COUNT(*)
     ) AS low_coverage_rate,
+    COUNTIF(COALESCE(coverage_score < 0.50, FALSE)) AS coverage_attention_count,
+    SAFE_DIVIDE(COUNTIF(COALESCE(coverage_score < 0.50, FALSE)), COUNT(*)) AS coverage_attention_rate,
     AVG(coverage_score) AS average_coverage_score,
     AVG(alignment_score) AS average_alignment_score,
     COUNTIF(structured_led) AS structured_led_count,
@@ -849,6 +856,7 @@ SELECT TO_JSON_STRING(STRUCT(
     (SELECT active_user_count FROM active_users) AS activeUserCount,
     (SELECT answer_success_rate FROM answer_summary) AS answerSuccessRate,
     (SELECT low_coverage_rate FROM answer_summary) AS lowCoverageRate,
+    (SELECT coverage_attention_rate FROM answer_summary) AS coverageAttentionRate,
     (SELECT error_rate FROM request_summary) AS errorRate,
     (SELECT p95_latency_ms FROM request_summary) AS p95LatencyMs
   ) AS kpis,
@@ -1906,9 +1914,8 @@ answer_flags AS (
       AND answerability_level NOT IN ('not_answerable', 'clarification_blocked')
     ) AS answer_success_flag,
     (
-      COALESCE(citation_count, 0) = 0
+      COALESCE(citation_count = 0, FALSE)
       OR evidence_sufficiency = 'insufficient'
-      OR COALESCE(coverage_score, 1.0) < @coverage_threshold
     ) AS low_coverage_flag
   FROM answer_events a
 ),
@@ -1921,7 +1928,9 @@ answer_summary AS (
     SAFE_DIVIDE(
       LEAST(COUNT(*), COUNTIF(low_coverage_flag) + (SELECT coverage_gap_count FROM coverage_gap_keys)),
       COUNT(*)
-    ) AS low_coverage_rate
+    ) AS low_coverage_rate,
+    COUNTIF(COALESCE(coverage_score < 0.50, FALSE)) AS coverage_attention_count,
+    SAFE_DIVIDE(COUNTIF(COALESCE(coverage_score < 0.50, FALSE)), COUNT(*)) AS coverage_attention_rate
   FROM answer_flags
 ),
 answer_trend AS (
@@ -1989,6 +1998,8 @@ SELECT TO_JSON_STRING(STRUCT(
     (SELECT answer_count FROM answer_summary) AS answerCount,
     (SELECT answer_success_count FROM answer_summary) AS answerSuccessCount,
     (SELECT low_coverage_count FROM answer_summary) AS lowCoverageCount,
+    (SELECT coverage_attention_rate FROM answer_summary) AS coverageAttentionRate,
+    (SELECT coverage_attention_count FROM answer_summary) AS coverageAttentionCount,
     (SELECT active_days_7 FROM activity) AS activeDays7,
     (SELECT message_count_7d FROM activity) AS messageCount7d,
     (SELECT message_count_3d FROM activity) AS messageCount3d,
@@ -2168,6 +2179,7 @@ summary AS (
     SUM(answer_count) AS answer_count,
     SUM(answer_success_count) AS answer_success_count,
     SUM(low_coverage_count) AS low_coverage_count,
+    SUM(coverage_attention_count) AS coverage_attention_count,
     SUM(bad_feedback_count) AS bad_feedback_count,
     SUM(feedback_count) AS feedback_count,
     SUM(followup_recognized_count) AS followup_count,
@@ -2257,6 +2269,8 @@ SELECT TO_JSON_STRING(STRUCT(
     COALESCE((SELECT answer_count FROM summary), 0) AS answerCount,
     COALESCE((SELECT answer_success_count FROM summary), 0) AS answerSuccessCount,
     COALESCE((SELECT low_coverage_count FROM summary), 0) AS lowCoverageCount,
+    SAFE_DIVIDE((SELECT coverage_attention_count FROM summary), (SELECT answer_count FROM summary)) AS coverageAttentionRate,
+    COALESCE((SELECT coverage_attention_count FROM summary), 0) AS coverageAttentionCount,
     COALESCE((SELECT active_days_7 FROM activity), 0) AS activeDays7,
     COALESCE((SELECT message_count_7d FROM activity), 0) AS messageCount7d,
     COALESCE((SELECT message_count_3d FROM activity), 0) AS messageCount3d,
@@ -2614,18 +2628,18 @@ SELECT
     COUNT(*)
   ) AS answer_success_rate,
   COUNTIF(
-    COALESCE(citation_count, 0) = 0
+    COALESCE(citation_count = 0, FALSE)
     OR evidence_sufficiency = 'insufficient'
-    OR COALESCE(coverage_score, 1.0) < @coverage_threshold
   ) AS low_coverage_count,
   SAFE_DIVIDE(
     COUNTIF(
-      COALESCE(citation_count, 0) = 0
+      COALESCE(citation_count = 0, FALSE)
       OR evidence_sufficiency = 'insufficient'
-      OR COALESCE(coverage_score, 1.0) < @coverage_threshold
     ),
     COUNT(*)
   ) AS low_coverage_rate,
+  COUNTIF(COALESCE(coverage_score < 0.50, FALSE)) AS coverage_attention_count,
+  SAFE_DIVIDE(COUNTIF(COALESCE(coverage_score < 0.50, FALSE)), COUNT(*)) AS coverage_attention_rate,
   AVG(coverage_score) AS average_coverage_score,
   AVG(alignment_score) AS average_alignment_score,
   COUNTIF(structured_led) AS structured_led_count,
@@ -2712,6 +2726,8 @@ LIMIT 30
                 "answerSuccessCount": int(summary.get("answer_success_count") or 0),
                 "lowCoverageRate": summary.get("low_coverage_rate"),
                 "lowCoverageCount": int(summary.get("low_coverage_count") or 0),
+                "coverageAttentionRate": summary.get("coverage_attention_rate"),
+                "coverageAttentionCount": int(summary.get("coverage_attention_count") or 0),
                 "coverageGapWorkitemCount": coverage_gap_count,
                 "averageCoverageScore": summary.get("average_coverage_score"),
                 "averageAlignmentScore": summary.get("average_alignment_score"),
