@@ -350,7 +350,6 @@ function renderKpis(viewModel) {
             </span>
           </div>
           <div class="kpiValue">${escapeHtml(card.value)}</div>
-          ${card.note ? `<div class="kpiNote">${escapeHtml(card.note)}</div>` : ""}
           ${badge}
         </article>
       `;
@@ -420,6 +419,26 @@ function renderQuestionCategory(viewModel) {
     : `<div class="emptyInline">対象データなし</div>`;
 }
 
+function renderLegendList(id, rows) {
+  const legend = $(id);
+  if (!legend) return;
+  const sourceRows = rows || [];
+  const total = sourceRows.reduce((sum, row) => sum + Number(row.count || 0), 0);
+  legend.innerHTML = sourceRows.length
+    ? sourceRows
+        .map((row) => {
+          const rate = row.rate === null || row.rate === undefined ? (total ? Number(row.count || 0) / total : null) : row.rate;
+          return `
+            <div class="legendItem">
+              <strong>${escapeHtml(row.label || "不明")}</strong>
+              <span>${displayRate(rate, 2)}（${displayCount(row.count)}）</span>
+            </div>
+          `;
+        })
+        .join("")
+    : `<div class="emptyInline">対象データなし</div>`;
+}
+
 function renderEnvironment(viewModel) {
   const requestRows = viewModel.environmentMode.requestByHour;
   lineChart("requestByHourChart", requestRows.map((row) => row.label), [
@@ -474,7 +493,7 @@ function renderAnswerQuality(viewModel) {
   const attention = viewModel.coverageAttention || {};
   const attentionHtml =
     attention.value && attention.value !== "-"
-      ? `<div class="coverageAttentionNote">${escapeHtml(attention.label || "参考：カバレッジ注意")} <strong>${escapeHtml(attention.value)}</strong></div>`
+      ? `<div class="coverageAttentionNote">${escapeHtml(attention.label || "参考：根拠確認が必要な回答")} <strong>${escapeHtml(attention.value)}</strong></div>`
       : "";
   grid.innerHTML = `${qualityCards}${attentionHtml}`;
 }
@@ -662,9 +681,12 @@ function renderUserDetail(viewModel) {
       rightAxisLabel: "回答成功率（%）",
     },
   );
-  doughnutChart("userModeChart", viewModel.modeDistribution);
+  doughnutChart("userModeChart", viewModel.modeDistribution, "", { legend: false });
   doughnutChart("userQuestionCategoryChart", viewModel.questionCategoryDistribution, "", { legend: false });
   doughnutChart("userDeviceChart", viewModel.deviceDistribution, "", { legend: false });
+  renderLegendList("userModeLegend", viewModel.modeDistribution);
+  renderLegendList("userQuestionCategoryLegend", viewModel.questionCategoryDistribution);
+  renderLegendList("userDeviceLegend", viewModel.deviceDistribution);
 
   const tbody = $("conversationTable")?.querySelector("tbody");
   if (!tbody) return;

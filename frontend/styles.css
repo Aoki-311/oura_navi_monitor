@@ -430,16 +430,6 @@ button:disabled {
   text-shadow: 0 0 24px rgba(111, 140, 255, 0.26);
 }
 
-.kpiNote {
-  position: absolute;
-  left: 16px;
-  bottom: 13px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.01em;
-}
-
 .statusBadge,
 .activityBadge {
   display: inline-flex;
@@ -839,6 +829,15 @@ fieldset label {
 
 .categoryDonut {
   grid-template-columns: minmax(210px, 1fr) minmax(210px, 0.95fr);
+}
+
+.userDetailDonut {
+  grid-template-columns: minmax(150px, 0.85fr) minmax(150px, 1fr);
+  gap: 8px;
+}
+
+.userDetailDonut .chartWrap.compactDonut {
+  height: clamp(185px, 15vw, 235px);
 }
 
 .legendList {

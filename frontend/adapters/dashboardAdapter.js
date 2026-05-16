@@ -67,8 +67,8 @@ function activityKeyFromLabel(row) {
   return "";
 }
 
-function buildKpi(key, label, value, help, statusBadge = null, tone = "neutral", note = "") {
-  return { key, label, value, help, statusBadge, tone, note };
+function buildKpi(key, label, value, help, statusBadge = null, tone = "neutral") {
+  return { key, label, value, help, statusBadge, tone };
 }
 
 export function toDashboardViewModel(payload, preset = "today") {
@@ -138,7 +138,6 @@ export function toDashboardViewModel(payload, preset = "today") {
         KPI_HELP.lowCoverageRate,
         null,
         Number(firstDefined(kpis.lowCoverageRate, kpis.low_coverage_rate, 0)) >= 0.25 ? "warning" : "success",
-        coverageAttentionRate === undefined || coverageAttentionRate === null ? "" : `参考：カバレッジ注意 ${displayRate(coverageAttentionRate)}`,
       ),
       buildKpi(
         "errorRate",
@@ -195,7 +194,7 @@ export function toDashboardViewModel(payload, preset = "today") {
       { key: "evidenceSufficiency", title: "根拠十分性", rows: qualityRows(answerQuality.evidenceSufficiency) },
     ],
     coverageAttention: {
-      label: "参考：カバレッジ注意",
+      label: "参考：根拠確認が必要な回答",
       value: displayRate(coverageAttentionRate),
       rawValue: coverageAttentionRate,
     },
