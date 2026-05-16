@@ -211,6 +211,31 @@ def export_qs_facts_csv(
     return _csv_response(f"query_suggest_facts_{window.requested_days}d.csv", [facts])
 
 
+@router.get("/user-monitoring.csv")
+def export_user_monitoring_csv(
+    days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default="last_7d"),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    activity: str = Query(default=""),
+    q: str = Query(default=""),
+    _admin: AdminIdentity = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+    bq: BigQueryMetricsService = Depends(get_bigquery_metrics_service),
+) -> Response:
+    window = _build_window(settings=settings, days=days, preset=preset, start=start, end=end)
+    try:
+        rows = bq.get_request_user_monitoring_rows(
+            window=window,
+            activity=activity,
+            q=q,
+            limit=1000,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"user monitoring export failed: {exc}") from exc
+    return _csv_response(f"user_monitoring_{window.preset or window.requested_days}d.csv", rows)
+
+
 @router.get("/users.csv")
 def export_users_csv(
     user_id: str = Query(...),
@@ -241,14 +266,22 @@ def export_conversations_csv(
 
 @router.get("/messages.csv")
 def export_messages_csv(
-    user_id: str = Query(...),
-    conversation_id: str = Query(...),
+    user_id: str = Query(default=""),
+    conversation_id: str = Query(default=""),
+    include_hidden: bool = Query(default=True),
     _admin: AdminIdentity = Depends(require_admin),
+    fs: FirestoreHistoryService = Depends(get_firestore_history_service),
 ) -> Response:
-    raise HTTPException(
-        status_code=410,
-        detail=(
-            "messages.csv is deprecated; use conversations.csv with "
-            "user_id and conversation_id to export all messages in the conversation"
-        ),
-    )
+    try:
+        if user_id and conversation_id:
+            rows = fs.export_conversation_messages(user_id=user_id, conversation_id=conversation_id)
+            filename = f"conversation_messages_{conversation_id}.csv"
+        elif user_id:
+            rows = fs.export_user_conversation_messages(user_id=user_id, include_hidden=include_hidden)
+            filename = f"user_messages_{user_id}.csv"
+        else:
+            rows = fs.export_all_conversation_messages(include_hidden=include_hidden)
+            filename = "all_user_messages.csv"
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"messages export failed: {exc}") from exc
+    return _csv_response(filename, rows)

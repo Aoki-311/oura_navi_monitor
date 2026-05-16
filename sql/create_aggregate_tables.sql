@@ -111,6 +111,11 @@ SELECT
   query_length,
   intent_family,
   primary_task_intent,
+  raw_query_intent,
+  raw_intent_labels,
+  raw_domain_pack,
+  question_category,
+  question_category_source,
   planner_intents,
   structured_tasks,
   route_path,
@@ -441,7 +446,8 @@ answer_hour_base AS (
     COALESCE(NULLIF(delivery_readiness, ''), 'unknown') AS delivery_readiness,
     COALESCE(NULLIF(evidence_sufficiency, ''), 'unknown') AS evidence_sufficiency,
     COALESCE(NULLIF(verification_verdict, ''), 'unknown') AS verification_verdict,
-    COALESCE(NULLIF(intent_family, ''), 'unknown') AS intent_family
+    COALESCE(NULLIF(intent_family, ''), 'fact') AS intent_family,
+    COALESCE(NULLIF(question_category, ''), 'topic_ideation') AS question_category
   FROM `__PROJECT_ID__.__DATASET_ID__.monitor_answer_events`
 ),
 answer_hourly AS (
@@ -509,7 +515,7 @@ verification_verdict_distribution_hourly AS (
 question_category_distribution_hourly AS (
   SELECT bucket_ts, ARRAY_AGG(STRUCT(label AS label, count AS count) ORDER BY count DESC, label) AS question_category_distribution
   FROM (
-    SELECT bucket_ts, intent_family AS label, COUNT(*) AS count
+    SELECT bucket_ts, question_category AS label, COUNT(*) AS count
     FROM answer_hour_base
     GROUP BY bucket_ts, label
   )

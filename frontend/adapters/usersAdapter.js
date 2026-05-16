@@ -101,7 +101,7 @@ export function toMessageRows(payload) {
   return safeArray(payload?.messages).map((row) => {
     const rawRole = String(row.roleRaw || row.role || "").toLowerCase();
     const isUser = rawRole === "user" || row.role === "ユーザー" || row.roleLabel === "ユーザー";
-    const rawCategory = row.intentFamily || row.questionCategory || "unknown";
+    const rawCategory = row.questionCategory || row.intentFamily || "topic_ideation";
     return {
       timestamp: row.timestampJst || displayDateTime(row.timestamp),
       role: row.roleLabel || row.role || "-",

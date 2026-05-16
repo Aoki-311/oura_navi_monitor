@@ -368,7 +368,7 @@ answer_distribution AS (
 question_category_distribution AS (
   SELECT label, SUM(count) AS count
   FROM (
-    SELECT COALESCE(NULLIF(intent_family, ''), 'unknown') AS label, COUNT(*) AS count
+    SELECT COALESCE(NULLIF(question_category, ''), 'topic_ideation') AS label, COUNT(*) AS count
     FROM {self._table("monitor_answer_events")}
     WHERE event_ts >= @start_ts
       AND event_ts < @end_ts
@@ -797,7 +797,7 @@ answer_distribution AS (
   SELECT 'verificationVerdict' AS metric, verification_verdict AS label, COUNT(*) AS count FROM answer_events GROUP BY label
 ),
 question_category_distribution AS (
-  SELECT COALESCE(NULLIF(intent_family, ''), 'unknown') AS label, COUNT(*) AS count
+  SELECT COALESCE(NULLIF(question_category, ''), 'topic_ideation') AS label, COUNT(*) AS count
   FROM answer_events
   GROUP BY label
 ),
@@ -1944,7 +1944,7 @@ answer_distribution AS (
   SELECT 'verificationVerdict' AS metric, verification_verdict AS label, COUNT(*) AS count FROM answer_events GROUP BY label
 ),
 question_category_distribution AS (
-  SELECT COALESCE(NULLIF(intent_family, ''), 'unknown') AS label, COUNT(*) AS count
+  SELECT COALESCE(NULLIF(question_category, ''), 'topic_ideation') AS label, COUNT(*) AS count
   FROM answer_events
   GROUP BY label
 ),
@@ -2240,7 +2240,7 @@ answer_distribution AS (
   SELECT 'verificationVerdict' AS metric, verification_verdict AS label, COUNT(*) AS count FROM answer_events GROUP BY label
 ),
 question_category_distribution AS (
-  SELECT COALESCE(NULLIF(intent_family, ''), 'unknown') AS label, COUNT(*) AS count
+  SELECT COALESCE(NULLIF(question_category, ''), 'topic_ideation') AS label, COUNT(*) AS count
   FROM answer_events
   GROUP BY label
 ),
@@ -3101,6 +3101,7 @@ SELECT
   user_id_hash,
   mode,
   intent_family,
+  question_category,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -3139,6 +3140,7 @@ LIMIT @limit
                 "userIdHash": str(row.get("user_id_hash") or ""),
                 "mode": str(row.get("mode") or ""),
                 "intentFamily": str(row.get("intent_family") or ""),
+                "questionCategory": str(row.get("question_category") or ""),
                 "conversationTurnKey": str(row.get("conversation_turn_key") or ""),
                 "conversationMessageKey": str(row.get("conversation_message_key") or ""),
                 "traceRequestKey": str(row.get("trace_request_key") or ""),

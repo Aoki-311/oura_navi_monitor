@@ -89,6 +89,9 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
             "answer_action_json",
             "target_message_id",
             "intent_family",
+            "question_category",
+            "raw_query_intent",
+            "raw_domain_pack",
         ):
             self.assertIn(field_name, sql)
 
@@ -148,6 +151,8 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("low_coverage_flag", aggregate_sql)
         self.assertIn("question_category_distribution", aggregate_sql)
         self.assertIn("questionCategory", aggregate_sql)
+        self.assertIn("question_category_source", aggregate_sql)
+        self.assertIn("topic_ideation", aggregate_sql)
         self.assertIn("'monitor_exclusions_v2' AS aggregate_contract_version", aggregate_sql)
         self.assertIn("'monitor_exclusions_v2' AS snapshotContract", aggregate_sql)
         self.assertIn("2401145@tc.terumo.co.jp", aggregate_sql)
@@ -209,6 +214,8 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn("candidate_category_by_turn", fs_py)
         self.assertIn("candidate_category_by_conv_turn", fs_py)
         self.assertIn('"questionCategory"', fs_py)
+        self.assertIn("def _business_question_category", fs_py)
+        self.assertIn("topic_ideation", fs_py)
         self.assertIn("include_content", api_doc)
         self.assertIn("通常画面では `contentPreview` のみ", api_doc)
 
@@ -257,6 +264,26 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertNotIn('title: "回答可能性"', dashboard_adapter)
         self.assertNotIn('title: "業務利用可能性"', dashboard_adapter)
         self.assertIn("OurA Navi 運用モニター</a>", index_html)
+
+    def test_question_category_uses_six_business_labels_without_uncategorized_ui(self) -> None:
+        labels_js = (ROOT / "frontend" / "viewModels" / "labels.js").read_text(encoding="utf-8")
+        sql = (ROOT / "sql" / "create_views.sql").read_text(encoding="utf-8")
+        for label in (
+            "製品説明",
+            "営業手法",
+            "トラブル対応",
+            "製品価格関連",
+            "病院・GPO関連",
+            "ネタ探し",
+        ):
+            self.assertIn(label, labels_js)
+        self.assertNotIn("未分類", labels_js)
+        self.assertIn("ELSE 'topic_ideation'", sql)
+        self.assertIn("'product_explanation'", sql)
+        self.assertIn("'sales_approach'", sql)
+        self.assertIn("'troubleshooting'", sql)
+        self.assertIn("'product_price'", sql)
+        self.assertIn("'hospital_gpo'", sql)
 
 if __name__ == "__main__":
     unittest.main()

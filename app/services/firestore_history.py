@@ -75,6 +75,155 @@ def _normalize_chat_flow(value: Any) -> str:
     return ""
 
 
+def _business_question_category(*values: Any, content: Any = "") -> str:
+    signals = " ".join(_as_text(value).lower() for value in values if _as_text(value))
+    text = f"{signals} {_as_text(content).lower()}"
+    if any(token in text for token in (
+        "product_price",
+        "price_lookup",
+        "pure_price",
+        "price_table",
+        "dealer_price",
+        "msrp",
+        "pricing",
+        "price",
+        "価格",
+        "値段",
+        "仕切",
+        "希望小売",
+        "小売価格",
+    )):
+        return "product_price"
+    if any(token in text for token in (
+        "hospital_gpo",
+        "gpo_member",
+        "gpo_group",
+        "gpo_lookup",
+        "organization_external",
+        "org_info",
+        "hospital",
+        "gpo",
+        "病院",
+        "医院",
+        "施設",
+        "クリニック",
+        "加盟",
+        "加入",
+        "所属",
+    )):
+        return "hospital_gpo"
+    if any(token in text for token in (
+        "troubleshooting",
+        "incident_troubleshooting",
+        "safety_incident",
+        "safety_incident_response",
+        "error",
+        "failure",
+        "repair",
+        "infusion_failure",
+        "occlusion",
+        "leak",
+        "alarm",
+        "alert",
+        "detection",
+        "不具合",
+        "注入不良",
+        "トラブル",
+        "故障",
+        "エラー",
+        "使えない",
+        "動かない",
+        "漏れ",
+        "漏出",
+        "漏れる",
+        "アラート",
+        "警告",
+        "感知",
+        "検知",
+        "事故",
+        "安全性",
+        "回収",
+        "修理",
+    )):
+        return "troubleshooting"
+    if any(token in text for token in (
+        "sales_approach",
+        "strategy",
+        "promotion",
+        "human_approach",
+        "adherence_support",
+        "competitive_objection",
+        "content_asset",
+        "business_output",
+        "sales_script",
+        "script",
+        "action_plan",
+        "promotion_plan",
+        "objection_response",
+        "営業",
+        "提案",
+        "訴求",
+        "販促",
+        "攻略",
+        "面談",
+        "トーク",
+        "スクリプト",
+        "資料作成",
+        "説明資料",
+        "ppt",
+        "プレゼン",
+        "反論",
+        "切り返し",
+    )):
+        return "sales_approach"
+    if any(token in text for token in (
+        "product_explanation",
+        "product_lookup",
+        "product_master",
+        "product_fact",
+        "product_comparison",
+        "product_applicability",
+        "applicability",
+        "comparison",
+        "fact_check",
+        "direct_answer",
+        "product",
+        "fact",
+        "spec",
+        "specification",
+        "size",
+        "length",
+        "cannula",
+        "needle",
+        "needle_length",
+        "製品",
+        "商品",
+        "特徴",
+        "特長",
+        "仕様",
+        "サイズ",
+        "長さ",
+        "カニューレ",
+        "針",
+        "針長",
+        "容量",
+        "単位",
+        "規格",
+        "使い方",
+        "適応",
+        "比較",
+        "違い",
+        "差分",
+        "説明",
+        "ナノパス",
+        "メディセーフ",
+        "テルフュージョン",
+        "テルモ",
+    )):
+        return "product_explanation"
+    return "topic_ideation"
+
+
 def _question_kind_from_message(payload: Dict[str, Any], *, user_turn_index: int | None = None) -> str:
     flow = _normalize_chat_flow(payload.get("chatFlowType"))
     if flow == "continued_chat":
@@ -877,7 +1026,12 @@ class FirestoreHistoryService:
             candidate_turn = _as_text(event.get("turnId"))
             candidate_message = _as_text(event.get("messageId"))
             candidate_trace = _as_text(event.get("traceId"))
-            candidate_category = _as_text(event.get("intentFamily") or event.get("intent_family")).lower()
+            candidate_category = _business_question_category(
+                event.get("questionCategory"),
+                event.get("question_category"),
+                event.get("intentFamily"),
+                event.get("intent_family"),
+            )
             if candidate_turn and candidate_category:
                 candidate_category_by_conv_turn[(candidate_conv, candidate_turn)] = candidate_category
             if candidate_message and candidate_category:
@@ -979,12 +1133,16 @@ class FirestoreHistoryService:
                     "userId": uid,
                     "userEmail": uemail,
                 }
-                msg_query = (
-                    conv_doc.reference.collection("messages")
-                    .where(filter=FieldFilter("timestamp", ">=", window.start_utc.isoformat()))
-                    .where(filter=FieldFilter("timestamp", "<", window.end_utc.isoformat()))
-                    .order_by("timestamp", direction=firestore.Query.ASCENDING)
-                )
+                msg_ref = conv_doc.reference.collection("messages")
+                if conv_lookup:
+                    msg_query = msg_ref.order_by("timestamp", direction=firestore.Query.ASCENDING)
+                else:
+                    msg_query = (
+                        msg_ref
+                        .where(filter=FieldFilter("timestamp", ">=", window.start_utc.isoformat()))
+                        .where(filter=FieldFilter("timestamp", "<", window.end_utc.isoformat()))
+                        .order_by("timestamp", direction=firestore.Query.ASCENDING)
+                    )
                 for msg_doc in msg_query.stream():
                     if len(messages) >= size + 1:
                         break
@@ -1014,15 +1172,24 @@ class FirestoreHistoryService:
                     device_raw = _message_device_class(msg)
                     raw_category = ""
                     if role_raw == "user":
-                        raw_category = (
-                            _as_text(msg.get("intentFamily") or msg.get("intent_family")).lower()
-                            or candidate_category_by_turn.get((uid, conv_doc.id, msg_turn), "")
-                            or candidate_category_by_message.get((uid, conv_doc.id, row_message_id), "")
-                            or candidate_category_by_trace.get((uid, conv_doc.id, msg_trace), "")
-                            or candidate_category_by_conv_turn.get((conv_doc.id, msg_turn), "")
-                            or candidate_category_by_conv_message.get((conv_doc.id, row_message_id), "")
-                            or candidate_category_by_conv_trace.get((conv_doc.id, msg_trace), "")
-                            or "unknown"
+                        raw_category = _business_question_category(
+                            msg.get("questionCategory"),
+                            msg.get("question_category"),
+                            msg.get("queryIntent"),
+                            msg.get("query_intent"),
+                            msg.get("intentFamily"),
+                            msg.get("intent_family"),
+                            msg.get("domainPack"),
+                            msg.get("domain_pack"),
+                            msg.get("primaryTaskIntent"),
+                            msg.get("primary_task_intent"),
+                            candidate_category_by_turn.get((uid, conv_doc.id, msg_turn), ""),
+                            candidate_category_by_message.get((uid, conv_doc.id, row_message_id), ""),
+                            candidate_category_by_trace.get((uid, conv_doc.id, msg_trace), ""),
+                            candidate_category_by_conv_turn.get((conv_doc.id, msg_turn), ""),
+                            candidate_category_by_conv_message.get((conv_doc.id, row_message_id), ""),
+                            candidate_category_by_conv_trace.get((conv_doc.id, msg_trace), ""),
+                            content=msg.get("content"),
                         )
                     tags: List[str] = []
                     if _question_kind_from_message(msg) == "followup":
@@ -1357,6 +1524,23 @@ class FirestoreHistoryService:
                         "messageQuestionKind": _question_kind_from_message(
                             msg, user_turn_index=inferred_user_turn_index
                         ),
+                        "messageQuestionCategory": (
+                            _business_question_category(
+                                msg.get("questionCategory"),
+                                msg.get("question_category"),
+                                msg.get("queryIntent"),
+                                msg.get("query_intent"),
+                                msg.get("intentFamily"),
+                                msg.get("intent_family"),
+                                msg.get("domainPack"),
+                                msg.get("domain_pack"),
+                                msg.get("primaryTaskIntent"),
+                                msg.get("primary_task_intent"),
+                                content=msg.get("content"),
+                            )
+                            if role == "user"
+                            else ""
+                        ),
                         "messageStatus": _as_text(msg.get("status")),
                         "messageFeedback": _as_text(msg.get("feedback")),
                         "messageContent": _as_text(msg.get("content")),
@@ -1379,6 +1563,7 @@ class FirestoreHistoryService:
                         "messageModeAtSend": "",
                         "messageChatFlowType": "",
                         "messageQuestionKind": "",
+                        "messageQuestionCategory": "",
                         "messageStatus": "",
                         "messageFeedback": "",
                         "messageContent": "",
@@ -1390,6 +1575,22 @@ class FirestoreHistoryService:
                         "clientOrigin": "",
                     }
                 )
+        return rows
+
+    def export_all_conversation_messages(
+        self,
+        *,
+        include_hidden: bool = True,
+        limit_users: int | None = None,
+    ) -> List[Dict[str, Any]]:
+        size = max(1, min(int(limit_users or self._settings.monitor_max_users_scan), 1000))
+        rows: List[Dict[str, Any]] = []
+        for user in self.list_users(limit=size):
+            uid = _as_text(user.get("userId"))
+            email = _as_text(user.get("userEmail")).lower()
+            if not uid or _is_excluded_identity(user_id=uid, user_email=email):
+                continue
+            rows.extend(self.export_user_conversation_messages(user_id=uid, include_hidden=include_hidden))
         return rows
 
     def export_conversation_messages(self, *, user_id: str, conversation_id: str) -> List[Dict[str, Any]]:
@@ -1446,6 +1647,23 @@ class FirestoreHistoryService:
                     "messageModeAtSend": _as_text(msg.get("modeAtSend") or conv_mode),
                     "messageChatFlowType": _as_text(msg.get("chatFlowType")),
                     "messageQuestionKind": _question_kind_from_message(msg, user_turn_index=inferred_user_turn_index),
+                    "messageQuestionCategory": (
+                        _business_question_category(
+                            msg.get("questionCategory"),
+                            msg.get("question_category"),
+                            msg.get("queryIntent"),
+                            msg.get("query_intent"),
+                            msg.get("intentFamily"),
+                            msg.get("intent_family"),
+                            msg.get("domainPack"),
+                            msg.get("domain_pack"),
+                            msg.get("primaryTaskIntent"),
+                            msg.get("primary_task_intent"),
+                            content=msg.get("content"),
+                        )
+                        if role == "user"
+                        else ""
+                    ),
                     "messageStatus": _as_text(msg.get("status")),
                     "messageFeedback": _as_text(msg.get("feedback")),
                     "messageContent": _as_text(msg.get("content")),
@@ -1469,6 +1687,7 @@ class FirestoreHistoryService:
                     "messageModeAtSend": "",
                     "messageChatFlowType": "",
                     "messageQuestionKind": "",
+                    "messageQuestionCategory": "",
                     "messageStatus": "",
                     "messageFeedback": "",
                     "messageContent": "",

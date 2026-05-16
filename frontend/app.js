@@ -26,6 +26,7 @@ const state = {
   selectedConversationId: "",
   messageCursor: "",
   includeMessageContent: false,
+  exportScope: "global",
   charts: {},
 };
 
@@ -483,9 +484,60 @@ function renderFollowup(viewModel) {
 
 function openExportDialog(scope = "global") {
   const isUser = scope === "user";
+  state.exportScope = scope;
   $("globalExportData")?.classList.toggle("hidden", isUser);
   $("userExportData")?.classList.toggle("hidden", !isUser);
   $("exportDialog")?.showModal();
+}
+
+function selectedExportPreset() {
+  return $("exportPreset")?.value || "last_7d";
+}
+
+function startCsvDownload(path, params = {}) {
+  const url = new URL(path, window.location.origin);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value) !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  });
+  window.location.href = url.toString();
+}
+
+function confirmExport() {
+  const includeContent = Boolean($("exportIncludeContent")?.checked);
+  if (includeContent) {
+    const ok = window.confirm("メッセージ本文を含む出力には個人情報や業務情報が含まれる可能性があります。続行しますか？");
+    if (!ok) return;
+  }
+  const preset = selectedExportPreset();
+  if (state.exportScope === "user") {
+    if (!state.selectedUserId) {
+      toast("ユーザーを選択してください。");
+      return;
+    }
+    startCsvDownload("/api/export/messages.csv", {
+      user_id: state.selectedUserId,
+      preset,
+      include_hidden: true,
+    });
+    $("exportDialog")?.close();
+    return;
+  }
+  const selectedData = document.querySelector('input[name="exportData"]:checked')?.value || "users";
+  if (selectedData === "messages") {
+    startCsvDownload("/api/export/messages.csv", {
+      preset,
+      include_hidden: true,
+    });
+  } else {
+    startCsvDownload("/api/export/user-monitoring.csv", {
+      preset,
+      activity: state.userFilter,
+      q: state.userQuery,
+    });
+  }
+  $("exportDialog")?.close();
 }
 
 async function loadDashboard() {
@@ -686,7 +738,7 @@ async function loadMessages({ append = false, includeContent = state.includeMess
   if (!state.selectedUserId || !state.selectedConversationId) return;
   setStatus("メッセージ取得中", "loading");
   const payload = await getTraceMessages({
-    ...timeRangeQuery(state.dashboardPreset),
+    preset: "all",
     user_id: state.selectedUserId,
     conversation_id: state.selectedConversationId,
     limit: 500,
@@ -760,13 +812,7 @@ function bindEvents() {
   });
   $("openExportDialog")?.addEventListener("click", () => openExportDialog("global"));
   $("exportUserDetail")?.addEventListener("click", () => openExportDialog("user"));
-  $("confirmExport")?.addEventListener("click", () => {
-    if ($("exportIncludeContent")?.checked) {
-      const ok = window.confirm("メッセージ本文を含む出力には個人情報や業務情報が含まれる可能性があります。続行しますか？");
-      if (!ok) return;
-    }
-    toast("export/jobs 接続は後続実装です。設定内容は UI 側で保持できます。");
-  });
+  $("confirmExport")?.addEventListener("click", confirmExport);
 
   document.addEventListener("click", async (event) => {
     const copyBtn = event.target.closest("[data-copy]");

@@ -78,6 +78,52 @@ WITH src AS (
   WHERE resource.type = 'cloud_run_revision'
     AND resource.labels.service_name = '__SERVICE_NAME__'
     AND REGEXP_CONTAINS(CAST(textPayload AS STRING), r"^ask_audit_json=")
+),
+parsed AS (
+  SELECT
+    *,
+    LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.query'), ''), '')) AS query_text_norm,
+    LOWER(COALESCE(
+      NULLIF(JSON_VALUE(payload, '$.query_intent'), ''),
+      NULLIF(JSON_VALUE(payload, '$.query_signals.intent'), ''),
+      NULLIF(JSON_VALUE(payload, '$.intent'), ''),
+      NULLIF(JSON_VALUE(payload, '$.policy.intent'), ''),
+      NULLIF(JSON_VALUE(payload, '$.generation.intent'), ''),
+      NULLIF(JSON_VALUE(payload, '$.planner_intents[0]'), ''),
+      ''
+    )) AS raw_query_intent,
+    ARRAY(
+      SELECT DISTINCT LOWER(TRIM(signal))
+      FROM UNNEST(ARRAY_CONCAT(
+        IFNULL(JSON_VALUE_ARRAY(payload, '$.intent_labels'), ARRAY<STRING>[]),
+        IFNULL(JSON_VALUE_ARRAY(payload, '$.query_signals.intent_labels'), ARRAY<STRING>[]),
+        IFNULL(JSON_VALUE_ARRAY(payload, '$.planner_intents'), ARRAY<STRING>[]),
+        IFNULL(JSON_VALUE_ARRAY(payload, '$.structured_tasks'), ARRAY<STRING>[]),
+        IFNULL(JSON_VALUE_ARRAY(payload, '$.channel_reason_codes'), ARRAY<STRING>[]),
+        [
+          COALESCE(NULLIF(JSON_VALUE(payload, '$.query_intent'), ''), NULLIF(JSON_VALUE(payload, '$.query_signals.intent'), ''), NULLIF(JSON_VALUE(payload, '$.intent'), ''), NULLIF(JSON_VALUE(payload, '$.policy.intent'), ''), NULLIF(JSON_VALUE(payload, '$.generation.intent'), ''), NULLIF(JSON_VALUE(payload, '$.planner_intents[0]'), ''), ''),
+          COALESCE(NULLIF(JSON_VALUE(payload, '$.intent_family'), ''), ''),
+          COALESCE(NULLIF(JSON_VALUE(payload, '$.primary_task_intent'), ''), ''),
+          COALESCE(NULLIF(JSON_VALUE(payload, '$.domain_pack'), ''), NULLIF(JSON_VALUE(payload, '$.query_signals.domain_pack'), ''), NULLIF(JSON_VALUE(payload, '$.policy.domain_pack'), ''), NULLIF(JSON_VALUE(payload, '$.generation.domain_pack'), ''), ''),
+          COALESCE(NULLIF(JSON_VALUE(payload, '$.deliverable_operation'), ''), ''),
+          COALESCE(NULLIF(JSON_VALUE(payload, '$.asset_delivery_mode'), ''), ''),
+          COALESCE(NULLIF(JSON_VALUE(payload, '$.structured_answer_profile'), ''), ''),
+          COALESCE(NULLIF(JSON_VALUE(payload, '$.claim_plan.mode'), ''), ''),
+          COALESCE(NULLIF(JSON_VALUE(payload, '$.route_path'), ''), '')
+        ]
+      )) AS signal
+      WHERE TRIM(signal) != ''
+    ) AS category_signals,
+    IFNULL(JSON_VALUE_ARRAY(payload, '$.intent_labels'), IFNULL(JSON_VALUE_ARRAY(payload, '$.query_signals.intent_labels'), ARRAY<STRING>[])) AS raw_intent_labels,
+    LOWER(COALESCE(
+      NULLIF(JSON_VALUE(payload, '$.domain_pack'), ''),
+      NULLIF(JSON_VALUE(payload, '$.query_signals.domain_pack'), ''),
+      NULLIF(JSON_VALUE(payload, '$.policy.domain_pack'), ''),
+      NULLIF(JSON_VALUE(payload, '$.generation.domain_pack'), ''),
+      ''
+    )) AS raw_domain_pack
+  FROM src
+  WHERE payload IS NOT NULL
 )
 SELECT
   event_ts,
@@ -102,6 +148,32 @@ SELECT
   SAFE_CAST(JSON_VALUE(payload, '$.query_length') AS INT64) AS query_length,
   LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.intent_family'), ''), 'unknown')) AS intent_family,
   LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.primary_task_intent'), ''), 'unknown')) AS primary_task_intent,
+  raw_query_intent,
+  raw_intent_labels,
+  raw_domain_pack,
+  CASE
+    WHEN EXISTS (SELECT 1 FROM UNNEST(category_signals) s WHERE REGEXP_CONTAINS(s, r'(price|pricing|price_lookup|pure_price|product_price|price_table|dealer_price|msrp)'))
+      OR REGEXP_CONTAINS(query_text_norm, r'(価格|値段|仕切|希望小売|小売価格|円|price|msrp)')
+      THEN 'product_price'
+    WHEN EXISTS (SELECT 1 FROM UNNEST(category_signals) s WHERE REGEXP_CONTAINS(s, r'(gpo|hospital|org_info|organization_external|gpo_member|gpo_group|gpo_lookup)'))
+      OR REGEXP_CONTAINS(query_text_norm, r'(gpo|病院|医院|施設|クリニック|加盟|加入|所属)')
+      THEN 'hospital_gpo'
+    WHEN EXISTS (SELECT 1 FROM UNNEST(category_signals) s WHERE REGEXP_CONTAINS(s, r'(incident_troubleshooting|troubleshooting|safety_incident|safety_incident_response|error|failure|repair|infusion_failure|occlusion|leak|alarm|alert|detection)'))
+      OR REGEXP_CONTAINS(query_text_norm, r'(不具合|注入不良|トラブル|故障|エラー|使えない|動かない|詰ま|漏れ|漏出|漏れる|アラート|警告|感知|検知|事故|安全性|回収|修理)')
+      THEN 'troubleshooting'
+    WHEN EXISTS (SELECT 1 FROM UNNEST(category_signals) s WHERE REGEXP_CONTAINS(s, r'(strategy|promotion|human_approach|adherence_support|competitive_objection|content_asset|sales_script|script|action_plan|promotion_plan|objection_response|business_output)'))
+      OR REGEXP_CONTAINS(query_text_norm, r'(営業|提案|訴求|販促|攻略|面談|トーク|スクリプト|資料作成|説明資料|ppt|プレゼン|反論|切り返し)')
+      THEN 'sales_approach'
+    WHEN EXISTS (SELECT 1 FROM UNNEST(category_signals) s WHERE REGEXP_CONTAINS(s, r'(product|product_lookup|product_master|product_fact|product_comparison|product_applicability|applicability|comparison|fact_check|fact|direct_answer|spec|specification|size|length|cannula|needle)'))
+      OR REGEXP_CONTAINS(query_text_norm, r'(製品|商品|特徴|特長|仕様|サイズ|長さ|カニューレ|針|針長|容量|単位|規格|使い方|適応|比較|違い|差分|説明|ナノパス|メディセーフ|テルフュージョン|テルモ)')
+      THEN 'product_explanation'
+    ELSE 'topic_ideation'
+  END AS question_category,
+  CASE
+    WHEN EXISTS (SELECT 1 FROM UNNEST(category_signals) s WHERE REGEXP_CONTAINS(s, r'(price|pricing|price_lookup|pure_price|product_price|price_table|dealer_price|msrp|gpo|hospital|org_info|organization_external|gpo_member|gpo_group|incident_troubleshooting|troubleshooting|safety_incident|strategy|promotion|human_approach|content_asset|product|product_lookup|product_master|product_applicability|comparison|fact_check|spec|size|length|cannula|needle)')) THEN 'query_signal'
+    WHEN REGEXP_CONTAINS(query_text_norm, r'(価格|gpo|病院|不具合|注入不良|漏れ|アラート|営業|製品|特徴|仕様|長さ|カニューレ|比較|ナノパス|メディセーフ|テルフュージョン|テルモ)') THEN 'query_fallback'
+    ELSE 'default_topic_ideation'
+  END AS question_category_source,
   JSON_VALUE_ARRAY(payload, '$.planner_intents') AS planner_intents,
   JSON_VALUE_ARRAY(payload, '$.structured_tasks') AS structured_tasks,
   LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.route_path'), ''), 'unknown')) AS route_path,
@@ -140,7 +212,7 @@ SELECT
   CONCAT(COALESCE(NULLIF(JSON_VALUE(payload, '$.conversation_id'), ''), NULLIF(JSON_VALUE(payload, '$.session_id'), ''), ''), '#', COALESCE(NULLIF(JSON_VALUE(payload, '$.message_id'), ''), NULLIF(JSON_VALUE(payload, '$.assistant_message_id'), ''), '')) AS conversation_message_key,
   CONCAT(COALESCE(NULLIF(JSON_VALUE(payload, '$.trace_id'), ''), ''), '#', COALESCE(NULLIF(JSON_VALUE(payload, '$.request_id'), ''), '')) AS trace_request_key,
   raw_payload_json
-FROM src
+FROM parsed
 WHERE payload IS NOT NULL;
 
 CREATE OR REPLACE VIEW `__PROJECT_ID__.__DATASET_ID__.v_followup_resolution_events` AS
@@ -266,6 +338,19 @@ SELECT
   LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.gap_kind'), ''), 'unknown')) AS gap_kind,
   LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.intent_family'), ''), 'unknown')) AS intent_family,
   LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.primary_task_intent'), ''), 'unknown')) AS primary_task_intent,
+  CASE
+    WHEN EXISTS (SELECT 1 FROM UNNEST(IFNULL(JSON_VALUE_ARRAY(payload, '$.structured_tasks'), ARRAY<STRING>[])) s WHERE REGEXP_CONTAINS(LOWER(s), r'(price|pricing|price_lookup|pure_price|product_price|price_table)'))
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.intent_family'), ''), '')) = 'price'
+      THEN 'product_price'
+    WHEN EXISTS (SELECT 1 FROM UNNEST(IFNULL(JSON_VALUE_ARRAY(payload, '$.structured_tasks'), ARRAY<STRING>[])) s WHERE REGEXP_CONTAINS(LOWER(s), r'(gpo|hospital|gpo_member|gpo_group)'))
+      OR LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.intent_family'), ''), '')) IN ('gpo', 'hospital')
+      THEN 'hospital_gpo'
+    WHEN LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.intent_family'), ''), '')) IN ('strategy', 'business_output')
+      THEN 'sales_approach'
+    WHEN LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.intent_family'), ''), '')) IN ('comparison', 'fact')
+      THEN 'product_explanation'
+    ELSE 'topic_ideation'
+  END AS question_category,
   LOWER(COALESCE(NULLIF(JSON_VALUE(payload, '$.primary_reason_code'), ''), 'unknown')) AS primary_reason_code,
   JSON_VALUE_ARRAY(payload, '$.secondary_reason_codes') AS secondary_reason_codes,
   JSON_VALUE_ARRAY(payload, '$.open_issues') AS open_issues,
@@ -390,6 +475,7 @@ SELECT
   user_id_hash,
   mode,
   intent_family,
+  question_category,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -411,6 +497,7 @@ SELECT
   user_id_hash,
   mode,
   CAST(NULL AS STRING) AS intent_family,
+  CAST(NULL AS STRING) AS question_category,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -432,6 +519,7 @@ SELECT
   user_id_hash,
   mode,
   CAST(NULL AS STRING) AS intent_family,
+  CAST(NULL AS STRING) AS question_category,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -453,6 +541,7 @@ SELECT
   user_id_hash,
   mode,
   intent_family,
+  question_category,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -474,6 +563,7 @@ SELECT
   user_id_hash,
   mode,
   CAST(NULL AS STRING) AS intent_family,
+  CAST(NULL AS STRING) AS question_category,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
@@ -495,6 +585,7 @@ SELECT
   user_id_hash,
   mode,
   CAST(NULL AS STRING) AS intent_family,
+  CAST(NULL AS STRING) AS question_category,
   conversation_turn_key,
   conversation_message_key,
   trace_request_key
