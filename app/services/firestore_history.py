@@ -1513,8 +1513,11 @@ class FirestoreHistoryService:
 
             has_message = False
             user_turn_index = -1
-            msg_query = conv_doc.reference.collection("messages").order_by(
-                "timestamp", direction=firestore.Query.ASCENDING
+            msg_query = (
+                conv_doc.reference.collection("messages")
+                .where(filter=FieldFilter("timestamp", ">=", window.start_utc.isoformat()))
+                .where(filter=FieldFilter("timestamp", "<", window.end_utc.isoformat()))
+                .order_by("timestamp", direction=firestore.Query.ASCENDING)
             )
             for msg_doc in msg_query.stream():
                 has_message = True

@@ -22,7 +22,7 @@ from app.time_window import MetricsTimeWindow, TimeWindowValidationError, resolv
 router = APIRouter(prefix="/api/export", tags=["export"])
 logger = logging.getLogger(__name__)
 
-ExportScope = Literal["global", "user"]
+ExportScope = Literal["all", "user"]
 ExportOutputData = Literal["ユーザー監視一覧", "メッセージ明細", "ユーザーサマリー"]
 
 
@@ -34,7 +34,7 @@ class ExportFilters(BaseModel):
 
 
 class ExportJobRequest(BaseModel):
-    scope: ExportScope = "global"
+    scope: ExportScope = "all"
     outputData: ExportOutputData = "ユーザー監視一覧"
     preset: str = "last_7d"
     start: str = ""
@@ -42,7 +42,7 @@ class ExportJobRequest(BaseModel):
     filters: ExportFilters = Field(default_factory=ExportFilters)
 
 
-_GLOBAL_OUTPUTS = {"ユーザー監視一覧", "メッセージ明細"}
+_ALL_OUTPUTS = {"ユーザー監視一覧", "メッセージ明細"}
 _USER_OUTPUTS = {"ユーザーサマリー", "メッセージ明細"}
 _USER_MONITORING_HEADERS = [
     "ユーザーID",
@@ -65,20 +65,9 @@ _USER_SUMMARY_HEADERS = [
     "低評価率",
     "追問数",
 ]
-_GLOBAL_MESSAGE_HEADERS = [
+_MESSAGE_HEADERS = [
     "user_id",
     "user_email",
-    "conversation_id",
-    "title",
-    "created_at",
-    "役割",
-    "message原文",
-    "質問カテゴリ",
-    "モード",
-    "デバイス",
-    "フィードバック",
-]
-_USER_MESSAGE_HEADERS = [
     "conversation_id",
     "title",
     "created_at",
@@ -222,7 +211,7 @@ def _job_filename(*, request: ExportJobRequest, window: MetricsTimeWindow) -> st
 
 
 def _validate_export_request(request: ExportJobRequest) -> None:
-    allowed = _USER_OUTPUTS if request.scope == "user" else _GLOBAL_OUTPUTS
+    allowed = _USER_OUTPUTS if request.scope == "user" else _ALL_OUTPUTS
     if request.outputData not in allowed:
         raise HTTPException(status_code=422, detail=f"{request.outputData} is not supported for {request.scope} export")
     if request.scope == "user" and not (request.filters.userId or request.filters.userEmail):
@@ -330,9 +319,9 @@ def create_export_job(
                 user_id=request.filters.userId,
                 user_email=request.filters.userEmail,
                 include_hidden=True,
-                include_user_columns=request.scope == "global",
+                include_user_columns=True,
             )
-            headers = _GLOBAL_MESSAGE_HEADERS if request.scope == "global" else _USER_MESSAGE_HEADERS
+            headers = _MESSAGE_HEADERS
     except HTTPException:
         raise
     except Exception as exc:

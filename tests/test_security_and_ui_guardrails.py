@@ -58,6 +58,8 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn('@router.get("/jobs/{job_id}")', export_py)
         self.assertIn('@router.get("/jobs/{job_id}/download")', export_py)
         self.assertIn("ExportJobRequest", export_py)
+        self.assertIn('ExportScope = Literal["all", "user"]', export_py)
+        self.assertIn('scope: ExportScope = "all"', export_py)
         self.assertIn("export_audit_json", export_py)
         self.assertIn("deprecated; use POST /api/export/jobs", export_py)
         self.assertIn("_raise_legacy_export_gone()", export_py)
@@ -69,11 +71,22 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn('id="exportCustomRange"', html)
         self.assertIn('name="userExportData" value="summary"', html)
         self.assertIn('name="userExportData" value="messages"', html)
+        self.assertIn("キャンセル", html)
+        self.assertIn(">実行<", html)
+        self.assertIn("メッセージ原文には個人情報や業務情報が含まれる可能性があります。\\nこの内容をエクスポートしますか？", app_js)
         self.assertIn("createExportJob(", app_js)
+        self.assertIn('exportScope: "all"', app_js)
+        self.assertIn('openExportDialog("all")', app_js)
+        self.assertIn('id="allExportData"', html)
         self.assertNotIn("/api/export/messages.csv", app_js)
         self.assertNotIn("/api/export/user-monitoring.csv", app_js)
+        self.assertNotIn('scope: "global"', app_js)
+        self.assertNotIn('id="globalExportData"', html)
         self.assertNotIn("exportIncludeContent", html + app_js)
         self.assertNotIn("startCsvDownload", app_js)
+        self.assertNotIn("エクスポート実行", html + app_js)
+        self.assertNotIn("閉じる", html)
+        self.assertNotIn("exportMessageNotice", html + app_js)
 
     def test_export_fixed_columns_are_business_readable(self) -> None:
         export_py = (ROOT / "app" / "routers" / "export.py").read_text(encoding="utf-8")
@@ -81,6 +94,8 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
             "ユーザー監視一覧",
             "ユーザーサマリー",
             "メッセージ明細",
+            "user_id",
+            "user_email",
             "message原文",
             "質問カテゴリ",
             "モード",
@@ -88,6 +103,8 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
             "フィードバック",
         ):
             self.assertIn(label, export_py)
+        self.assertIn("include_user_columns=True", export_py)
+        self.assertNotIn("_USER_MESSAGE_HEADERS", export_py)
         self.assertNotIn("includedFields", export_py)
         self.assertNotIn("personalInfoMode", export_py)
 

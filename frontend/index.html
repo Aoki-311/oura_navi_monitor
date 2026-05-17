@@ -286,9 +286,8 @@
         <div class="panelHead">
           <div>
             <h2>エクスポート設定</h2>
-            <p class="muted">対象期間と出力データを選択してください。出力列はデータ種別ごとに固定されます。</p>
           </div>
-          <button value="close" class="ghostBtn">閉じる</button>
+          <button value="close" class="ghostBtn">キャンセル</button>
         </div>
         <div class="exportGrid">
           <label>対象期間
@@ -313,7 +312,7 @@
           </div>
           <fieldset>
             <legend>出力データ</legend>
-            <div id="globalExportData">
+            <div id="allExportData">
               <label><input type="radio" name="exportData" value="users" checked /> ユーザー監視一覧</label>
               <label><input type="radio" name="exportData" value="messages" /> メッセージ明細</label>
             </div>
@@ -321,11 +320,10 @@
               <label><input type="radio" name="userExportData" value="summary" checked /> ユーザーサマリー</label>
               <label><input type="radio" name="userExportData" value="messages" /> メッセージ明細</label>
             </div>
-            <p id="exportMessageNotice" class="exportNotice hidden">メッセージ明細には message 原文が含まれます。実行前に確認します。</p>
           </fieldset>
         </div>
         <div class="dialogActions">
-          <button id="confirmExport" type="button" class="primaryBtn">エクスポート実行</button>
+          <button id="confirmExport" type="button" class="primaryBtn">実行</button>
         </div>
       </form>
     </dialog>

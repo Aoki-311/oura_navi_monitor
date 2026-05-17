@@ -28,7 +28,7 @@ const state = {
   selectedConversationId: "",
   messageCursor: "",
   includeMessageContent: false,
-  exportScope: "global",
+  exportScope: "all",
   charts: {},
 };
 
@@ -510,15 +510,15 @@ function renderFollowup(viewModel) {
   horizontalBarChart("followupFunnelChart", viewModel.followup.funnel);
 }
 
-function openExportDialog(scope = "global") {
+function openExportDialog(scope = "all") {
   const isUser = scope === "user";
   state.exportScope = scope;
-  $("globalExportData")?.classList.toggle("hidden", isUser);
+  $("allExportData")?.classList.toggle("hidden", isUser);
   $("userExportData")?.classList.toggle("hidden", !isUser);
   const preset = $("exportPreset");
   if (preset) preset.value = state.dashboardPreset || "last_7d";
-  const globalDefault = document.querySelector('input[name="exportData"][value="users"]');
-  if (globalDefault) globalDefault.checked = true;
+  const allDefault = document.querySelector('input[name="exportData"][value="users"]');
+  if (allDefault) allDefault.checked = true;
   const userDefault = document.querySelector('input[name="userExportData"][value="summary"]');
   if (userDefault) userDefault.checked = true;
   updateExportDialogState();
@@ -575,14 +575,14 @@ function addDaysToDateInput(value, days) {
 function updateExportDialogState() {
   const preset = selectedExportPreset();
   $("exportCustomRange")?.classList.toggle("hidden", preset !== "custom");
-  const outputData = selectedExportOutputData();
-  $("exportMessageNotice")?.classList.toggle("hidden", outputData !== "メッセージ明細");
 }
 
 async function confirmExport() {
   const outputData = selectedExportOutputData();
   if (outputData === "メッセージ明細") {
-    const ok = window.confirm("メッセージ原文には個人情報や業務情報が含まれる可能性があります。この内容をエクスポートしますか？");
+    const ok = window.confirm(
+      "メッセージ原文には個人情報や業務情報が含まれる可能性があります。\nこの内容をエクスポートしますか？",
+    );
     if (!ok) return;
   }
   const windowPayload = exportWindowPayload();
@@ -606,13 +606,13 @@ async function confirmExport() {
         outputData,
         ...windowPayload,
         filters: {
-          activity: state.exportScope === "global" ? state.userFilter : "",
-          q: state.exportScope === "global" ? state.userQuery : "",
+          activity: state.exportScope === "all" ? state.userFilter : "",
+          q: state.exportScope === "all" ? state.userQuery : "",
           userId: state.exportScope === "user" ? state.selectedUserId : "",
           userEmail: state.exportScope === "user" ? state.selectedUserEmail : "",
         },
       },
-      { timeoutMs: 60000 },
+      { timeoutMs: 300000 },
     );
     $("exportDialog")?.close();
     if (job?.downloadUrl) {
@@ -625,7 +625,7 @@ async function confirmExport() {
   } finally {
     if (button) {
       button.disabled = false;
-      button.textContent = originalText || "エクスポート実行";
+      button.textContent = originalText || "実行";
     }
   }
 }
@@ -904,7 +904,7 @@ function bindEvents() {
   $("backToDashboard")?.addEventListener("click", () => {
     window.location.href = "/dashboard";
   });
-  $("openExportDialog")?.addEventListener("click", () => openExportDialog("global"));
+  $("openExportDialog")?.addEventListener("click", () => openExportDialog("all"));
   $("exportUserDetail")?.addEventListener("click", () => openExportDialog("user"));
   $("confirmExport")?.addEventListener("click", confirmExport);
   $("exportPreset")?.addEventListener("change", updateExportDialogState);

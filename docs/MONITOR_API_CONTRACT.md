@@ -392,7 +392,7 @@
 
 ```json
 {
-  "scope": "global",
+  "scope": "all",
   "preset": "last_7d",
   "start": "",
   "end": "",
@@ -406,13 +406,13 @@
 }
 ```
 
-`scope` は `global` または `user` です。`scope=user` の場合は `filters.userId` または `filters.userEmail` が必須です。
+`scope` は `all` または `user` です。`scope=all` は全ユーザー範囲、`scope=user` は現在表示中または指定ユーザー範囲です。`scope=user` の場合は `filters.userId` または `filters.userEmail` が必須です。
 
 `outputData` は以下のみを受け付けます。
 
 | scope | outputData |
 | --- | --- |
-| `global` | `ユーザー監視一覧`, `メッセージ明細` |
+| `all` | `ユーザー監視一覧`, `メッセージ明細` |
 | `user` | `ユーザーサマリー`, `メッセージ明細` |
 
 `preset=custom` の場合は `start` と `end` を指定します。custom range は message export にも必ず適用されます。フロントエンドでは終了日を含めるため、`end` は終了日の翌日 00:00 JST を排他的境界として送信します。
@@ -462,6 +462,8 @@
 `メッセージ明細`:
 
 ```text
+user_id
+user_email
 conversation_id
 title
 created_at
@@ -473,7 +475,7 @@ message原文
 フィードバック
 ```
 
-`scope=global` の `メッセージ明細` では `user_id` と `user_email` も先頭に追加します。
+`メッセージ明細` は dashboard から出力する場合もユーザー詳細から出力する場合も、必ず `user_id` と `user_email` を先頭に含めます。ユーザー詳細からの出力は現在表示中のユーザーに限定します。
 
 ### 10.4 Message Content Safety
 

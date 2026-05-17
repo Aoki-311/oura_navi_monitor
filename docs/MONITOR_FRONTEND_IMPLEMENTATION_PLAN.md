@@ -605,7 +605,7 @@ GET /api/metrics/schema-health
 
 ```javascript
 {
-  scope: "global" | "user",
+  scope: "all" | "user",
   title: "エクスポート設定",
   defaultPreset: currentTimeRange.preset,
   outputDataOptions: []
