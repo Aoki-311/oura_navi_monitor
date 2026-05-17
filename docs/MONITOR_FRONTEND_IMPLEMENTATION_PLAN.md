@@ -605,37 +605,31 @@ GET /api/metrics/schema-health
 
 ```javascript
 {
-  scope: "system" | "user" | "trace",
+  scope: "global" | "user",
   title: "エクスポート設定",
   defaultPreset: currentTimeRange.preset,
-  outputDataOptions: [],
-  fieldGroupOptions: [],
-  personalInfoModeOptions: [
-    { value: "masked", label: "匿名化して出力" },
-    { value: "full", label: "管理者権限で原文を含める" }
-  ],
-  includeContentDefault: false
+  outputDataOptions: []
 }
 ```
+
+`出力項目`、`個人情報の扱い`、`メッセージ本文` checkbox は表示しません。出力列は `出力データ` ごとに固定します。
 
 ### 5.2 Export job request
 
 ```javascript
 function toExportJobRequest(dialogState, pageFilters) {
   return {
+    scope: dialogState.scope,
     preset: dialogState.preset,
     start: dialogState.start,
     end: dialogState.end,
     outputData: dialogState.outputData,
-    includedFields: dialogState.includedFields,
-    personalInfoMode: dialogState.personalInfoMode,
-    includeContent: dialogState.includedFields.includes("メッセージ本文"),
     filters: pageFilters,
   };
 }
 ```
 
-`メッセージ本文` は初期選択しません。選択時は確認 dialog を出します。
+`メッセージ明細` は message 原文を含む固定列のため、実行時に確認 dialog を出します。
 
 ## 6. 画面別実装順序
 
@@ -697,12 +691,12 @@ function toExportJobRequest(dialogState, pageFilters) {
 
 | Task | 内容 | API | 完了条件 |
 | --- | --- | --- | --- |
-| F5-1 | 共通 `ExportDialog` UI を実装 | UI only | 期間、出力データ、出力項目、個人情報を選択できる。 |
-| F5-2 | Dashboard export UI を配置 | UI only | ダッシュボード右上からユーザー監視一覧とメッセージ明細を選べる。 |
-| F5-3 | User detail export UI を配置 | UI only | ユーザー詳細右上から選択ユーザーの summary、会話、メッセージを選べる。 |
-| F5-4 | export/jobs 実処理を接続 | `/api/export/jobs` | Dashboard / User detail の dialog から実ファイルを生成できる。 |
+| F5-1 | 共通 `ExportDialog` UI を実装 | `POST /api/export/jobs` | 期間と出力データのみを選択でき、実ファイルを生成できる。 |
+| F5-2 | Dashboard export UI を配置 | `POST /api/export/jobs` | ダッシュボード右上からユーザー監視一覧とメッセージ明細を出力できる。 |
+| F5-3 | User detail export UI を配置 | `POST /api/export/jobs` | ユーザー詳細右上から選択ユーザーのユーザーサマリーとメッセージ明細のみを出力できる。 |
+| F5-4 | message 原文出力確認を実装 | `POST /api/export/jobs` | メッセージ明細の実行前に確認 dialog を出す。 |
 
-Export は画面上の必須導線です。ただし開発順序としては、dashboard と user detail の表示が安定した後に `export/jobs` の実処理を接続します。UI 導線自体は後回しにしません。
+Export は画面上の必須導線です。表示 UI と実処理は同じ `POST /api/export/jobs` に接続し、選んだが反映されない項目を作らないようにします。
 
 ### Phase 6: Backend-only diagnostics
 
@@ -869,7 +863,7 @@ Adapter は以下を許容します。
 | 領域 | 方針 |
 | --- | --- |
 | 本文表示 | 初期は preview-only。明示操作時のみ全文取得。 |
-| export | `メッセージ本文` は初期未選択。 |
+| export | メッセージ明細は message 原文を含むため、実行時に確認 dialog を出し、backend audit log を残す。 |
 | 技術ID | 表示・copy 可能。ただし通常 table では折りたたみも許容。 |
 | raw payload | MVP 画面では表示しない。BigQuery / export / restricted debug で保持。 |
 

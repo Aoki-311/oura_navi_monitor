@@ -47,6 +47,50 @@ class SecurityAndUiGuardrailsTest(unittest.TestCase):
         self.assertIn('start: str = Query(default="")', export_py)
         self.assertIn('end: str = Query(default="")', export_py)
 
+    def test_export_jobs_are_the_frontend_export_path(self) -> None:
+        html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+        app_js = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+        client_js = (ROOT / "frontend" / "api" / "client.js").read_text(encoding="utf-8")
+        export_py = (ROOT / "app" / "routers" / "export.py").read_text(encoding="utf-8")
+        fs_py = (ROOT / "app" / "services" / "firestore_history.py").read_text(encoding="utf-8")
+
+        self.assertIn('@router.post("/jobs")', export_py)
+        self.assertIn('@router.get("/jobs/{job_id}")', export_py)
+        self.assertIn('@router.get("/jobs/{job_id}/download")', export_py)
+        self.assertIn("ExportJobRequest", export_py)
+        self.assertIn("export_audit_json", export_py)
+        self.assertIn("deprecated; use POST /api/export/jobs", export_py)
+        self.assertIn("_raise_legacy_export_gone()", export_py)
+        self.assertIn("save_export_job", fs_py)
+        self.assertIn("get_export_job", fs_py)
+        self.assertIn("export_message_detail_rows", fs_py)
+        self.assertIn('createExportJob(body = {}, options = {})', client_js)
+        self.assertIn('postJson("/api/export/jobs"', client_js)
+        self.assertIn('id="exportCustomRange"', html)
+        self.assertIn('name="userExportData" value="summary"', html)
+        self.assertIn('name="userExportData" value="messages"', html)
+        self.assertIn("createExportJob(", app_js)
+        self.assertNotIn("/api/export/messages.csv", app_js)
+        self.assertNotIn("/api/export/user-monitoring.csv", app_js)
+        self.assertNotIn("exportIncludeContent", html + app_js)
+        self.assertNotIn("startCsvDownload", app_js)
+
+    def test_export_fixed_columns_are_business_readable(self) -> None:
+        export_py = (ROOT / "app" / "routers" / "export.py").read_text(encoding="utf-8")
+        for label in (
+            "ユーザー監視一覧",
+            "ユーザーサマリー",
+            "メッセージ明細",
+            "message原文",
+            "質問カテゴリ",
+            "モード",
+            "デバイス",
+            "フィードバック",
+        ):
+            self.assertIn(label, export_py)
+        self.assertNotIn("includedFields", export_py)
+        self.assertNotIn("personalInfoMode", export_py)
+
     def test_next_monitor_api_routes_are_registered(self) -> None:
         metrics_py = (ROOT / "app" / "routers" / "metrics.py").read_text(encoding="utf-8")
         trace_py = (ROOT / "app" / "routers" / "trace.py").read_text(encoding="utf-8")

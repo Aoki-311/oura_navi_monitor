@@ -176,10 +176,10 @@ MVP の第一階層は `ダッシュボード` に集約します。左側ナビ
 
 | ID | タスク | 完了条件 |
 | --- | --- | --- |
-| P7-1 | `エクスポート設定` modal を実装する。 | 対象期間、出力データ、出力項目、個人情報の扱いを選択できる。 |
+| P7-1 | `エクスポート設定` modal を実装する。 | 対象期間と出力データのみを選択できる。出力列はデータ種別ごとに固定する。 |
 | P7-2 | dashboard export options を実装する。 | `ユーザー監視一覧` と `メッセージ明細` を選べる。 |
-| P7-3 | user detail export options を実装する。 | 選択ユーザーの摘要、会話、メッセージ明細を選べる。 |
-| P7-4 | 本文出力確認を実装する。 | `メッセージ本文` を選択した場合、個人情報・業務情報の確認文を出す。 |
+| P7-3 | user detail export options を実装する。 | `ユーザーサマリー` と `メッセージ明細` のみを選べる。 |
+| P7-4 | message 原文出力確認を実装する。 | `メッセージ明細` 実行時に個人情報・業務情報の確認文を出す。 |
 | P7-5 | export disabled / pending state を実装する。 | backend jobs 未接続時でも UI が壊れず、利用可能状態を明示する。 |
 
 ### Phase 8: export/jobs backend
@@ -188,12 +188,12 @@ MVP の第一階層は `ダッシュボード` に集約します。左側ナビ
 
 | ID | タスク | 完了条件 |
 | --- | --- | --- |
-| P8-1 | `POST /api/export/jobs` を実装する。 | preset、custom range、outputData、includedFields、personalInfoMode、filters を受け取る。 |
-| P8-2 | job status を実装する。 | queued、running、completed、failed を返せる。 |
-| P8-3 | `GET /api/export/jobs/{job_id}/download` を実装する。 | CSV または ZIP を download できる。 |
+| P8-1 | `POST /api/export/jobs` を実装する。 | scope、preset/custom range、outputData、filters を受け取る。 |
+| P8-2 | job status を実装する。 | 第一版は同期生成で `ready` を返し、将来非同期化できる API 形状にする。 |
+| P8-3 | `GET /api/export/jobs/{job_id}/download` を実装する。 | CSV を download できる。 |
 | P8-4 | user list export を aggregate から出力する。 | UI の `ユーザー一覧` と同じ口径になる。 |
-| P8-5 | message detail export を trace/messages 系 projection から出力する。 | UI の会話・メッセージ確認と同じ口径になる。 |
-| P8-6 | audit log を残す。 | 本文出力、個人情報出力、管理者ID、対象期間、出力対象を記録する。 |
+| P8-5 | message detail export を実装する。 | Firestore message 原文、質問カテゴリ、モード、デバイス、フィードバックを期間で絞り込んで出力する。 |
+| P8-6 | audit log を残す。 | message 原文出力、管理者ID、対象期間、出力対象、row count を記録する。 |
 | P8-7 | TTL を設定する。 | export 生成物を長期保存しない。 |
 
 ### Phase 9: デプロイと運用検証
@@ -234,7 +234,7 @@ MVP の第一階層は `ダッシュボード` に集約します。左側ナビ
 | `ユーザー一覧` | `GET /api/metrics/users` | pagination、activity filter、q search を返す。 |
 | `ユーザー詳細` | `GET /api/metrics/users/{user_id}` | `include_messages=false` で軽量に返す。 |
 | `会話・メッセージ確認` | `GET /api/trace/messages` | `include_content=false` 初期、cursor pagination を返す。 |
-| `エクスポート` | `POST /api/export/jobs` | 後続実装。UI は先に modal と payload 生成まで作る。 |
+| `エクスポート` | `POST /api/export/jobs` | 固定列 CSV を生成し、`GET /api/export/jobs/{job_id}/download` で取得する。 |
 
 ## 7. データ依存関係
 
@@ -259,7 +259,7 @@ MVP の第一階層は `ダッシュボード` に集約します。左側ナビ
 | user list | 活性度 filter、user_id / email search、pagination、詳細遷移がある。 |
 | user detail | 初期表示で message body を取得しない。 |
 | message chain | preview-first、本文表示確認、cursor pagination がある。 |
-| export | modal で期間、出力データ、出力項目、個人情報の扱いを選択できる。 |
+| export | modal で期間と出力データを選択でき、出力列は固定される。 |
 
 ### 8.2 性能基準
 

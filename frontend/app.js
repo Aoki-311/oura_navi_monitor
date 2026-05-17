@@ -1,4 +1,5 @@
 import {
+  createExportJob,
   getSystemDashboard,
   getTraceMessages,
   getUserDetail,
@@ -23,6 +24,7 @@ const state = {
   userRows: [],
   usersPage: 1,
   selectedUserId: "",
+  selectedUserEmail: "",
   selectedConversationId: "",
   messageCursor: "",
   includeMessageContent: false,
@@ -513,6 +515,13 @@ function openExportDialog(scope = "global") {
   state.exportScope = scope;
   $("globalExportData")?.classList.toggle("hidden", isUser);
   $("userExportData")?.classList.toggle("hidden", !isUser);
+  const preset = $("exportPreset");
+  if (preset) preset.value = state.dashboardPreset || "last_7d";
+  const globalDefault = document.querySelector('input[name="exportData"][value="users"]');
+  if (globalDefault) globalDefault.checked = true;
+  const userDefault = document.querySelector('input[name="userExportData"][value="summary"]');
+  if (userDefault) userDefault.checked = true;
+  updateExportDialogState();
   $("exportDialog")?.showModal();
 }
 
@@ -520,50 +529,105 @@ function selectedExportPreset() {
   return $("exportPreset")?.value || "last_7d";
 }
 
-function startCsvDownload(path, params = {}) {
-  const url = new URL(path, window.location.origin);
-  Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && String(value) !== "") {
-      url.searchParams.set(key, String(value));
-    }
-  });
-  window.location.href = url.toString();
+function selectedExportOutputData() {
+  if (state.exportScope === "user") {
+    const selected = document.querySelector('input[name="userExportData"]:checked')?.value || "summary";
+    return selected === "messages" ? "メッセージ明細" : "ユーザーサマリー";
+  }
+  const selected = document.querySelector('input[name="exportData"]:checked')?.value || "users";
+  return selected === "messages" ? "メッセージ明細" : "ユーザー監視一覧";
 }
 
-function confirmExport() {
-  const includeContent = Boolean($("exportIncludeContent")?.checked);
-  if (includeContent) {
-    const ok = window.confirm("メッセージ本文を含む出力には個人情報や業務情報が含まれる可能性があります。続行しますか？");
+function exportWindowPayload() {
+  const preset = selectedExportPreset();
+  if (preset !== "custom") {
+    return { preset, start: "", end: "" };
+  }
+  const start = $("exportStartDate")?.value || "";
+  const end = $("exportEndDate")?.value || "";
+  if (!start || !end) {
+    toast("カスタム期間の開始日と終了日を選択してください。");
+    return null;
+  }
+  if (start > end) {
+    toast("終了日は開始日以降を選択してください。");
+    return null;
+  }
+  const endExclusive = addDaysToDateInput(end, 1);
+  return {
+    preset: "custom",
+    start: `${start}T00:00:00+09:00`,
+    end: `${endExclusive}T00:00:00+09:00`,
+  };
+}
+
+function addDaysToDateInput(value, days) {
+  const [year, month, day] = String(value || "").split("-").map((part) => Number(part));
+  if (!year || !month || !day) return value;
+  const date = new Date(Date.UTC(year, month - 1, day + Number(days || 0)));
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function updateExportDialogState() {
+  const preset = selectedExportPreset();
+  $("exportCustomRange")?.classList.toggle("hidden", preset !== "custom");
+  const outputData = selectedExportOutputData();
+  $("exportMessageNotice")?.classList.toggle("hidden", outputData !== "メッセージ明細");
+}
+
+async function confirmExport() {
+  const outputData = selectedExportOutputData();
+  if (outputData === "メッセージ明細") {
+    const ok = window.confirm("メッセージ原文には個人情報や業務情報が含まれる可能性があります。この内容をエクスポートしますか？");
     if (!ok) return;
   }
-  const preset = selectedExportPreset();
+  const windowPayload = exportWindowPayload();
+  if (!windowPayload) return;
   if (state.exportScope === "user") {
     if (!state.selectedUserId) {
       toast("ユーザーを選択してください。");
       return;
     }
-    startCsvDownload("/api/export/messages.csv", {
-      user_id: state.selectedUserId,
-      preset,
-      include_hidden: true,
-    });
+  }
+  const button = $("confirmExport");
+  const originalText = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "作成中...";
+  }
+  try {
+    const job = await createExportJob(
+      {
+        scope: state.exportScope,
+        outputData,
+        ...windowPayload,
+        filters: {
+          activity: state.exportScope === "global" ? state.userFilter : "",
+          q: state.exportScope === "global" ? state.userQuery : "",
+          userId: state.exportScope === "user" ? state.selectedUserId : "",
+          userEmail: state.exportScope === "user" ? state.selectedUserEmail : "",
+        },
+      },
+      { timeoutMs: 60000 },
+    );
     $("exportDialog")?.close();
-    return;
+    if (job?.downloadUrl) {
+      window.location.href = new URL(job.downloadUrl, window.location.origin).toString();
+    } else {
+      toast("エクスポートファイルを作成できませんでした。");
+    }
+  } catch (error) {
+    toast(`エクスポートに失敗しました: ${error.message}`);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText || "エクスポート実行";
+    }
   }
-  const selectedData = document.querySelector('input[name="exportData"]:checked')?.value || "users";
-  if (selectedData === "messages") {
-    startCsvDownload("/api/export/messages.csv", {
-      preset,
-      include_hidden: true,
-    });
-  } else {
-    startCsvDownload("/api/export/user-monitoring.csv", {
-      preset,
-      activity: state.userFilter,
-      q: state.userQuery,
-    });
-  }
-  $("exportDialog")?.close();
 }
 
 async function loadDashboard() {
@@ -724,6 +788,7 @@ async function openUserDetail(userId, options = {}) {
     include_messages: false,
   });
   state.selectedUserId = payload?.user?.userId || userId;
+  state.selectedUserEmail = payload?.user?.userEmail || options.userEmail || "";
   renderUserDetail(toUserDetailViewModel(payload));
   if (previousConversationId) {
     const previousRow = document.querySelector(`[data-conversation-id="${CSS.escape(previousConversationId)}"]`);
@@ -842,6 +907,10 @@ function bindEvents() {
   $("openExportDialog")?.addEventListener("click", () => openExportDialog("global"));
   $("exportUserDetail")?.addEventListener("click", () => openExportDialog("user"));
   $("confirmExport")?.addEventListener("click", confirmExport);
+  $("exportPreset")?.addEventListener("change", updateExportDialogState);
+  document.querySelectorAll('input[name="exportData"], input[name="userExportData"]').forEach((input) => {
+    input.addEventListener("change", updateExportDialogState);
+  });
 
   document.addEventListener("click", async (event) => {
     const copyBtn = event.target.closest("[data-copy]");

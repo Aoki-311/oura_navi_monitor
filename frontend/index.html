@@ -286,7 +286,7 @@
         <div class="panelHead">
           <div>
             <h2>エクスポート設定</h2>
-            <p class="muted">対象期間、出力データ、出力項目、個人情報の扱いを選択してください。</p>
+            <p class="muted">対象期間と出力データを選択してください。出力列はデータ種別ごとに固定されます。</p>
           </div>
           <button value="close" class="ghostBtn">閉じる</button>
         </div>
@@ -303,6 +303,14 @@
               <option value="custom">カスタム</option>
             </select>
           </label>
+          <div id="exportCustomRange" class="customRange hidden">
+            <label>開始日
+              <input id="exportStartDate" type="date" />
+            </label>
+            <label>終了日
+              <input id="exportEndDate" type="date" />
+            </label>
+          </div>
           <fieldset>
             <legend>出力データ</legend>
             <div id="globalExportData">
@@ -310,33 +318,14 @@
               <label><input type="radio" name="exportData" value="messages" /> メッセージ明細</label>
             </div>
             <div id="userExportData" class="hidden">
-              <label><input type="checkbox" name="userExportData" value="summary" checked /> ユーザーサマリー</label>
-              <label><input type="checkbox" name="userExportData" value="conversations" checked /> 会話一覧</label>
-              <label><input type="checkbox" name="userExportData" value="messages" checked /> メッセージ明細</label>
-              <label><input type="checkbox" name="userExportData" value="answerQuality" /> 回答品質明細</label>
-              <label><input type="checkbox" name="userExportData" value="followup" /> 追問明細</label>
+              <label><input type="radio" name="userExportData" value="summary" checked /> ユーザーサマリー</label>
+              <label><input type="radio" name="userExportData" value="messages" /> メッセージ明細</label>
             </div>
-          </fieldset>
-          <fieldset>
-            <legend>出力項目</legend>
-            <label><input type="checkbox" checked /> 基本情報</label>
-            <label><input type="checkbox" checked /> 利用状況</label>
-            <label><input type="checkbox" checked /> 回答品質</label>
-            <label><input type="checkbox" checked /> 質問カテゴリ</label>
-            <label><input type="checkbox" /> 追問状況</label>
-            <label><input type="checkbox" /> フィードバック</label>
-            <label><input type="checkbox" /> 会話情報</label>
-            <label><input type="checkbox" /> 技術ID（trace_id / request_id / turn_id）</label>
-            <label><input type="checkbox" id="exportIncludeContent" /> メッセージ本文</label>
-          </fieldset>
-          <fieldset>
-            <legend>個人情報の扱い</legend>
-            <label><input type="radio" name="piiMode" checked /> 匿名化して出力</label>
-            <label><input type="radio" name="piiMode" /> 管理者権限で原文を含める</label>
+            <p id="exportMessageNotice" class="exportNotice hidden">メッセージ明細には message 原文が含まれます。実行前に確認します。</p>
           </fieldset>
         </div>
         <div class="dialogActions">
-          <button id="confirmExport" type="button" class="primaryBtn">設定を確認</button>
+          <button id="confirmExport" type="button" class="primaryBtn">エクスポート実行</button>
         </div>
       </form>
     </dialog>

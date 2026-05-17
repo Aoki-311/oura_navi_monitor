@@ -19,7 +19,7 @@
 | BigQuery 集計 | Cloud Run request、query suggest、sync telemetry、follow-up open、request user metric の一部を集計している。`ask_audit_json`、`followup_resolution_json`、`coverage_gap_workitem_json`、schema health は未展開。 | `app/services/bigquery_metrics.py`, `sql/create_views.sql` |
 | Firestore 履歴 | ユーザー、会話、メッセージの一覧・詳細・CSV 出力は存在する。ユーザー監視用の活性度、直近7日利用日数、低カバレッジ、回答成功率との join は未実装。 | `app/routers/history.py`, `app/services/firestore_history.py` |
 | チャット記録検索 | ユーザー起点で会話とメッセージを辿れるが、`conversation_id` / `trace_id` / `turn_id` / `user_id` / `user_email` 横断検索は未実装。 | `app/routers/history.py`, `app/services/firestore_history.py` |
-| エクスポート | 既存 CSV GET API が複数ある。設計済みの `POST /api/export/jobs`、期間・項目・個人情報・本文含有の選択式エクスポートは未実装。 | `app/routers/export.py` |
+| エクスポート | `POST /api/export/jobs` と download endpoint を追加済み。ユーザー・メッセージ系の旧 CSV GET API は `410 Gone` にし、message 原文出力は jobs API と audit log 経由に統一した。 | `app/routers/export.py` |
 | フロントエンド | 旧構成の単一 HTML/JS/CSS ダッシュボード。タブは `全体` と `単一ユーザー` 中心で、新ナビゲーション、KPI 定義、ユーザー監視一覧、チャット記録確認は未反映。 | `frontend/index.html`, `frontend/app.js`, `frontend/styles.css` |
 | テスト | セキュリティ UI ガードと時間窓テストのみ。新指標・API payload・エクスポート・検索のテストは未整備。 | `tests/test_security_and_ui_guardrails.py`, `tests/test_time_window.py` |
 
@@ -33,7 +33,7 @@
 | P0 | チャット記録を横断検索できる | ユーザー配下の会話参照のみ | `conversation_id` / `trace_id` / `turn_id` / `user_id` / `user_email` 検索 API を追加する |
 | P0 | 管理者向け日本語 UI に刷新する | 旧 dashboard UI | ナビ、KPI、グラフ、ユーザー監視、記録確認画面を再構成する |
 | P1 | 追問分析を契約通り表示する | follow-up open の recognized/success 一部のみ | `followup_resolution_json` を展開し、補正・澄清・理由シグナルを集計する |
-| P1 | エクスポートを選択式にする | 固定 CSV GET API のみ | `POST /api/export/jobs` とエクスポート設定 modal を追加する |
+| P1 | エクスポートを選択式にする | jobs API と簡素化 modal を追加済み | 固定列、message 原文確認、audit log、旧 CSV `410 Gone` を維持する |
 | P1 | データ健全性を監視する | schema mismatch / join health は未実装 | raw event schema validation と join health 集計を追加する |
 | P2 | BigQuery view を投影層として整備する | request/query-suggest/sync の view のみ | ask/followup/coverage/user/message projection view を追加する |
 
@@ -111,7 +111,7 @@
 | `GET /api/metrics/users/{user_id}` | 単一ユーザー詳細 | 未実装 | user summary、trend、mode、quality、follow-up、conversation list を返す |
 | `GET /api/trace/messages` | チャット記録確認 | 未実装 | 横断検索と payload chain を返す |
 | `GET /api/metrics/schema-health` | データ健全性 | 未実装 | schema / required field / join health を返す |
-| `POST /api/export/jobs` | 選択式エクスポート | 未実装 | request body で期間・出力対象・字段・個人情報处理を受ける |
+| `POST /api/export/jobs` | 固定列エクスポート | 実装済み | scope、期間、出力データ、filters を受け、CSV job を作成する |
 
 ### 6.2 既存 API の扱い
 
@@ -121,7 +121,7 @@
 | `/api/history/users` | `ユーザー監視` 用の土台として再利用可能。ただし表示列が不足。 |
 | `/api/history/users/{user_id}/conversations` | 単一ユーザー詳細の会話一覧に再利用可能。 |
 | `/api/history/users/{user_id}/conversations/{conversation_id}` | 会話詳細の message 取得に再利用可能。横断検索 API とは別扱い。 |
-| 既存 CSV GET API | 旧互換として維持。新 UI は `POST /api/export/jobs` を優先使用。 |
+| 既存ユーザー・メッセージ CSV GET API | 原文やユーザー一覧を audit log なしで出せるため `410 Gone`。新 UI は `POST /api/export/jobs` のみ使用する。 |
 
 ## 7. ユーザー監視ギャップ
 
@@ -211,9 +211,9 @@ Firestore だけで trace / turn を完全検索できない場合は、初期�
 `エクスポート` ボタンから modal を開き、管理者が以下を選べる。
 
 - 期間: 今日、直近6時間、直近12時間、過去3日、過去7日、過去14日、過去30日、任意期間
-- 出力対象: ユーザー監視一覧、メッセージ明細、単一ユーザー詳細
-- 字段: 基本字段、品質字段、追問字段、本文、raw payload
-- 個人情報处理: ハッシュのみ、メール含む、本文含む
+- 出力対象: dashboard は `ユーザー監視一覧` / `メッセージ明細`、user detail は `ユーザーサマリー` / `メッセージ明細`
+- 出力列: `出力データ` ごとの固定列
+- message 原文: `メッセージ明細` に固定で含め、実行前に確認 dialog を出す
 - 形式: CSV 初期、将来 XLSX
 
 ### 9.2 現在
@@ -316,7 +316,7 @@ Firestore だけで trace / turn を完全検索できない場合は、初期�
 | P0 | 指標 formula unit test | `回答成功率`、`低カバレッジ率`、`活性度区分` の誤差を防ぐ |
 | P0 | API payload shape test | `MONITOR_API_CONTRACT.md` と response key を一致させる |
 | P0 | trace search test | `conversation_id`、`trace_id`、`turn_id`、`user_id` 検索が期待通り返ること |
-| P1 | export option test | 期間、字段選択、本文 OFF、個人情報处理が反映されること |
+| P1 | export option test | 期間、scope、出力データ、message 原文確認、旧 CSV `410 Gone` が反映されること |
 | P1 | frontend guardrail test | 日本語表示名、不要 KPI 非表示、raw payload 非表示を確認 |
 
 既存の `tests/test_security_and_ui_guardrails.py` に UI ガードを追加し、指標計算は新規 `tests/test_metric_contracts.py` を追加する。
@@ -367,9 +367,9 @@ Firestore だけで trace / turn を完全検索できない場合は、初期�
 | UI | 主要表示名が日本語で固定され、非技術者向けの `?` 定義が表示される |
 | ユーザー監視 | 活性度円グラフとユーザー一覧の活性度区分が同一ロジックで算出される |
 | チャット記録確認 | `conversation_id` / `trace_id` / `turn_id` / `user_id` / `user_email` の検索導線がある |
-| エクスポート | 期間、出力対象、字段、個人情報、本文有無を選択できる |
+| エクスポート | 期間と出力データのみを選択し、列は出力データごとに固定される |
 | 安全性 | raw payload と本文は初期表示・初期 export で出さない |
-| 互換性 | 既存 `/api/metrics/dashboard` と既存 CSV GET API を初期段階では壊さない |
+| 互換性 | 既存 `/api/metrics/dashboard` は初期段階では壊さない。ユーザー・メッセージ系の既存 CSV GET API は安全上 `410 Gone` にする |
 
 ## 15. 開発タスク一覧
 
@@ -405,4 +405,3 @@ Firestore だけで trace / turn を完全検索できない場合は、初期�
 | 回答成功率の「再生成」「回答強化」「修正要求」判定が payload に分散する | message feedback、enhancement、follow-up correction が別 event | 初期は取得可能字段で proxy 指標を作り、字段欠損を schema health に出す |
 | raw payload が大きい | UI 表示・CSV 出力で重くなり、個人情報リスクもある | 初期非表示、export も opt-in にする |
 | 旧 UI と新 UI の API が混在する | 移行中に表示ずれが起きる | 新 UI は新 endpoint のみ使用し、旧 endpoint は互換維持に限定する |
-

@@ -43,6 +43,15 @@ _EXCLUDED_USER_EMAILS = {
     "2401145@tc.terumo.co.jp",
     "lcs-agent@lcs-developer-483404.iam.gserviceaccount.com",
 }
+_EXPORT_JOB_CHUNK_SIZE = 500_000
+_QUESTION_CATEGORY_LABELS = {
+    "product_explanation": "製品説明",
+    "sales_approach": "営業手法",
+    "troubleshooting": "トラブル対応",
+    "product_price": "製品価格関連",
+    "hospital_gpo": "病院・GPO関連",
+    "topic_ideation": "ネタ探し",
+}
 
 
 def _is_excluded_identity(*, user_id: Any = "", user_email: Any = "", user_id_hash: Any = "") -> bool:
@@ -222,6 +231,10 @@ def _business_question_category(*values: Any, content: Any = "") -> str:
     )):
         return "product_explanation"
     return "topic_ideation"
+
+
+def _label_question_category(value: Any) -> str:
+    return _QUESTION_CATEGORY_LABELS.get(_as_text(value).lower(), "ネタ探し")
 
 
 def _question_kind_from_message(payload: Dict[str, Any], *, user_turn_index: int | None = None) -> str:
@@ -1700,6 +1713,195 @@ class FirestoreHistoryService:
                 }
             )
         return rows
+
+    def export_message_detail_rows(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        user_id: str = "",
+        user_email: str = "",
+        include_hidden: bool = True,
+        include_user_columns: bool = False,
+        limit_users: int | None = None,
+    ) -> List[Dict[str, Any]]:
+        raw_user_id = _as_text(user_id)
+        raw_user_email = _as_text(user_email).lower()
+        if raw_user_id or raw_user_email:
+            profile = self.resolve_user_profile(user_id=raw_user_id, user_email=raw_user_email)
+            if profile is None:
+                return []
+            return self._export_user_message_detail_rows(
+                window=window,
+                user_id=_as_text(profile.get("userId")),
+                user_email=_as_text(profile.get("userEmail")).lower(),
+                include_hidden=include_hidden,
+                include_user_columns=include_user_columns,
+            )
+
+        rows: List[Dict[str, Any]] = []
+        size = max(1, min(int(limit_users or self._settings.monitor_max_users_scan), 1000))
+        for user in self.list_users(limit=size):
+            uid = _as_text(user.get("userId"))
+            email = _as_text(user.get("userEmail")).lower()
+            if not uid or _is_excluded_identity(user_id=uid, user_email=email):
+                continue
+            rows.extend(
+                self._export_user_message_detail_rows(
+                    window=window,
+                    user_id=uid,
+                    user_email=email,
+                    include_hidden=include_hidden,
+                    include_user_columns=include_user_columns,
+                )
+            )
+        return rows
+
+    def _export_user_message_detail_rows(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        user_id: str,
+        user_email: str,
+        include_hidden: bool,
+        include_user_columns: bool,
+    ) -> List[Dict[str, Any]]:
+        user = _as_text(user_id)
+        if not user:
+            return []
+        email = _as_text(user_email).lower()
+        if not email:
+            user_doc = self._root().document(user).get()
+            user_payload = user_doc.to_dict() or {}
+            email = _as_text(user_payload.get("userEmail") or user_payload.get("email")).lower()
+        if _is_excluded_identity(user_id=user, user_email=email):
+            return []
+
+        rows: List[Dict[str, Any]] = []
+        conv_query = self._root().document(user).collection("conversations").order_by(
+            "updatedAt", direction=firestore.Query.DESCENDING
+        )
+        for conv_doc in conv_query.stream():
+            conv_payload = conv_doc.to_dict() or {}
+            visibility = _as_text(conv_payload.get("visibility") or "active").lower()
+            if visibility == "hidden" and not include_hidden:
+                continue
+            conv_title = _as_text(conv_payload.get("title"))
+            conv_mode = _as_text(conv_payload.get("mode"))
+            msg_query = conv_doc.reference.collection("messages").order_by(
+                "timestamp", direction=firestore.Query.ASCENDING
+            )
+            for msg_doc in msg_query.stream():
+                msg = msg_doc.to_dict() or {}
+                timestamp_value = msg.get("timestamp") or msg.get("createdAt") or msg.get("created_at")
+                timestamp_dt = _parse_iso(timestamp_value)
+                if timestamp_dt is None or not (window.start_utc <= timestamp_dt < window.end_utc):
+                    continue
+                role_raw = _as_text(msg.get("role")).lower()
+                content = _as_text(msg.get("content"))
+                question_category = ""
+                if role_raw == "user":
+                    question_category = _label_question_category(
+                        _business_question_category(
+                            msg.get("questionCategory"),
+                            msg.get("question_category"),
+                            msg.get("queryIntent"),
+                            msg.get("query_intent"),
+                            msg.get("intentFamily"),
+                            msg.get("intent_family"),
+                            msg.get("domainPack"),
+                            msg.get("domain_pack"),
+                            msg.get("primaryTaskIntent"),
+                            msg.get("primary_task_intent"),
+                            content=content,
+                        )
+                    )
+                row: Dict[str, Any] = {
+                    "conversation_id": conv_doc.id,
+                    "title": conv_title,
+                    "created_at": self._to_local_text(timestamp_value),
+                    "役割": _label_role(role_raw),
+                    "message原文": content,
+                    "質問カテゴリ": question_category,
+                    "モード": _label_mode(msg.get("modeAtSend") or msg.get("mode_at_send") or conv_mode),
+                    "デバイス": _label_device(_message_device_class(msg)),
+                    "フィードバック": _as_text(msg.get("feedback") or "none"),
+                }
+                if include_user_columns:
+                    row = {
+                        "user_id": user,
+                        "user_email": email,
+                        **row,
+                    }
+                rows.append(row)
+        return rows
+
+    def save_export_job(
+        self,
+        *,
+        job_id: str,
+        admin_email: str,
+        request_payload: Dict[str, Any],
+        filename: str,
+        content: str,
+        row_count: int,
+        expires_at: datetime,
+    ) -> Dict[str, Any]:
+        job = _as_text(job_id)
+        if not job:
+            raise ValueError("job_id is required")
+        chunks = [
+            content[index : index + _EXPORT_JOB_CHUNK_SIZE]
+            for index in range(0, len(content), _EXPORT_JOB_CHUNK_SIZE)
+        ] or [""]
+        now = datetime.now(timezone.utc)
+        job_ref = self._client.collection("monitor_export_jobs").document(job)
+        job_ref.set(
+            {
+                "jobId": job,
+                "status": "ready",
+                "adminEmail": _as_text(admin_email).lower(),
+                "request": request_payload,
+                "filename": filename,
+                "contentType": "text/csv; charset=utf-8",
+                "rowCount": int(row_count),
+                "chunkCount": len(chunks),
+                "createdAt": now,
+                "expiresAt": expires_at,
+            }
+        )
+        batch = self._client.batch()
+        for index, chunk in enumerate(chunks):
+            batch.set(
+                job_ref.collection("chunks").document(f"{index:05d}"),
+                {
+                    "index": index,
+                    "content": chunk,
+                },
+            )
+        batch.commit()
+        return {
+            "jobId": job,
+            "status": "ready",
+            "filename": filename,
+            "rowCount": int(row_count),
+            "expiresAt": expires_at,
+        }
+
+    def get_export_job(self, *, job_id: str) -> Dict[str, Any] | None:
+        job = _as_text(job_id)
+        if not job:
+            return None
+        job_ref = self._client.collection("monitor_export_jobs").document(job)
+        doc = job_ref.get()
+        if not doc.exists:
+            return None
+        payload = doc.to_dict() or {}
+        chunks = [
+            _as_text(chunk.to_dict().get("content") if chunk.to_dict() else "")
+            for chunk in job_ref.collection("chunks").order_by("index").stream()
+        ]
+        payload["content"] = "".join(chunks)
+        return payload
 
     def aggregate_monitor_metrics(self, *, window: MetricsTimeWindow) -> Dict[str, Any]:
         window_start = window.start_utc

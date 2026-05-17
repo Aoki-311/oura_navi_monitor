@@ -386,24 +386,36 @@
 
 ## 10. `POST /api/export/jobs`
 
-エクスポート設定モーダルから呼び出す API です。
+エクスポート設定モーダルから呼び出す API です。新フロントエンドは legacy CSV endpoint を直接呼び出しません。`出力データ` ごとに固定列を出力し、画面上の選択肢と実際の出力列がずれないようにします。
 
 ### 10.1 Request
 
 ```json
 {
+  "scope": "global",
   "preset": "last_7d",
   "start": "",
   "end": "",
-  "outputData": ["ユーザー監視一覧"],
-  "includedFields": ["基本情報", "利用状況", "回答品質", "追問状況"],
-  "personalInfoMode": "匿名化して出力",
+  "outputData": "ユーザー監視一覧",
   "filters": {
-    "activity": "高アクティブ",
-    "q": ""
+    "activity": "high",
+    "q": "",
+    "userId": "",
+    "userEmail": ""
   }
 }
 ```
+
+`scope` は `global` または `user` です。`scope=user` の場合は `filters.userId` または `filters.userEmail` が必須です。
+
+`outputData` は以下のみを受け付けます。
+
+| scope | outputData |
+| --- | --- |
+| `global` | `ユーザー監視一覧`, `メッセージ明細` |
+| `user` | `ユーザーサマリー`, `メッセージ明細` |
+
+`preset=custom` の場合は `start` と `end` を指定します。custom range は message export にも必ず適用されます。フロントエンドでは終了日を含めるため、`end` は終了日の翌日 00:00 JST を排他的境界として送信します。
 
 ### 10.2 Response
 
@@ -416,4 +428,64 @@
 }
 ```
 
-`メッセージ本文` は初期選択に含めません。本文を含める場合は、管理者が明示的に選択する必要があります。
+第一版では同期生成して `status=ready` を返します。API 形状は job として固定し、将来 GCS 一時ファイルや非同期化へ移行できるようにします。
+
+### 10.3 Fixed CSV Columns
+
+`ユーザー監視一覧`:
+
+```text
+ユーザーID
+メールアドレス
+最終利用日時
+直近7日利用日数
+直近7日メッセージ数
+根拠カバレッジ率
+低評価率
+活性度区分
+```
+
+`ユーザーサマリー`:
+
+```text
+ユーザーID
+メールアドレス
+最終利用日時
+活性度区分
+メッセージ数
+回答成功率
+低カバレッジ率
+低評価率
+追問数
+```
+
+`メッセージ明細`:
+
+```text
+conversation_id
+title
+created_at
+役割
+message原文
+質問カテゴリ
+モード
+デバイス
+フィードバック
+```
+
+`scope=global` の `メッセージ明細` では `user_id` と `user_email` も先頭に追加します。
+
+### 10.4 Message Content Safety
+
+`メッセージ明細` は message 原文を含むため、フロントエンドで二次確認を出し、バックエンドでは export audit log を必ず出力します。audit log には admin email、scope、outputData、期間、filters、row count、job id を含めます。
+
+### 10.5 Legacy Export Endpoint Policy
+
+新フロントエンドのエクスポートは必ず `POST /api/export/jobs` を使用します。以下の旧 CSV endpoint は、メッセージ原文やユーザー一覧を audit log なしで直接出力できるため、`410 Gone` を返します。
+
+```text
+GET /api/export/user-monitoring.csv
+GET /api/export/users.csv
+GET /api/export/conversations.csv
+GET /api/export/messages.csv
+```

@@ -28,6 +28,33 @@ export async function getJson(path, params = {}, options = {}) {
   }
 }
 
+export async function postJson(path, body = {}, options = {}) {
+  const url = new URL(path, window.location.origin);
+  const controller = new AbortController();
+  const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS);
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url.toString(), {
+      method: "POST",
+      credentials: "same-origin",
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body || {}),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`HTTP ${response.status}${text ? `: ${text.slice(0, 180)}` : ""}`);
+    }
+    return await response.json();
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 export function timeRangeQuery(preset) {
   return { preset: preset || "today" };
 }
@@ -46,4 +73,8 @@ export function getUserDetail(userId, params = {}, options = {}) {
 
 export function getTraceMessages(params = {}, options = {}) {
   return getJson("/api/trace/messages", params, options);
+}
+
+export function createExportJob(body = {}, options = {}) {
+  return postJson("/api/export/jobs", body, options);
 }

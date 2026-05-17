@@ -692,6 +692,20 @@ tbody tr:hover {
   gap: 15px;
 }
 
+.customRange {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.exportNotice {
+  margin: 4px 0 0;
+  color: #f4c978;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
 fieldset {
   display: grid;
   gap: 9px;
