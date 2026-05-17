@@ -83,6 +83,18 @@ function currentUserDetailContext() {
   };
 }
 
+function userExportIdentity() {
+  const detail = currentUserDetailContext();
+  return {
+    userId: state.selectedUserId || detail.userId,
+    userEmail: state.selectedUserEmail || detail.userEmail,
+  };
+}
+
+function defaultExportScope() {
+  return currentUserDetailContext().userId ? "user" : "all";
+}
+
 function isExcludedUser(row) {
   const id = String(row?.userId || row?.user_id || "").toLowerCase();
   const email = String(row?.userEmail || row?.user_email || "").toLowerCase();
@@ -513,6 +525,11 @@ function renderFollowup(viewModel) {
 function openExportDialog(scope = "all") {
   const isUser = scope === "user";
   state.exportScope = scope;
+  if (isUser) {
+    const identity = userExportIdentity();
+    state.selectedUserId = identity.userId;
+    state.selectedUserEmail = identity.userEmail;
+  }
   $("allExportData")?.classList.toggle("hidden", isUser);
   $("userExportData")?.classList.toggle("hidden", !isUser);
   const preset = $("exportPreset");
@@ -587,8 +604,9 @@ async function confirmExport() {
   }
   const windowPayload = exportWindowPayload();
   if (!windowPayload) return;
+  const exportUser = userExportIdentity();
   if (state.exportScope === "user") {
-    if (!state.selectedUserId) {
+    if (!exportUser.userId && !exportUser.userEmail) {
       toast("ユーザーを選択してください。");
       return;
     }
@@ -608,8 +626,8 @@ async function confirmExport() {
         filters: {
           activity: state.exportScope === "all" ? state.userFilter : "",
           q: state.exportScope === "all" ? state.userQuery : "",
-          userId: state.exportScope === "user" ? state.selectedUserId : "",
-          userEmail: state.exportScope === "user" ? state.selectedUserEmail : "",
+          userId: state.exportScope === "user" ? exportUser.userId : "",
+          userEmail: state.exportScope === "user" ? exportUser.userEmail : "",
         },
       },
       { timeoutMs: 300000 },
@@ -904,7 +922,7 @@ function bindEvents() {
   $("backToDashboard")?.addEventListener("click", () => {
     window.location.href = "/dashboard";
   });
-  $("openExportDialog")?.addEventListener("click", () => openExportDialog("all"));
+  $("openExportDialog")?.addEventListener("click", () => openExportDialog(defaultExportScope()));
   $("exportUserDetail")?.addEventListener("click", () => openExportDialog("user"));
   $("confirmExport")?.addEventListener("click", confirmExport);
   $("exportPreset")?.addEventListener("change", updateExportDialogState);
