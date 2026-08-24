@@ -5,18 +5,17 @@ import pytest
 from scripts.render_runtime_env import render_refresh_env
 
 
-def test_release_configuration_has_no_identity_secret_dependency() -> None:
+def test_release_configuration_removes_the_legacy_identity_secret_binding() -> None:
     root = Path(__file__).resolve().parents[1]
-    combined = "\n".join(
+    cloudbuild = (root / "cloudbuild.yaml").read_text(encoding="utf-8")
+    runtime_files = "\n".join(
         (root / relative).read_text(encoding="utf-8")
-        for relative in (
-            "cloudbuild.yaml",
-            "deploy/cloudrun.env.yaml",
-            "scripts/bootstrap_gcp.sh",
-        )
+        for relative in ("deploy/cloudrun.env.yaml", "scripts/bootstrap_gcp.sh")
     )
-    assert "MONITOR_IDENTITY_HMAC_KEY" not in combined
-    assert "oura-navi-monitor-identity-hmac" not in combined
+    assert "MONITOR_IDENTITY_HMAC_KEY" not in runtime_files
+    assert "oura-navi-monitor-identity-hmac" not in cloudbuild
+    assert "--set-secrets" not in cloudbuild
+    assert "--remove-secrets=MONITOR_IDENTITY_HMAC_KEY" in cloudbuild
 
 
 def test_refresh_env_replaces_the_single_analytics_start_owner(tmp_path: Path) -> None:
