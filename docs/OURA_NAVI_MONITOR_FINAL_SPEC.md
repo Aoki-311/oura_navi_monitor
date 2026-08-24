@@ -53,7 +53,7 @@ OurA Navi Monitor 是 LCS RAG APP 的用户数据分析平台，不是以工程�
 | 回答成功率把拒答、部分回答、写回失败混为成功 | 统一完整交付公式和单一失败优先级 |
 | 部分测量样本被静默缩小分母 | 只要范围中存在未测量回答，完整交付率显示 `-` |
 | 69/80/管理员排除逻辑散落 | `analysis_scopes.py` 只根据部门和有效状态计算 69/80；IAP 独立 |
-| 名单邮箱与日志身份不稳定且 BigQuery 含 PII 风险 | 同一 HMAC secret 生成 `user_key`；姓名邮箱只在 Monitor 名单层补齐 |
+| 名单邮箱与日志身份不稳定且 BigQuery 含 PII 风险 | 使用 LCS 已验证登录 subject 作为唯一 `user_id`；姓名邮箱只在 Monitor 私有名单层补齐 |
 | 15 分钟全量重建、视图无边界 | 2 小时重叠窗口、5 分钟终态等待、分区 MERGE、质量门和水位在同一事务发布 |
 | 旧 snapshot、旧 API、宽容 adapter 长期并存 | 新 owner 接管后旧文件、路由、SQL 和 fallback 已从本地工作树删除 |
 | 候选/生产静态标签长期错误 | 分析事件不再保存静态 candidate 标签；使用 revision、Git SHA、build ID |
@@ -163,8 +163,8 @@ Excel `備考` 只在初次导入时拆成部门：
 用户可新增和修改：姓名、邮箱、エリア、勤務地、角色、部门、MR 资历、标签、
 有效/停用。停用只把用户移出当前名单分母和页面，不删除已经形成的事实；
 `user_scope` 把结构性 69/80 资格与当前 `is_active` 分开保存，因此重建也不会
-丢失停用前历史。邮箱标准化后唯一；改变邮箱时关闭旧 `user_key` 有效期并建立
-新映射，历史仍属于同一 `roster_id`。
+丢失停用前历史。邮箱标准化后唯一；改变邮箱不会改变已绑定的登录 `user_id`，
+历史仍属于同一 `roster_id`。
 
 标签可新增、改名、改固定色、停用、删除。正在使用的标签不可删除。名单/标签、
 内部唯一性 claim 与审计记录使用同一个 Firestore transaction，避免并发重名、
@@ -308,9 +308,9 @@ Firestore 继续作为会话消息和 Monitor 名单/标签权威。BigQuery 不
 - `message_persisted`
 - `answer_action`
 
-共同 envelope：事件/请求/会话/轮次/消息 ID、HMAC `user_key`、模式、设备、
+共同 envelope：事件/请求/会话/轮次/消息 ID、已验证登录 `user_id`、模式、设备、
 endpoint、revision、Git SHA、build ID、固定 `payload_json`。唯一 serializer 对字段、
-长度、邮箱样式内容、HMAC 用户键和 ID 字符集统一 fail closed；事件异常不得影响答案，
+长度、邮箱样式内容、用户 ID 和 ID 字符集统一 fail closed；事件异常不得影响答案，
 但会产生专用失败日志，且成功 ask 请求与事件对账会阻止残缺批次发布。
 
 ### 8.2 BigQuery 正式对象
@@ -396,9 +396,9 @@ GET  /api/export/jobs/{job_id}/download
 第二套写入。URL 只使用 `roster_id`，不使用邮箱。CSV 是 1 小时有效、创建者专属的
 job，不提供旧 GET CSV alias。
 
-所有页面和 API 必须通过 IAP 签名 JWT（精确 audience、issuer、email、subject）
-和三名 allowlist 双重检查。未签名 email header 不构成身份，生产环境拒绝本地
-header。
+所有页面和 API 使用 IAP 注入的 `x-goog-authenticated-user-email`，规范化后必须
+命中三名管理员 allowlist。生产环境拒绝本地 header，Cloud Run 继续禁止未认证
+访问。
 
 ---
 

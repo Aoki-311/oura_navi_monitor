@@ -30,7 +30,7 @@ def roster_workbook(tmp_path: Path) -> Path:
 
 
 def test_roster_import_plan_derives_scope_counts_from_departments(roster_workbook: Path) -> None:
-    plan = load_roster_plan(roster_workbook, identity_secret="test-secret")
+    plan = load_roster_plan(roster_workbook)
     assert len(plan.users) == 4
     assert plan.scope_counts == {"global": 2, "user_map": 3, "management": 4}
     assert plan.department_counts == {
@@ -39,10 +39,12 @@ def test_roster_import_plan_derives_scope_counts_from_departments(roster_workboo
         "DM本社": 1,
         "管理者": 1,
     }
+    assert all(item["user_id"] == "" for item in plan.users)
+    assert all("user_key" not in item for item in plan.users)
 
 
 def test_toranomon_and_tokyo_business_area_remain_distinct(roster_workbook: Path) -> None:
-    plan = load_roster_plan(roster_workbook, identity_secret="test-secret")
+    plan = load_roster_plan(roster_workbook)
     headquarters = [item for item in plan.users if item["area_key"] == "本社・虎ノ門"]
     tokyo_business = [item for item in plan.users if item["area_key"] == "首都圏A"]
     assert len(headquarters) == 2

@@ -2,7 +2,7 @@
 WITH source_questions AS (
   SELECT
     event_id,
-    user_key,
+    user_id,
     COALESCE(event_ts, source_ts) AS event_ts
   FROM `${PROJECT_ID}.${DATASET_ID}.monitor_event_source`
   WHERE source_ts >= @window_start AND source_ts < @window_end
@@ -89,12 +89,10 @@ WITH source_questions AS (
     'classified','unclassified','producer_invalid'
   )) FROM answers
   UNION ALL
-  SELECT 'source_question_without_roster', COUNTIF(scope.user_key IS NULL)
+  SELECT 'source_question_without_roster', COUNTIF(scope.user_id IS NULL)
   FROM source_questions source
   LEFT JOIN `${PROJECT_ID}.${DATASET_ID}.user_scope` scope
-    ON source.user_key = scope.user_key
-   AND source.event_ts >= scope.valid_from
-   AND (scope.valid_to IS NULL OR source.event_ts < scope.valid_to)
+    ON source.user_id = scope.user_id
   UNION ALL
   SELECT 'question_without_terminal', COUNTIF(a.event_id IS NULL)
   FROM questions q LEFT JOIN answers a USING (request_id)

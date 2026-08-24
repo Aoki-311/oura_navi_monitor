@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.question_events` (
   event_id STRING NOT NULL,
   question_ts TIMESTAMP NOT NULL,
   question_date DATE NOT NULL,
-  user_key STRING NOT NULL,
+  user_id STRING NOT NULL,
   roster_id STRING,
   request_id STRING,
   trace_id STRING,
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.answer_events` (
   event_id STRING NOT NULL,
   answer_ts TIMESTAMP NOT NULL,
   answer_date DATE NOT NULL,
-  user_key STRING NOT NULL,
+  user_id STRING NOT NULL,
   roster_id STRING,
   request_id STRING,
   trace_id STRING,
@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.answer_action_events` (
   event_id STRING NOT NULL,
   action_ts TIMESTAMP NOT NULL,
   action_date DATE NOT NULL,
-  user_key STRING NOT NULL,
+  user_id STRING NOT NULL,
   roster_id STRING,
   request_id STRING,
   conversation_id STRING,
@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.demand_events` (
   question_event_id STRING NOT NULL,
   question_ts TIMESTAMP NOT NULL,
   question_date DATE NOT NULL,
-  user_key STRING NOT NULL,
+  user_id STRING NOT NULL,
   roster_id STRING,
   demand_id STRING,
   demand_order INT64,
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.citation_events` (
   answer_event_id STRING NOT NULL,
   answer_ts TIMESTAMP NOT NULL,
   answer_date DATE NOT NULL,
-  user_key STRING NOT NULL,
+  user_id STRING NOT NULL,
   roster_id STRING,
   message_id STRING,
   citation_order INT64,
@@ -181,7 +181,7 @@ OPTIONS (require_partition_filter = TRUE, partition_expiration_days = ${FACT_RET
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.conversation_events` (
   event_id STRING NOT NULL,
   conversation_id STRING NOT NULL,
-  user_key STRING NOT NULL,
+  user_id STRING NOT NULL,
   roster_id STRING,
   first_active_at TIMESTAMP,
   last_active_at TIMESTAMP,
@@ -201,7 +201,7 @@ OPTIONS (require_partition_filter = TRUE, partition_expiration_days = ${FACT_RET
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.user_scope` (
   roster_id STRING NOT NULL,
-  user_key STRING NOT NULL,
+  user_id STRING,
   area STRING,
   area_key STRING,
   workplace STRING,
@@ -212,8 +212,6 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.user_scope` (
   global_scope_enabled BOOL,
   user_map_scope_enabled BOOL,
   is_admin BOOL,
-  valid_from TIMESTAMP NOT NULL,
-  valid_to TIMESTAMP,
   updated_at TIMESTAMP NOT NULL
 )
-CLUSTER BY roster_id, user_key, area_key, department;
+CLUSTER BY roster_id, user_id, area_key, department;

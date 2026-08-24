@@ -55,7 +55,7 @@ USING (
       event_id,
       COALESCE(event_ts, source_ts) AS question_ts,
       DATE(COALESCE(event_ts, source_ts), '${MONITOR_TIMEZONE}') AS question_date,
-      user_key,
+      user_id,
       scope.roster_id,
       request_id,
       trace_id,
@@ -85,9 +85,7 @@ USING (
       ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY source_ts DESC, insert_id DESC) AS row_number
     FROM `${PROJECT_ID}.${DATASET_ID}.monitor_event_source` event
     JOIN `${PROJECT_ID}.${DATASET_ID}.user_scope` scope
-     ON event.user_key = scope.user_key
-     AND COALESCE(event.event_ts, event.source_ts) >= scope.valid_from
-     AND (scope.valid_to IS NULL OR COALESCE(event.event_ts, event.source_ts) < scope.valid_to)
+     ON event.user_id = scope.user_id
      AND scope.user_map_scope_enabled = TRUE
     WHERE source_ts >= @window_start
       AND source_ts < @window_end
@@ -100,7 +98,7 @@ AND target.question_date BETWEEN DATE(@window_start, '${MONITOR_TIMEZONE}') AND 
 WHEN MATCHED THEN UPDATE SET
   question_ts = source.question_ts,
   question_date = source.question_date,
-  user_key = source.user_key,
+  user_id = source.user_id,
   roster_id = source.roster_id,
   request_id = source.request_id,
   trace_id = source.trace_id,
@@ -126,7 +124,7 @@ USING (
       event_id,
       COALESCE(event_ts, source_ts) AS answer_ts,
       DATE(COALESCE(event_ts, source_ts), '${MONITOR_TIMEZONE}') AS answer_date,
-      user_key,
+      user_id,
       scope.roster_id,
       request_id,
       trace_id,
@@ -177,9 +175,7 @@ USING (
       ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY source_ts DESC, insert_id DESC) AS row_number
     FROM `${PROJECT_ID}.${DATASET_ID}.monitor_event_source` event
     JOIN `${PROJECT_ID}.${DATASET_ID}.user_scope` scope
-     ON event.user_key = scope.user_key
-     AND COALESCE(event.event_ts, event.source_ts) >= scope.valid_from
-     AND (scope.valid_to IS NULL OR COALESCE(event.event_ts, event.source_ts) < scope.valid_to)
+     ON event.user_id = scope.user_id
      AND scope.user_map_scope_enabled = TRUE
     WHERE source_ts >= @window_start
       AND source_ts < @window_end
@@ -190,7 +186,7 @@ USING (
 ON target.event_id = source.event_id
 AND target.answer_date BETWEEN DATE(@window_start, '${MONITOR_TIMEZONE}') AND DATE(@window_end, '${MONITOR_TIMEZONE}')
 WHEN MATCHED THEN UPDATE SET
-  answer_ts = source.answer_ts, answer_date = source.answer_date, user_key = source.user_key,
+  answer_ts = source.answer_ts, answer_date = source.answer_date, user_id = source.user_id,
   roster_id = source.roster_id, request_id = source.request_id, trace_id = source.trace_id,
   conversation_id = source.conversation_id, turn_id = source.turn_id, message_id = source.message_id,
   mode = source.mode, device_class = source.device_class, terminal = source.terminal,
@@ -210,7 +206,7 @@ WHEN MATCHED THEN UPDATE SET
   build_id = source.build_id,
   source_event_ts = source.source_event_ts, materialized_at = source.materialized_at
 WHEN NOT MATCHED THEN INSERT (
-  event_id, answer_ts, answer_date, user_key, roster_id, request_id, trace_id, conversation_id, turn_id,
+  event_id, answer_ts, answer_date, user_id, roster_id, request_id, trace_id, conversation_id, turn_id,
   message_id, mode, device_class, terminal, runtime_status, failure_stage, failure_code,
   primary_question_category, question_categories, classification_status, is_multi_intent, analytics_tasks,
   primary_product_key, primary_product_name, product_keys, product_names, product_candidate_count,
@@ -221,7 +217,7 @@ WHEN NOT MATCHED THEN INSERT (
   complete_delivery, primary_failure_reason, revision_name, git_sha, build_id,
   source_event_ts, materialized_at
 ) VALUES (
-  source.event_id, source.answer_ts, source.answer_date, source.user_key, source.roster_id, source.request_id,
+  source.event_id, source.answer_ts, source.answer_date, source.user_id, source.roster_id, source.request_id,
   source.trace_id, source.conversation_id, source.turn_id, source.message_id, source.mode, source.device_class,
   source.terminal, source.runtime_status, source.failure_stage, source.failure_code,
   source.primary_question_category, source.question_categories, source.classification_status,
@@ -321,7 +317,7 @@ USING (
   FROM (
     SELECT event_id, COALESCE(event_ts, source_ts) AS action_ts,
       DATE(COALESCE(event_ts, source_ts), '${MONITOR_TIMEZONE}') AS action_date,
-      user_key, scope.roster_id, request_id, conversation_id, turn_id, message_id,
+      user_id, scope.roster_id, request_id, conversation_id, turn_id, message_id,
       JSON_VALUE(payload_json, '$.target_message_id') AS target_message_id,
       JSON_VALUE(payload_json, '$.action') AS action,
       JSON_VALUE(payload_json, '$.feedback') AS feedback,
@@ -331,9 +327,7 @@ USING (
       ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY source_ts DESC, insert_id DESC) AS row_number
     FROM `${PROJECT_ID}.${DATASET_ID}.monitor_event_source` event
     JOIN `${PROJECT_ID}.${DATASET_ID}.user_scope` scope
-     ON event.user_key = scope.user_key
-     AND COALESCE(event.event_ts, event.source_ts) >= scope.valid_from
-     AND (scope.valid_to IS NULL OR COALESCE(event.event_ts, event.source_ts) < scope.valid_to)
+     ON event.user_id = scope.user_id
      AND scope.user_map_scope_enabled = TRUE
     WHERE source_ts >= @window_start AND source_ts < @window_end
       AND event_family = 'answer_action'
@@ -342,7 +336,7 @@ USING (
 ON target.event_id = source.event_id
 AND target.action_date BETWEEN DATE(@window_start, '${MONITOR_TIMEZONE}') AND DATE(@window_end, '${MONITOR_TIMEZONE}')
 WHEN MATCHED THEN UPDATE SET action_ts = source.action_ts, action_date = source.action_date,
-  user_key = source.user_key, roster_id = source.roster_id, request_id = source.request_id,
+  user_id = source.user_id, roster_id = source.roster_id, request_id = source.request_id,
   conversation_id = source.conversation_id, turn_id = source.turn_id, message_id = source.message_id,
   target_message_id = source.target_message_id, action = source.action, feedback = source.feedback,
   mode = source.mode, request_mode = source.request_mode, client_origin = source.client_origin,
@@ -356,7 +350,7 @@ USING (
     CONCAT('question:', event.request_id) AS question_event_id,
     COALESCE(event.event_ts, event.source_ts) AS question_ts,
     DATE(COALESCE(event.event_ts, event.source_ts), '${MONITOR_TIMEZONE}') AS question_date,
-    event.user_key, scope.roster_id,
+    event.user_id, scope.roster_id,
     JSON_VALUE(demand, '$.demand_id') AS demand_id,
     demand_order,
     JSON_VALUE(demand, '$.question_category') AS question_category,
@@ -371,9 +365,7 @@ USING (
     event.source_ts AS source_event_ts, CURRENT_TIMESTAMP() AS materialized_at
   FROM `${PROJECT_ID}.${DATASET_ID}.monitor_event_source` event
   JOIN `${PROJECT_ID}.${DATASET_ID}.user_scope` scope
-   ON event.user_key = scope.user_key
-   AND COALESCE(event.event_ts, event.source_ts) >= scope.valid_from
-   AND (scope.valid_to IS NULL OR COALESCE(event.event_ts, event.source_ts) < scope.valid_to)
+   ON event.user_id = scope.user_id
    AND scope.user_map_scope_enabled = TRUE
   CROSS JOIN UNNEST(IFNULL(JSON_QUERY_ARRAY(event.payload_json, '$.demands'), [])) demand WITH OFFSET demand_order
   WHERE event.source_ts >= @window_start AND event.source_ts < @window_end
@@ -383,7 +375,7 @@ USING (
 ON target.event_id = source.event_id
 AND target.question_date BETWEEN DATE(@window_start, '${MONITOR_TIMEZONE}') AND DATE(@window_end, '${MONITOR_TIMEZONE}')
 WHEN MATCHED THEN UPDATE SET question_event_id = source.question_event_id, question_ts = source.question_ts,
-  question_date = source.question_date, user_key = source.user_key, roster_id = source.roster_id,
+  question_date = source.question_date, user_id = source.user_id, roster_id = source.roster_id,
   demand_id = source.demand_id, demand_order = source.demand_order, question_category = source.question_category,
   analytics_task = source.analytics_task, product_keys = source.product_keys, product_names = source.product_names,
   requirement = source.requirement, delivery_state = source.delivery_state, evidence_state = source.evidence_state,

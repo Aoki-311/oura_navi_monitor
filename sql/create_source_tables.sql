@@ -13,7 +13,7 @@ SELECT
   CAST(jsonPayload.conversation_id AS STRING) AS conversation_id,
   CAST(jsonPayload.turn_id AS STRING) AS turn_id,
   CAST(jsonPayload.message_id AS STRING) AS message_id,
-  CAST(jsonPayload.user_key AS STRING) AS user_key,
+  CAST(jsonPayload.user_id AS STRING) AS user_id,
   CAST(jsonPayload.mode AS STRING) AS mode,
   CAST(jsonPayload.device_class AS STRING) AS device_class,
   CAST(jsonPayload.endpoint_class AS STRING) AS endpoint_class,

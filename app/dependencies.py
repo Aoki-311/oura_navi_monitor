@@ -42,7 +42,6 @@ def get_user_management_service() -> UserManagementService:
     settings = get_settings()
     return UserManagementService(
         directory=get_user_directory_repository(),
-        identity_secret=settings.monitor_identity_hmac_key,
         audit_retention_days=settings.monitor_admin_change_retention_days,
     )
 

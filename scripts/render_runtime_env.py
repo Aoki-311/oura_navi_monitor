@@ -7,32 +7,6 @@ import re
 from pathlib import Path
 
 
-_IAP_AUDIENCE_RE = re.compile(
-    r"^/projects/[1-9][0-9]*/global/backendServices/[1-9][0-9]*$"
-)
-
-
-def validate_iap_audience(value: str) -> str:
-    audience = str(value or "").strip()
-    if not _IAP_AUDIENCE_RE.fullmatch(audience):
-        raise ValueError(
-            "exact IAP signed-header audience must match "
-            "/projects/{PROJECT_NUMBER}/global/backendServices/{BACKEND_SERVICE_ID}"
-        )
-    return audience
-
-
-def render_runtime_env(*, source: Path, output: Path, iap_audience: str) -> None:
-    audience = validate_iap_audience(iap_audience)
-    text = source.read_text(encoding="utf-8").rstrip() + "\n"
-    if "MONITOR_IAP_AUDIENCE:" in text:
-        raise ValueError("MONITOR_IAP_AUDIENCE must have one build-time owner")
-    output.write_text(
-        text + f"MONITOR_IAP_AUDIENCE: {json.dumps(audience)}\n",
-        encoding="utf-8",
-    )
-
-
 _UTC_SECOND_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
@@ -60,25 +34,16 @@ def render_refresh_env(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Render one candidate runtime environment")
+    parser = argparse.ArgumentParser(description="Render the refresh job environment")
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    owner = parser.add_mutually_exclusive_group(required=True)
-    owner.add_argument("--iap-audience")
-    owner.add_argument("--analytics-start-at")
+    parser.add_argument("--analytics-start-at", required=True)
     args = parser.parse_args()
-    if args.iap_audience is not None:
-        render_runtime_env(
-            source=args.source,
-            output=args.output,
-            iap_audience=args.iap_audience,
-        )
-    else:
-        render_refresh_env(
-            source=args.source,
-            output=args.output,
-            analytics_start_at=args.analytics_start_at,
-        )
+    render_refresh_env(
+        source=args.source,
+        output=args.output,
+        analytics_start_at=args.analytics_start_at,
+    )
     return 0
 
 

@@ -136,7 +136,6 @@ def _repository() -> tuple[UserDirectoryRepository, _Client]:
     client = _Client()
     settings = Settings(
         monitor_project_id="test-project",
-        monitor_identity_hmac_key="test-secret",
     )
     return UserDirectoryRepository(settings, client=client), client
 
@@ -144,7 +143,7 @@ def _repository() -> tuple[UserDirectoryRepository, _Client]:
 def _user(
     roster_id: str,
     email: str,
-    user_keys: list[str],
+    user_id: str = "",
     *,
     label_ids: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -153,12 +152,8 @@ def _user(
         "roster_id": roster_id,
         "email": email,
         "name": roster_id,
-        "identity_keys": [
-            {"user_key": user_key, "valid_from": now, "valid_to": None}
-            for user_key in user_keys
-        ],
+        "user_id": user_id,
         "chat_user_id": "",
-        "login_subject": "",
         "label_ids": list(label_ids or []),
         "is_active": True,
         "updated_at": now,
@@ -177,7 +172,7 @@ def _change(change_id: str, action: str, target_id: str) -> dict[str, Any]:
 
 def test_user_claims_and_audit_are_written_in_the_same_transaction() -> None:
     repository, client = _repository()
-    payload = _user("roster_a", "a@example.com", ["user_a"])
+    payload = _user("roster_a", "a@example.com", "subject_a")
 
     repository.put_user_and_change(
         payload,
@@ -189,38 +184,60 @@ def test_user_claims_and_audit_are_written_in_the_same_transaction() -> None:
     claims = list(client.data["monitor_unique_claims"].values())
     assert {(item["claim_type"], item["target_id"]) for item in claims} == {
         ("email", "roster_a"),
-        ("user_key", "roster_a"),
+        ("user_id", "roster_a"),
     }
+
+
+def test_user_document_keeps_only_the_canonical_directory_contract() -> None:
+    repository, client = _repository()
+    payload = _user("roster_a", "a@example.com", "subject_a")
+    payload.update(
+        {
+            "user_key": "obsolete-key",
+            "identity_keys": [{"user_key": "obsolete-key"}],
+            "login_subject": "obsolete-subject",
+            "global_scope_enabled": True,
+        }
+    )
+
+    repository.put_user(payload)
+
+    stored = client.data["monitor_users"]["roster_a"]
+    assert stored["user_id"] == "subject_a"
+    assert "user_key" not in stored
+    assert "identity_keys" not in stored
+    assert "login_subject" not in stored
+    assert "global_scope_enabled" not in stored
 
 
 def test_user_claim_rejects_a_second_roster_even_if_service_precheck_races() -> None:
     repository, _client = _repository()
-    repository.put_user(_user("roster_a", "same@example.com", ["user_same"]))
+    repository.put_user(_user("roster_a", "same@example.com", "subject_same"))
 
     with pytest.raises(ValueError, match="already exists"):
         repository.put_user(
-            _user("roster_b", "same@example.com", ["user_same"])
+            _user("roster_b", "same@example.com", "subject_same")
         )
 
 
-def test_historical_identity_claim_stays_reserved_after_email_change() -> None:
+def test_verified_user_id_claim_stays_reserved_after_email_change() -> None:
     repository, client = _repository()
-    repository.put_user(_user("roster_a", "old@example.com", ["user_old"]))
+    repository.put_user(_user("roster_a", "old@example.com", "subject_a"))
     repository.put_user(
-        _user("roster_a", "new@example.com", ["user_old", "user_new"])
+        _user("roster_a", "new@example.com", "subject_a")
     )
 
     with pytest.raises(ValueError, match="already exists"):
         repository.put_user(
-            _user("roster_b", "old@example.com", ["user_old"])
+            _user("roster_b", "other@example.com", "subject_a")
         )
-    user_key_claims = [
+    user_id_claims = [
         value
         for value in client.data["monitor_unique_claims"].values()
-        if value["claim_type"] == "user_key"
+        if value["claim_type"] == "user_id"
     ]
-    assert len(user_key_claims) == 2
-    assert {value["target_id"] for value in user_key_claims} == {"roster_a"}
+    assert len(user_id_claims) == 1
+    assert {value["target_id"] for value in user_id_claims} == {"roster_a"}
 
 
 def test_label_name_claim_is_normalized_and_in_use_delete_is_atomic() -> None:
@@ -245,7 +262,7 @@ def test_label_name_claim_is_normalized_and_in_use_delete_is_atomic() -> None:
         )
 
     repository.put_user(
-        _user("roster_a", "a@example.com", ["user_a"], label_ids=["label_a"])
+        _user("roster_a", "a@example.com", "subject_a", label_ids=["label_a"])
     )
     with pytest.raises(ValueError, match="label is in use"):
         repository.delete_label_and_change(

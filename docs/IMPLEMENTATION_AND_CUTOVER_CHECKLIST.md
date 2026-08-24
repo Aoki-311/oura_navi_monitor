@@ -32,10 +32,8 @@
 - [x] PC/iPad/mobile 响应式合同加入 E2E。
 - [x] 旧代码、SQL、脚本、页面、adapter 和冲突文档从工作树删除。
 - [x] Monitor Cloud Build 只创建无流量候选；正式切流只有一个显式脚本。
-- [x] Monitor IAP audience 只由 Cloud Build Trigger 提供；构建配置没有假默认值，
-  Trigger plan/只读回读/写入三种状态不会互相冒充。
-- [x] 生产身份只接受精确 audience/issuer 校验的 IAP JWT；未签名 email header
-  只能在显式本机测试模式使用。
+- [x] 生产身份使用 IAP 注入的 `x-goog-authenticated-user-email` 并强制三名管理员
+  allowlist；本地 header 只能在显式本机测试模式使用。
 - [x] 后端正式响应的内层字段也是封闭 Pydantic 契约；前端缺字段直接显示
   模块错误，不再把缺失活性度、计数或比较对象悄悄补成 0/休眠/空对象。
 - [x] 最后一次相关修改后的全部 RED、回归、合同、编译、脚本、YAML、E2E 重跑。
@@ -188,16 +186,11 @@ HTTP 5xx、回答失败、事件发射失败、刷新失败和刷新过期告警
 - 未确认 Firestore 最早可读时间和必要索引；
 - 未冻结 `MONITOR_ANALYTICS_START_AT`；
 - 未验收 83/69/80 名单结果；
-- `MONITOR_IDENTITY_HMAC_KEY` secret 不存在，或 LCS、Monitor Web 与 Monitor
-  refresh job 未固定到同一已启用的数字版本；不得以 `latest` 代替版本一致性证明；
-- LCS runtime account、Monitor runtime/job account 缺少经过审批的该精确 secret
-  版本最小访问权限；
+- 未用真实登录样本证明 LCS 分析事件 `user_id`、已验证 Firestore 根文档
+  `subject` 与 Monitor 私有名单绑定的是同一员工；
 - 结构化 stdout 尚未证明落为 `jsonPayload`；
 - Web demand 注释真实遵循率、request ID 连接或 PII 检查失败；
 - Monitor 候选未完成 IAP 登录和业务口径验收。
-- 未取得 IAP protected backend 的精确 Signed Header JWT audience。
-- 当前 GitHub Trigger 尚未用 `scripts/create_github_trigger.sh --verify` 回读证明
-  `_IAP_AUDIENCE`、人工审批、main 分支、构建文件和服务账号与仓库合同完全一致。
 
 ## 6. 一次性原地切换顺序
 
@@ -216,9 +209,7 @@ HTTP 5xx、回答失败、事件发射失败、刷新失败和刷新过期告警
 10. 精确删除第 4 节旧对象、DTS、metrics 和 policies。
 11. 运行 `bootstrap_gcp.sh --stage activate --analytics-start-at ...`；脚本必须验证
     source view 和一次成功重建水位后，才启动唯一 refresh job + 15 分钟 scheduler。
-12. 使用精确 IAP audience 更新 GitHub Trigger，并用 `--verify` 回读完整合同；
-    只有 `next_push_build_ready=true` 后才批准 Monitor 构建无流量候选，再完成 IAP
-    登录、三页和真实数据业务验收。
+12. 构建 Monitor 无流量候选；完成 IAP 登录、三页和真实数据业务验收。
 13. 显式把已验收 Monitor revision 切到 100%。
 14. 确认生产流量、事件和数据水位，再结束维护。
 
@@ -233,23 +224,18 @@ PYTHONPATH=. .venv/bin/python -m pytest -q
 .venv/bin/python -m compileall -q app scripts tests
 ```
 
-状态：通过。最终 Monitor 全量回归 `87 passed`；compileall 无错误。新增 Trigger
-合同 RED 覆盖占位值、错误资源格式、错误分支/构建文件/人工审批和真实只读回读路径。
+状态：通过。唯一 `user_id` 身份合同调整后的最终 Monitor 全量回归
+`72 passed`；身份、Firestore 投影、用户目录、名单和 SQL focused 回归
+`43 passed`，compileall 无错误。
 
 ### LCS 合同与回归
 
 ```bash
-PYTHONPATH=backend/src:backend python3 -m pytest -q \
-  backend/tests/test_monitor_analytics_contract.py \
-  backend/tests/test_web_grounded_final_answer_contract.py \
-  backend/tests/test_tmcs_v3_web_service_integration.py \
-  backend/tests/test_tmcs_v3_request_truth.py \
-  backend/tests/test_tmcs_v3_request_completeness.py \
-  backend/tests/test_backend_service.py \
-  backend/tests/test_run_quality_release_gates.py
+PYTHONPATH=backend/src python3 -m pytest -q backend/tests
 ```
 
-状态：通过。`201 passed in 4.96s`；另有 1 条既有 `httpx` raw content
+状态：通过。最终完整门禁 `963 passed`；唯一身份/事件/候选发布 focused 回归
+`143 passed`。另有 1 条既有 `httpx` raw content
 弃用警告，不影响测试结果。
 
 ### 脚本、YAML、SQL 合同
@@ -263,11 +249,10 @@ git diff --check
 
 另用 PyYAML 解析 Monitor/LCS 两套 Cloud Build 与环境 YAML；用正式 renderer
 展开 9 份 SQL 和原子 publisher，确认没有 `${...}` 遗留。所有 cloud 脚本只运行
-不带 `--apply` 的 plan 分支。Monitor Trigger plan 只能证明目标参数通过本地校验，
-固定显示 `trigger_contract_verified=false`；真实 Trigger 必须另行获得只读授权后用
-`--verify` 回读，不能从 plan 推断。
+不带 `--apply` 的 plan 分支。
 
-状态：全部通过。真实名单 plan 为 83 人，`global=69`、`user_map=80`、
+状态：全部通过。LCS frontend ESLint、production build、npm audit 通过，
+pip-audit 为 0 findings；真实名单 plan 为 83 人，`global=69`、`user_map=80`、
 `management=83`，部门 61/11/8/3；删除 plan 精确打印 17 个旧 BQ 对象。
 
 ### 前端本地真实页面链路
@@ -279,6 +264,10 @@ git diff --check
 该测试使用真实 FastAPI、真实静态页面、真实浏览器渲染和 mocked 正式 API
 响应；它能证明路由、页面、图表、地图、表格、管理交互和响应式布局，但不能证明
 真实 BigQuery/Firestore 数据或 IAP。
+
+状态：`10 passed`。本机 Docker daemon 未运行，因此两套容器镜像的本地 Docker
+build 未执行；Cloud Build、候选 revision、登录验收、真实业务数据和生产流量均未
+在本轮改变或验收。
 
 状态：通过。`10 passed (20.0s)`；覆盖三页、七模块、日文地区键地图联动、
 未知分类拒绝、缺失活性度不伪装、标签管理、会话双栏以及 PC/iPad/mobile。
@@ -298,10 +287,10 @@ git diff --check
 
 | 层次 | 当前状态 | 证明 |
 | --- | --- | --- |
-| 本地代码 | 本地实现、旧路径关闭与最终验证完成 | 87 个 Monitor 测试、LCS 与 E2E 结果须绑定各自最后修改重新回读 |
+| 本地代码 | Monitor 身份链调整后本地验证通过 | Monitor 67 passed；LCS 与 E2E 结果须绑定各自最后修改重新回读 |
 | Git commit | 本轮提交承载本地实现 | 最终 SHA 以 Git 回读为准 |
 | Git push | 本轮已授权推送 `main` | 最终状态以 `origin/main` 回读为准 |
-| Cloud Build | push 只允许产生待审批记录，不批准执行 | Trigger 还必须用正式脚本回读完整合同；仅看“要求人工审批”不够 |
+| Cloud Build | 本轮未提交、未推送、未批准执行 | 仓库 Trigger 脚本要求人工审批；云端 Trigger 当前配置尚未回读验证 |
 | Cloud Run 候选 | 未创建 | Cloud Build 未批准、未执行 |
 | IAP 登录验收 | 未执行 | 无候选 |
 | 业务验收 | 未执行 | 无真实新数据链 |

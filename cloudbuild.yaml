@@ -9,10 +9,6 @@ steps:
         test -f deploy/cloudrun.env.yaml
         test -f app/main.py
         test -f requirements.txt
-        python scripts/render_runtime_env.py \
-          --source deploy/cloudrun.env.yaml \
-          --output /workspace/cloudrun.runtime.env.yaml \
-          --iap-audience "${_IAP_AUDIENCE}"
 
   - id: precheck-python-compile
     name: python:3.12-slim
@@ -59,9 +55,7 @@ steps:
       - --tag
       - candidate
       - --env-vars-file
-      - /workspace/cloudrun.runtime.env.yaml
-      - --set-secrets
-      - MONITOR_IDENTITY_HMAC_KEY=${_IDENTITY_SECRET}:latest
+      - deploy/cloudrun.env.yaml
       - --labels
       - managed-by=cloud-build,repo=oura_navi_monitor
 
@@ -69,7 +63,6 @@ substitutions:
   _SERVICE_NAME: oura-navi-monitor
   _REGION: us-central1
   _RUNTIME_SERVICE_ACCOUNT: lcs-agent@lcs-developer-483404.iam.gserviceaccount.com
-  _IDENTITY_SECRET: oura-navi-monitor-identity-hmac
 
 timeout: 1800s
 

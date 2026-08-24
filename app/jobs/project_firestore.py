@@ -39,7 +39,7 @@ def _stable_id(*parts: str) -> str:
 
 
 def project_conversation(
-    *, roster_id: str, user_key: str, conversation_id: str, conversation: dict[str, Any], messages: list[dict[str, Any]]
+    *, roster_id: str, user_id: str, conversation_id: str, conversation: dict[str, Any], messages: list[dict[str, Any]]
 ) -> dict[str, Any]:
     user_messages = [item for item in messages if str(item.get("role") or "").lower() == "user"]
     assistant_messages = [item for item in messages if str(item.get("role") or "").lower() == "assistant"]
@@ -49,7 +49,7 @@ def project_conversation(
     return {
         "event_id": f"conversation:{_stable_id(roster_id, conversation_id)}",
         "conversation_id": conversation_id,
-        "user_key": user_key,
+        "user_id": user_id,
         "roster_id": roster_id,
         "first_active_at": min(timestamps, default=updated_at),
         "last_active_at": max(timestamps, default=updated_at),
@@ -66,7 +66,7 @@ def project_conversation(
 
 
 def project_citations(
-    *, roster_id: str, user_key: str, conversation_id: str, messages: Iterable[dict[str, Any]]
+    *, roster_id: str, user_id: str, conversation_id: str, messages: Iterable[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for message in messages:
@@ -89,7 +89,7 @@ def project_citations(
                     "answer_event_id": f"answer:{request_id}" if request_id else "",
                     "answer_ts": answer_ts,
                     "answer_date": answer_ts.date(),
-                    "user_key": user_key,
+                    "user_id": user_id,
                     "roster_id": roster_id,
                     "message_id": message_id,
                     "citation_order": index,
@@ -109,13 +109,13 @@ def project_citations(
 
 
 USER_SCOPE_SCHEMA = [
-    ("roster_id", "STRING"), ("user_key", "STRING"), ("area", "STRING"), ("area_key", "STRING"),
+    ("roster_id", "STRING"), ("user_id", "STRING"), ("area", "STRING"), ("area_key", "STRING"),
     ("workplace", "STRING"), ("role", "STRING"), ("department", "STRING"), ("mr_experience", "STRING"),
     ("is_active", "BOOL"), ("global_scope_enabled", "BOOL"), ("user_map_scope_enabled", "BOOL"),
-    ("is_admin", "BOOL"), ("valid_from", "TIMESTAMP"), ("valid_to", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
+    ("is_admin", "BOOL"), ("updated_at", "TIMESTAMP"),
 ]
 CONVERSATION_SCHEMA = [
-    ("event_id", "STRING"), ("conversation_id", "STRING"), ("user_key", "STRING"), ("roster_id", "STRING"),
+    ("event_id", "STRING"), ("conversation_id", "STRING"), ("user_id", "STRING"), ("roster_id", "STRING"),
     ("first_active_at", "TIMESTAMP"), ("last_active_at", "TIMESTAMP"), ("updated_date", "DATE"),
     ("user_message_count", "INT64"), ("assistant_message_count", "INT64"), ("followup_count", "INT64"),
     ("active_days", "INT64"), ("primary_mode", "STRING"), ("status", "STRING"),
@@ -123,7 +123,7 @@ CONVERSATION_SCHEMA = [
 ]
 CITATION_SCHEMA = [
     ("event_id", "STRING"), ("answer_event_id", "STRING"), ("answer_ts", "TIMESTAMP"), ("answer_date", "DATE"),
-    ("user_key", "STRING"), ("roster_id", "STRING"), ("message_id", "STRING"), ("citation_order", "INT64"),
+    ("user_id", "STRING"), ("roster_id", "STRING"), ("message_id", "STRING"), ("citation_order", "INT64"),
     ("source_type", "STRING"), ("source_system", "STRING"), ("document_key", "STRING"), ("display_title", "STRING"),
     ("page_number", "INT64"), ("access_status", "STRING"), ("trust_tier", "STRING"),
     ("primary_product_key", "STRING"), ("source_event_ts", "TIMESTAMP"), ("materialized_at", "TIMESTAMP"),
@@ -164,7 +164,6 @@ class FirestoreProjector:
         self._directory = directory or UserDirectoryRepository(settings, client=self._firestore)
         self._manager = UserManagementService(
             directory=self._directory,
-            identity_secret=settings.monitor_identity_hmac_key,
             audit_retention_days=settings.monitor_admin_change_retention_days,
         )
 
@@ -184,10 +183,10 @@ class FirestoreProjector:
             subject = str(payload.get("subject") or "").strip()
             if user is None or not subject:
                 continue
-            if user.get("chat_user_id") == document.id and user.get("login_subject") == subject:
+            if user.get("chat_user_id") == document.id and user.get("user_id") == subject:
                 matched += 1
                 continue
-            self._manager.bind_chat_identity(user["roster_id"], chat_user_id=document.id, login_subject=subject)
+            self._manager.bind_chat_identity(user["roster_id"], chat_user_id=document.id, user_id=subject)
             matched += 1
         return matched
 
@@ -202,20 +201,15 @@ class FirestoreProjector:
                 Department(str(user["department"])),
                 is_active=True,
             )
-            keys = list(user.get("identity_keys") or []) or [{
-                "user_key": user.get("user_key"), "valid_from": user.get("created_at"), "valid_to": None
-            }]
-            for identity in keys:
-                rows.append({
-                    "roster_id": user["roster_id"], "user_key": identity.get("user_key"),
-                    "area": user.get("area"), "area_key": user.get("area_key"), "workplace": user.get("workplace"),
-                    "role": user.get("role"), "department": user.get("department"), "mr_experience": user.get("mr_experience"),
-                    "is_active": bool(user.get("is_active")), "global_scope_enabled": membership.global_enabled,
-                    "user_map_scope_enabled": membership.user_map_enabled,
-                    "is_admin": str(user.get("department")) == "管理者",
-                    "valid_from": identity.get("valid_from") or user.get("created_at") or datetime(1970, 1, 1, tzinfo=timezone.utc),
-                    "valid_to": identity.get("valid_to"), "updated_at": user.get("updated_at") or datetime.now(timezone.utc),
-                })
+            rows.append({
+                "roster_id": user["roster_id"], "user_id": str(user.get("user_id") or "").strip() or None,
+                "area": user.get("area"), "area_key": user.get("area_key"), "workplace": user.get("workplace"),
+                "role": user.get("role"), "department": user.get("department"), "mr_experience": user.get("mr_experience"),
+                "is_active": bool(user.get("is_active")), "global_scope_enabled": membership.global_enabled,
+                "user_map_scope_enabled": membership.user_map_enabled,
+                "is_admin": str(user.get("department")) == "管理者",
+                "updated_at": user.get("updated_at") or datetime.now(timezone.utc),
+            })
         return rows
 
     def changed_conversation_rows(
@@ -228,7 +222,8 @@ class FirestoreProjector:
         citation_rows: list[dict[str, Any]] = []
         for user in self._directory.list_users(include_inactive=False):
             chat_user_id = str(user.get("chat_user_id") or "").strip()
-            if not chat_user_id:
+            user_id = str(user.get("user_id") or "").strip()
+            if not chat_user_id or not user_id:
                 continue
             query = (
                 self._firestore.collection(self._settings.monitor_firestore_chat_collection)
@@ -241,11 +236,11 @@ class FirestoreProjector:
                 message_docs = list(conversation_doc.reference.collection("messages").order_by("timestamp").stream())
                 messages = [{"id": item.id, **(item.to_dict() or {})} for item in message_docs]
                 conversation_rows.append(project_conversation(
-                    roster_id=user["roster_id"], user_key=user["user_key"], conversation_id=conversation_doc.id,
+                    roster_id=user["roster_id"], user_id=user_id, conversation_id=conversation_doc.id,
                     conversation=conversation, messages=messages,
                 ))
                 citation_rows.extend(project_citations(
-                    roster_id=user["roster_id"], user_key=user["user_key"], conversation_id=conversation_doc.id,
+                    roster_id=user["roster_id"], user_id=user_id, conversation_id=conversation_doc.id,
                     messages=messages,
                 ))
         return conversation_rows, citation_rows

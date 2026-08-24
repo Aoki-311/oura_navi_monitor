@@ -10,6 +10,29 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from app.settings import Settings
 
 
+_USER_DOCUMENT_FIELDS = frozenset(
+    {
+        "roster_id",
+        "user_id",
+        "chat_user_id",
+        "identity_bound_at",
+        "name",
+        "email",
+        "area",
+        "workplace",
+        "area_key",
+        "role",
+        "department",
+        "mr_experience",
+        "label_ids",
+        "is_active",
+        "created_at",
+        "updated_at",
+        "updated_by",
+    }
+)
+
+
 class UserDirectoryRepository:
     def __init__(self, settings: Settings, *, client: Any | None = None) -> None:
         database = str(settings.monitor_firestore_database or "(default)").strip() or "(default)"
@@ -42,15 +65,9 @@ class UserDirectoryRepository:
         email = str(payload.get("email") or "").strip().lower()
         if email:
             values.add(("email", email))
-        for identity in list(payload.get("identity_keys") or []):
-            if not isinstance(identity, dict):
-                continue
-            user_key = str(identity.get("user_key") or "").strip()
-            if user_key:
-                values.add(("user_key", user_key))
         for kind, field in (
             ("chat_user_id", "chat_user_id"),
-            ("login_subject", "login_subject"),
+            ("user_id", "user_id"),
         ):
             value = str(payload.get(field) or "").strip()
             if value:
@@ -96,11 +113,11 @@ class UserDirectoryRepository:
         roster_id = str(user.get("roster_id") or "").strip()
         if not roster_id:
             raise ValueError("roster_id is required")
-        payload = dict(user)
-        payload.pop("scope_membership", None)
-        payload.pop("global_scope_enabled", None)
-        payload.pop("user_map_scope_enabled", None)
-        payload.pop("admin_scope_enabled", None)
+        payload = {
+            key: value
+            for key, value in dict(user).items()
+            if key in _USER_DOCUMENT_FIELDS
+        }
         user_ref = self._user_collection().document(roster_id)
         change_id = str((change or {}).get("change_id") or "").strip()
         action = str((change or {}).get("action") or "").strip()

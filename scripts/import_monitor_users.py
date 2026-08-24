@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +12,7 @@ from openpyxl import load_workbook
 
 from app.contracts.admin import UserCreate, UserPatch
 from app.domain.analysis_scopes import AnalysisScope, Department, membership_for
-from app.domain.user_identity import build_user_key, roster_id_for_email
+from app.domain.user_identity import roster_id_for_email
 from app.repositories.user_directory import UserDirectoryRepository
 from app.services.user_management import UserManagementService, area_key_for, normalize_roster_text
 from app.settings import get_settings
@@ -47,7 +46,7 @@ def _canonical_remark(value: Any) -> str:
     return normalize_roster_text(str(value or "")).replace("（", "(").replace("）", ")")
 
 
-def load_roster_plan(path: Path, *, identity_secret: str) -> RosterPlan:
+def load_roster_plan(path: Path) -> RosterPlan:
     workbook = load_workbook(filename=path, read_only=True, data_only=True)
     if "OurA-Naviユーザー管理" not in workbook.sheetnames:
         raise ValueError("required roster sheet is missing")
@@ -86,7 +85,7 @@ def load_roster_plan(path: Path, *, identity_secret: str) -> RosterPlan:
         users.append(
             {
                 "roster_id": roster_id_for_email(payload.email),
-                "user_key": build_user_key(payload.email, secret=identity_secret),
+                "user_id": "",
                 "name": payload.name,
                 "email": payload.email,
                 "area": payload.area,
@@ -96,11 +95,7 @@ def load_roster_plan(path: Path, *, identity_secret: str) -> RosterPlan:
                 "department": department.value,
                 "mr_experience": payload.mr_experience or "-",
                 "label_ids": [],
-                "identity_keys": [
-                    {"user_key": build_user_key(payload.email, secret=identity_secret), "valid_from": None, "valid_to": None}
-                ],
                 "chat_user_id": "",
-                "login_subject": "",
                 "is_active": True,
             }
         )
@@ -120,10 +115,10 @@ def load_roster_plan(path: Path, *, identity_secret: str) -> RosterPlan:
     )
 
 
-def _apply_plan(plan: RosterPlan, *, actor: str, identity_secret: str) -> None:
+def _apply_plan(plan: RosterPlan, *, actor: str) -> None:
     settings = get_settings()
     directory = UserDirectoryRepository(settings)
-    manager = UserManagementService(directory=directory, identity_secret=identity_secret)
+    manager = UserManagementService(directory=directory)
     for item in plan.users:
         existing = directory.get_user(item["roster_id"])
         if existing is None:
@@ -162,8 +157,7 @@ def main() -> int:
     parser.add_argument("--actor", default="")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
-    secret = str(os.getenv("MONITOR_IDENTITY_HMAC_KEY", "") or "")
-    plan = load_roster_plan(args.workbook, identity_secret=secret)
+    plan = load_roster_plan(args.workbook)
     summary = {
         "mode": "apply" if args.apply else "plan",
         "users": len(plan.users),
@@ -175,7 +169,7 @@ def main() -> int:
         return 0
     if not args.actor:
         raise SystemExit("--actor is required with --apply")
-    _apply_plan(plan, actor=args.actor, identity_secret=secret)
+    _apply_plan(plan, actor=args.actor)
     return 0
 
 

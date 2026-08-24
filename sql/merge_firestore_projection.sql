@@ -5,14 +5,14 @@
 DELETE FROM `${PROJECT_ID}.${DATASET_ID}.user_scope` WHERE TRUE;
 
 INSERT INTO `${PROJECT_ID}.${DATASET_ID}.user_scope` (
-  roster_id, user_key, area, area_key, workplace, role, department,
+  roster_id, user_id, area, area_key, workplace, role, department,
   mr_experience, is_active, global_scope_enabled, user_map_scope_enabled,
-  is_admin, valid_from, valid_to, updated_at
+  is_admin, updated_at
 )
 SELECT
-  roster_id, user_key, area, area_key, workplace, role, department,
+  roster_id, user_id, area, area_key, workplace, role, department,
   mr_experience, is_active, global_scope_enabled, user_map_scope_enabled,
-  is_admin, valid_from, valid_to, updated_at
+  is_admin, updated_at
 FROM UNNEST(@user_scope_rows);
 
 MERGE `${PROJECT_ID}.${DATASET_ID}.conversation_events` target
@@ -21,7 +21,7 @@ ON target.event_id = source.event_id
 AND target.updated_date BETWEEN @conversation_partition_start AND @conversation_partition_end
 WHEN MATCHED THEN UPDATE SET
   conversation_id = source.conversation_id,
-  user_key = source.user_key,
+  user_id = source.user_id,
   roster_id = source.roster_id,
   first_active_at = source.first_active_at,
   last_active_at = source.last_active_at,
@@ -44,7 +44,7 @@ WHEN MATCHED THEN UPDATE SET
   answer_event_id = source.answer_event_id,
   answer_ts = source.answer_ts,
   answer_date = source.answer_date,
-  user_key = source.user_key,
+  user_id = source.user_id,
   roster_id = source.roster_id,
   message_id = source.message_id,
   citation_order = source.citation_order,

@@ -52,6 +52,9 @@ def test_incremental_sql_uses_window_parameters_merge_and_no_plaintext_content_c
     assert "event_id" in sql
     lowered = sql.lower()
     assert "user_email" not in lowered
+    assert "user_key" not in lowered
+    assert "valid_from" not in lowered
+    assert "valid_to" not in lowered
     assert "raw_query" not in lowered
     assert "answer_text" not in lowered
     assert "topic_ideation" not in lowered
@@ -63,6 +66,19 @@ def test_incremental_sql_uses_window_parameters_merge_and_no_plaintext_content_c
         assert f"target.{partition_column} between" in lowered
     assert "safe_cast(latency_text as float64)" in lowered
     assert "regexp_extract(latency_text" in lowered
+
+
+def test_verified_user_id_is_the_only_fact_identity_contract() -> None:
+    source_sql = _sql("create_source_tables.sql").lower()
+    fact_sql = _sql("create_fact_tables.sql").lower()
+    projection_sql = _sql("merge_firestore_projection.sql").lower()
+    assert "jsonpayload.user_id" in source_sql
+    assert "jsonpayload.user_key" not in source_sql
+    assert "user_id string not null" in fact_sql
+    assert "roster_id string not null,\n  user_id string," in fact_sql
+    assert "user_key" not in fact_sql
+    assert "valid_from" not in projection_sql
+    assert "valid_to" not in projection_sql
 
 
 def test_firestore_projection_is_part_of_the_single_partition_bounded_publish() -> None:
@@ -123,7 +139,7 @@ def test_unmatched_source_identity_is_detected_before_scope_filtering() -> None:
     assert "source_question_without_roster" in sql
     assert "from source_questions source" in sql
     assert "left join `${project_id}.${dataset_id}.user_scope` scope" in sql
-    assert "countif(scope.user_key is null)" in sql
+    assert "countif(scope.user_id is null)" in sql
 
 
 def test_one_sided_question_or_answer_telemetry_blocks_publish() -> None:

@@ -13,7 +13,7 @@ from app.contracts.admin import (
     normalize_email,
 )
 from app.domain.analysis_scopes import Department
-from app.domain.user_identity import build_user_key, roster_id_for_email
+from app.domain.user_identity import roster_id_for_email
 
 
 class UserDirectory(Protocol):
@@ -50,13 +50,9 @@ class UserManagementService:
         self,
         *,
         directory: UserDirectory,
-        identity_secret: str,
         audit_retention_days: int = 180,
     ) -> None:
-        if not str(identity_secret or "").strip():
-            raise ValueError("identity HMAC key is required")
         self._directory = directory
-        self._identity_secret = identity_secret
         self._audit_retention_days = max(1, int(audit_retention_days))
 
     def _change(self, *, action: str, target_type: str, target_id: str, actor: str) -> dict[str, Any]:
@@ -96,7 +92,7 @@ class UserManagementService:
         now = datetime.now(timezone.utc)
         user = {
             "roster_id": roster_id_for_email(email),
-            "user_key": build_user_key(email, secret=self._identity_secret),
+            "user_id": "",
             "name": normalize_roster_text(payload.name),
             "email": email,
             "area": area,
@@ -106,15 +102,7 @@ class UserManagementService:
             "department": department.value,
             "mr_experience": normalize_roster_text(payload.mr_experience) or "-",
             "label_ids": label_ids,
-            "identity_keys": [
-                {
-                    "user_key": build_user_key(email, secret=self._identity_secret),
-                    "valid_from": now,
-                    "valid_to": None,
-                }
-            ],
             "chat_user_id": "",
-            "login_subject": "",
             "is_active": bool(payload.is_active),
             "created_at": now,
             "updated_at": now,
@@ -138,21 +126,6 @@ class UserManagementService:
             if existing is not None and existing.get("roster_id") != roster_id:
                 raise ValueError("email already exists")
             changes["email"] = email
-            if email != normalize_email(str(current["email"])):
-                new_user_key = build_user_key(email, secret=self._identity_secret)
-                changes["user_key"] = new_user_key
-                identity_keys = []
-                for item in list(current.get("identity_keys") or []):
-                    copy = dict(item)
-                    if copy.get("valid_to") is None:
-                        copy["valid_to"] = now
-                    identity_keys.append(copy)
-                if not identity_keys and current.get("user_key"):
-                    identity_keys.append(
-                        {"user_key": current["user_key"], "valid_from": current.get("created_at") or now, "valid_to": now}
-                    )
-                identity_keys.append({"user_key": new_user_key, "valid_from": now, "valid_to": None})
-                changes["identity_keys"] = identity_keys
         for key in ("name", "area", "workplace", "role", "mr_experience"):
             if key in changes:
                 changes[key] = normalize_roster_text(str(changes[key]))
@@ -174,7 +147,7 @@ class UserManagementService:
         roster_id: str,
         *,
         chat_user_id: str,
-        login_subject: str,
+        user_id: str,
     ) -> dict[str, Any]:
         """Persist the verified LCS root-document binding without exposing it as a label."""
 
@@ -182,20 +155,28 @@ class UserManagementService:
         if current is None:
             raise KeyError("user not found")
         resolved_chat_user_id = str(chat_user_id or "").strip()
-        resolved_subject = str(login_subject or "").strip()
-        if not resolved_chat_user_id or not resolved_subject:
+        resolved_user_id = str(user_id or "").strip()
+        if not resolved_chat_user_id or not resolved_user_id:
             raise ValueError("verified chat identity is required")
+        if "@" in resolved_user_id:
+            raise ValueError("verified user identity must not be an email")
+        current_chat_user_id = str(current.get("chat_user_id") or "").strip()
+        current_user_id = str(current.get("user_id") or "").strip()
+        if current_chat_user_id and current_chat_user_id != resolved_chat_user_id:
+            raise ValueError("chat identity cannot be rebound")
+        if current_user_id and current_user_id != resolved_user_id:
+            raise ValueError("user identity cannot be rebound")
         for item in self._directory.list_users(include_inactive=True):
             if item.get("roster_id") == roster_id:
                 continue
             if str(item.get("chat_user_id") or "") == resolved_chat_user_id:
                 raise ValueError("chat identity already bound")
-            if str(item.get("login_subject") or "") == resolved_subject:
-                raise ValueError("login subject already bound")
+            if str(item.get("user_id") or "") == resolved_user_id:
+                raise ValueError("user identity already bound")
         updated = {
             **current,
             "chat_user_id": resolved_chat_user_id,
-            "login_subject": resolved_subject,
+            "user_id": resolved_user_id,
             "identity_bound_at": datetime.now(timezone.utc),
         }
         return self._directory.put_user(updated)

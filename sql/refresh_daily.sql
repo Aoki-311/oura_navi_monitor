@@ -10,7 +10,7 @@ WITH dates AS (
   SELECT day AS activity_date FROM UNNEST(GENERATE_DATE_ARRAY(@date_start, @date_end)) day
 ), current_scope AS (
   SELECT * FROM `${PROJECT_ID}.${DATASET_ID}.user_scope`
-  WHERE valid_to IS NULL AND is_active = TRUE
+  WHERE is_active = TRUE
 ), question_facts AS (
   SELECT q.question_date, q.question_ts, q.roster_id, q.event_id
   FROM `${PROJECT_ID}.${DATASET_ID}.question_events` q

@@ -33,14 +33,12 @@ LEFT JOIN `${PROJECT_ID}.${DATASET_ID}.answer_events` a
                        AND CURRENT_DATE('${MONITOR_TIMEZONE}')
  AND a.answer_date BETWEEN DATE_SUB(q.question_date, INTERVAL 1 DAY) AND DATE_ADD(q.question_date, INTERVAL 1 DAY)
 LEFT JOIN `${PROJECT_ID}.${DATASET_ID}.user_scope` scope
-  ON q.roster_id = scope.roster_id
- AND q.question_ts >= scope.valid_from
- AND (scope.valid_to IS NULL OR q.question_ts < scope.valid_to);
+  ON q.roster_id = scope.roster_id;
 
 CREATE OR REPLACE VIEW `${PROJECT_ID}.${DATASET_ID}.dashboard_user_list` AS
 WITH current_scope AS (
   SELECT * FROM `${PROJECT_ID}.${DATASET_ID}.user_scope`
-  WHERE valid_to IS NULL AND is_active = TRUE AND user_map_scope_enabled = TRUE
+  WHERE is_active = TRUE AND user_map_scope_enabled = TRUE
 ), recent AS (
   SELECT roster_id,
     COUNTIF(active AND activity_date >= DATE_SUB(CURRENT_DATE('${MONITOR_TIMEZONE}'), INTERVAL 6 DAY)) AS active_days_7,

@@ -62,7 +62,7 @@ class MemoryDirectory:
 
 def service() -> tuple[UserManagementService, MemoryDirectory]:
     directory = MemoryDirectory()
-    return UserManagementService(directory=directory, identity_secret="test-secret"), directory
+    return UserManagementService(directory=directory), directory
 
 
 def test_create_user_derives_scope_from_department_and_never_from_labels() -> None:
@@ -160,7 +160,7 @@ def test_label_in_use_cannot_be_deleted() -> None:
         manager.delete_label(label["label_id"], actor="admin@example.com")
 
 
-def test_email_change_keeps_closed_identity_mapping_and_reimport_does_not_churn() -> None:
+def test_email_change_keeps_verified_user_id_binding() -> None:
     manager, _ = service()
     created = manager.create_user(
         UserCreate(
@@ -174,17 +174,17 @@ def test_email_change_keeps_closed_identity_mapping_and_reimport_does_not_churn(
         ),
         actor="admin@example.com",
     )
-    unchanged = manager.update_user(
-        created["roster_id"], UserPatch(email="old@example.com"), actor="admin@example.com"
+    bound = manager.bind_chat_identity(
+        created["roster_id"], chat_user_id="chat-1", user_id="subject-1"
     )
-    assert len(unchanged["identity_keys"]) == 1
-
     changed = manager.update_user(
         created["roster_id"], UserPatch(email="new@example.com"), actor="admin@example.com"
     )
-    assert len(changed["identity_keys"]) == 2
-    assert changed["identity_keys"][0]["valid_to"] is not None
-    assert changed["identity_keys"][1]["valid_to"] is None
+    assert bound["user_id"] == "subject-1"
+    assert changed["user_id"] == "subject-1"
+    assert changed["chat_user_id"] == "chat-1"
+    assert "user_key" not in changed
+    assert "identity_keys" not in changed
 
 
 def test_verified_chat_identity_is_unique_and_not_a_scope_owner() -> None:
@@ -197,9 +197,15 @@ def test_verified_chat_identity_is_unique_and_not_a_scope_owner() -> None:
         UserCreate(name="二人目", email="two@example.com", area="九州", workplace="福岡", role="本社MR", department="DM専任"),
         actor="admin@example.com",
     )
-    bound = manager.bind_chat_identity(first["roster_id"], chat_user_id="chat-1", login_subject="subject-1")
+    bound = manager.bind_chat_identity(first["roster_id"], chat_user_id="chat-1", user_id="subject-1")
     assert membership_for(bound["department"], is_active=bound["is_active"]) == membership_for(
         first["department"], is_active=first["is_active"]
     )
     with pytest.raises(ValueError, match="already bound"):
-        manager.bind_chat_identity(second["roster_id"], chat_user_id="chat-1", login_subject="subject-2")
+        manager.bind_chat_identity(second["roster_id"], chat_user_id="chat-1", user_id="subject-2")
+
+    with pytest.raises(ValueError, match="already bound"):
+        manager.bind_chat_identity(second["roster_id"], chat_user_id="chat-2", user_id="subject-1")
+
+    with pytest.raises(ValueError, match="cannot be rebound"):
+        manager.bind_chat_identity(first["roster_id"], chat_user_id="chat-1", user_id="subject-new")

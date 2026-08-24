@@ -23,10 +23,7 @@ class Settings(BaseSettings):
     monitor_firestore_admin_change_collection: str = Field(default="monitor_admin_changes")
     monitor_firestore_export_collection: str = Field(default="monitor_export_jobs")
     monitor_firestore_unique_claim_collection: str = Field(default="monitor_unique_claims")
-    monitor_identity_hmac_key: str = Field(default="")
-
     monitor_admin_allowlist: str = Field(default="")
-    monitor_iap_audience: str = Field(default="")
     monitor_allow_unverified_local: bool = Field(default=False)
     monitor_cors_allowed_origins: str = Field(default="")
 

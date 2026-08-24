@@ -23,10 +23,8 @@ Monitor 专用 Firestore 与受 IAP 保护的 API 中出现，不进入分析日
 | `roster_id` | Monitor 内部给这名员工的稳定编号；邮箱改变也不换人 | 名单，本地已实现 | 打开个人页、连接历史 |
 | `name` | 员工姓名 | Excel/用户管理，页面现用 | 用户表和个人页显示 |
 | `email` | 当前员工邮箱 | Excel/用户管理，页面现用 | 首次匹配登录身份；不进 BQ |
-| `user_key` | 用受管密钥把登录邮箱变成不可逆匹配值 | LCS + Monitor HMAC，本地已实现 | 把日志归到正确员工，不暴露邮箱 |
-| `identity_keys` | 同一员工过去和现在的 `user_key` 有效期 | 用户管理，本地已实现 | 邮箱变化后历史不被拆成两人 |
+| `user_id` | LCS 验证登录后得到的稳定 subject；未登录过的名单用户暂时为空 | LCS 身份解析 + Firestore 投影，本地已实现 | 把日志归到正确员工，不把邮箱写进日志 |
 | `chat_user_id` | 已验证的 LCS Firestore 用户根文档 ID | Firestore 投影，条件可用 | 找到该员工会话 |
-| `login_subject` | 已验证的登录 subject | Firestore 投影，条件可用 | 防止同一聊天身份绑定多人 |
 | `area` | Excel 的 `エリア` | 名单，页面现用 | 地区比较、地图排名 |
 | `area_key` | SVG 联动使用的内部地区键 | 后端由 area/workplace 生成 | 地图着色和点击，不展示给用户 |
 | `workplace` | Excel 的 `勤務地` | 名单，页面现用 | 个人工作地点 |
@@ -42,10 +40,9 @@ Monitor 专用 Firestore 与受 IAP 保护的 API 中出现，不进入分析日
 
 - `global_scope_enabled`：是否进入 69 人全局指标；
 - `user_map_scope_enabled`：是否进入 80 人用户/地图/详细；
-- `is_admin`：部门是否为名单中的 `管理者`，只用于排除分析，不代表 IAP 权限；
-- `valid_from / valid_to`：某个 `user_key` 在什么时间有效。
+- `is_admin`：部门是否为名单中的 `管理者`，只用于排除分析，不代表 IAP 权限。
 
-这四项只存在 BigQuery 小型 `user_scope` 投影，不在前端提供编辑开关。范围 flag
+这三项只存在 BigQuery 小型 `user_scope` 投影，不在前端提供编辑开关。范围 flag
 表达部门对应的结构性资格，`is_active` 单独决定当前页面和分母；这样停用用户的
 既有事实仍可重建，但不会继续显示在当前 69/80 名单里。
 

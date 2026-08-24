@@ -36,9 +36,9 @@ LCS 上游的结构化事件实现位于相邻仓库：
 
 ## 本地启动
 
-生产模式只接受经过签名、audience 和 issuer 校验的 IAP JWT；不会把未签名的
-`x-goog-authenticated-user-email` 当作权限。仅本机验收时，显式启用本地管理员
-header：
+生产模式读取 IAP 注入的 `x-goog-authenticated-user-email`，规范化邮箱后必须命中
+三名管理员 allowlist；Cloud Run 继续禁止未认证访问。仅本机验收时，显式启用
+本地管理员 header：
 
 ```bash
 MONITOR_ALLOW_UNVERIFIED_LOCAL=true \
@@ -52,7 +52,7 @@ MONITOR_ADMIN_ALLOWLIST=2401145@tc.terumo.co.jp \
 ## 安全与发布边界
 
 - 名单姓名、邮箱和标签只保存在 Monitor 专用 Firestore 集合；分析事件和
-  BigQuery 事实表使用 HMAC `user_key`，不保存问答正文。
+  BigQuery 事实表只使用 LCS 已验证登录 `user_id`，不保存邮箱或问答正文。
 - 标签只影响 Monitor 展示，不能改变 69/80 范围或 IAP 权限。
 - 仓库修改不等于 BigQuery、Firestore、Logging、IAM、Scheduler、Cloud Run
   或流量已经改变。
@@ -60,28 +60,3 @@ MONITOR_ADMIN_ALLOWLIST=2401145@tc.terumo.co.jp \
   删除前必须先确定 `ANALYTICS_START_AT` 和实际可重建时间边界。
 - 构建成功、候选 revision、IAP 登录验收、业务验收和生产流量是六个不同
   状态，不能互相代替。
-
-## Cloud Build Trigger 合同
-
-`MONITOR_IAP_AUDIENCE` 没有仓库默认值，也不接受 `REQUIRED` 等占位符。唯一输入
-owner 是 GitHub Cloud Build Trigger 的 `_IAP_AUDIENCE` substitution；值必须是 IAP
-Signed Header JWT 显示的精确资源格式：
-
-```text
-/projects/{PROJECT_NUMBER}/global/backendServices/{BACKEND_SERVICE_ID}
-```
-
-`scripts/create_github_trigger.sh` 有三个明确模式：
-
-- 默认 `plan` 只在本地校验目标参数，并固定输出
-  `trigger_contract_verified=false`、`next_push_build_ready=false`；不能拿它证明云端
-  Trigger 已正确。
-- `--verify` 只读回读云端 Trigger，并逐项核对仓库、main 分支、构建文件、服务
-  账号、人工审批、文件范围和 IAP audience。只有完整相等才输出
-  `next_push_build_ready=true`。
-- `--apply` 会创建或更新 Trigger，属于独立的云端修改授权；写入后仍使用同一套
-  回读校验。
-
-因此，commit/push 本身不能修复已经保存在云端 Trigger 中的错误 substitution。
-在精确 audience 获得确认并由 `--verify` 回读通过前，不得批准下一条 Monitor
-Cloud Build。

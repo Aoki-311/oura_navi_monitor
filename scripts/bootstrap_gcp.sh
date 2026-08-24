@@ -13,7 +13,6 @@ SCHEDULER_QUARTER="oura-navi-monitor-refresh-quarter-hour"
 RUNTIME_SERVICE_ACCOUNT=""
 IMAGE=""
 ANALYTICS_START_AT=""
-IDENTITY_SECRET="oura-navi-monitor-identity-hmac"
 FIRESTORE_DATABASE="lcs-user-data"
 ADMIN_CHANGE_COLLECTION="monitor_admin_changes"
 EXPORT_COLLECTION="monitor_export_jobs"
@@ -30,7 +29,6 @@ while [[ $# -gt 0 ]]; do
     --runtime-service-account) RUNTIME_SERVICE_ACCOUNT="$2"; shift 2 ;;
     --image) IMAGE="$2"; shift 2 ;;
     --analytics-start-at) ANALYTICS_START_AT="$2"; shift 2 ;;
-    --identity-secret) IDENTITY_SECRET="$2"; shift 2 ;;
     --firestore-database) FIRESTORE_DATABASE="$2"; shift 2 ;;
     --admin-change-collection) ADMIN_CHANGE_COLLECTION="$2"; shift 2 ;;
     --export-collection) EXPORT_COLLECTION="$2"; shift 2 ;;
@@ -49,7 +47,7 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "mode=$([[ "${APPLY}" == "true" ]] && echo apply || echo plan) stage=${STAGE}"
 echo "dataset=${PROJECT_ID}.${DATASET_ID} sink=${SINK_NAME} job=${JOB_NAME}"
-echo "scheduler=${SCHEDULER_QUARTER} secret=${IDENTITY_SECRET} ttl_collections=${ADMIN_CHANGE_COLLECTION},${EXPORT_COLLECTION}"
+echo "scheduler=${SCHEDULER_QUARTER} ttl_collections=${ADMIN_CHANGE_COLLECTION},${EXPORT_COLLECTION}"
 if [[ "${APPLY}" != "true" ]]; then
   if [[ "${STAGE}" == "prepare" ]]; then
     echo "prepare=ttl,canonical_tables,logging_sink_writer"
@@ -66,8 +64,6 @@ fi
 export GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}"
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
 command -v bq >/dev/null 2>&1 || { echo "bq not found" >&2; exit 2; }
-gcloud --project="${PROJECT_ID}" secrets describe "${IDENTITY_SECRET}" >/dev/null
-
 if [[ "${STAGE}" == "prepare" ]]; then
   for collection_group in "${ADMIN_CHANGE_COLLECTION}" "${EXPORT_COLLECTION}"; do
     gcloud --project="${PROJECT_ID}" firestore fields ttls update expires_at \
@@ -116,7 +112,7 @@ gcloud --project="${PROJECT_ID}" run jobs deploy "${JOB_NAME}" \
   --region="${REGION}" --image="${IMAGE}" --service-account="${RUNTIME_SERVICE_ACCOUNT}" \
   --command=python --args=-m,app.jobs.refresh_analytics,--apply \
   --env-vars-file="${RUNTIME_ENV}" \
-  --set-secrets="MONITOR_IDENTITY_HMAC_KEY=${IDENTITY_SECRET}:latest" --max-retries=1 --task-timeout=30m
+  --max-retries=1 --task-timeout=30m
 
 JOB_URI="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${JOB_NAME}:run"
 upsert_scheduler() {
