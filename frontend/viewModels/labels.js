@@ -1,118 +1,65 @@
-export const PRESET_LABELS = {
+export const PRESET_LABELS = Object.freeze({
   today: "今日",
-  last_6h: "直近6時間",
-  last_12h: "直近12時間",
   last_3d: "過去3日",
   last_7d: "過去7日",
   last_14d: "過去14日",
   last_30d: "過去30日",
   last_60d: "過去60日",
-  all: "全部",
-  custom: "カスタム",
-};
+  all: "全期間",
+});
 
-export const MODE_LABELS = {
-  internal: "社内モード",
-  websearch: "Web検索モード",
-  standard: "標準モード",
-  deepthinking: "深考モード",
+export const QUESTION_CATEGORY_LABELS = Object.freeze({
+  product_information: "製品情報・仕様",
+  price_product_code: "価格・製品コード",
+  comparison_fit_selection: "比較・適合・選定",
+  usage_procedure: "使用方法・手順",
+  troubleshooting_safety: "トラブル・安全対応",
+  sales_proposal: "営業活動・提案作成",
+  institution_gpo_market: "医療機関・GPO・市場情報",
+  document_search: "資料・文書を探す",
+  other_general: "その他・一般質問",
+  unclassified: "判定不能",
+});
+
+export const ANALYTICS_TASK_LABELS = Object.freeze({
+  fact_lookup: "情報確認",
+  explanation: "説明依頼",
+  comparison_selection: "比較・選定",
+  procedure_guidance: "手順確認",
+  troubleshooting: "問題解決",
+  content_creation: "資料・文面作成",
+  source_retrieval: "資料検索",
+  market_research: "市場・施設調査",
   other: "その他",
-};
+  unclassified: "判定不能",
+});
 
-export const DEVICE_LABELS = {
-  desktop: "PC",
-  mobile: "モバイル",
-  unknown: "不明",
-};
+export const ACTIVITY_LABELS = Object.freeze({
+  high: "高アクティブ",
+  middle: "中アクティブ",
+  low: "低アクティブ",
+  dormant: "休眠ユーザー",
+});
 
-export const QUESTION_CATEGORY_LABELS = {
-  product_explanation: "製品説明",
-  sales_approach: "営業手法",
-  troubleshooting: "トラブル対応",
-  product_price: "製品価格関連",
-  hospital_gpo: "病院・GPO関連",
-  topic_ideation: "ネタ探し",
-  price: "製品価格関連",
-  pricing: "製品価格関連",
-  price_lookup: "製品価格関連",
-  gpo: "病院・GPO関連",
-  hospital: "病院・GPO関連",
-  org_info: "病院・GPO関連",
-  market_intelligence: "ネタ探し",
-  product: "製品説明",
-  product_lookup: "製品説明",
-  product_master: "製品説明",
-  product_master_lookup: "製品説明",
-  product_applicability: "製品説明",
-  comparison: "製品説明",
-  compare: "製品説明",
-  fact: "製品説明",
-  fact_check: "製品説明",
-  strategy: "営業手法",
-  promotion: "営業手法",
-  human_approach: "営業手法",
-  business_output: "営業手法",
-  content_asset_generation: "営業手法",
-  sales_script_generation: "営業手法",
-  incident_troubleshooting: "トラブル対応",
-  safety_incident_response: "トラブル対応",
-  general: "ネタ探し",
-  unknown: "ネタ探し",
-};
+export const ACTIVITY_DEFINITIONS = Object.freeze({
+  high: "直近3日で有効な質問が3回以上",
+  middle: "高アクティブ以外で、直近7日の有効な質問が1〜2回",
+  low: "高・中以外で、直近14日に有効な質問が1回以上",
+  dormant: "直近14日に有効な質問が0回",
+});
 
-export const ROLE_LABELS = {
-  user: "ユーザー",
-  assistant: "AI回答",
-  system: "システム",
-};
+export const MODE_LABELS = Object.freeze({ internal: "社内モード", websearch: "Web検索モード", unknown: "不明" });
+export const DEVICE_LABELS = Object.freeze({ desktop: "PC", mobile: "モバイル", unknown: "不明" });
+export const DEPARTMENTS = Object.freeze(["DM専任", "ヘルスケア本社", "DM本社", "管理者"]);
 
-export const STATUS_LABELS = {
-  done: "完了",
-  error: "エラー",
-  aborted: "取消し",
-  streaming: "生成中",
-};
-
-export const QUALITY_LABELS = {
-  fully_answerable: "十分に回答可能",
-  partially_answerable: "一部回答可能",
-  not_answerable: "回答困難",
-  clarification_blocked: "確認が必要",
-  ready: "利用可能",
-  bounded: "条件付き利用可能",
-  not_ready: "利用困難",
-  clarify_first: "確認後に利用",
-  sufficient: "十分",
-  partial: "一部不足",
-  insufficient: "不足",
-  unknown: "不明",
-};
-
-export const ACTIVITY_DEFINITIONS = {
-  high: "直近3日内にメッセージ送信が3回以上あるユーザーです。",
-  middle: "直近7日内にメッセージ送信が1〜2回あるユーザーです。",
-  low: "直近14日内にメッセージ送信が1回以上あり、高・中アクティブに該当しないユーザーです。",
-  dormant: "直近14日内にメッセージ送信がないユーザーです。",
-};
-
-export const KPI_HELP = {
-  activeUserCount: "選択した期間内に実際にチャットを利用したユーザー数です。",
-  answerSuccessRate:
-    "エラー表示がなく、ユーザーからの回答再生成・回答強化・修正要求・低評価が確認されていない回答率です。",
-  lowCoverageRate: "根拠資料や引用が不足している可能性がある回答の割合です。",
-  errorRate: "回答生成や通信処理でエラーになった割合です。",
-  p95LatencyMs: "利用者の大半が待つ最大に近い応答時間の目安です。数値が大きいほど体感が遅くなります。",
-  activityDistribution: "選択した表示期間内の利用頻度に基づき、ユーザーを高・中・低・休眠に分類しています。",
-  questionCategory: "ユーザーの質問内容を、回答ログの分類情報に基づいて大まかな業務カテゴリに分けたものです。",
-  usability: "回答内容が管理者や利用者にとって実際に使える状態かを示します。",
-  evidenceSufficiency: "回答に必要な根拠資料、引用、構造化データが十分に揃っているかを示します。",
-};
-
-export function labelOf(labels, raw, fallback = "不明") {
-  const key = String(raw || "").trim().toLowerCase();
-  return labels[key] || String(raw || "").trim() || fallback;
+export function questionCategoryLabel(value) {
+  const key = String(value || "").trim();
+  if (!Object.hasOwn(QUESTION_CATEGORY_LABELS, key)) throw new Error(`未対応の質問タイプ: ${key || "(空)"}`);
+  return QUESTION_CATEGORY_LABELS[key];
 }
 
-export function questionCategoryLabel(raw) {
-  return labelOf(QUESTION_CATEGORY_LABELS, raw, "ネタ探し");
+export function analyticsTaskLabel(value) {
+  const key = String(value || "").trim();
+  if (!Object.hasOwn(ANALYTICS_TASK_LABELS, key)) throw new Error(`未対応の分析タスク: ${key || "(空)"}`);
+  return ANALYTICS_TASK_LABELS[key];
 }

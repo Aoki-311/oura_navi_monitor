@@ -8,10 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from app.routers.admin import router as admin_router
+from app.routers.analytics import router as analytics_router
 from app.routers.export import router as export_router
 from app.routers.health import router as health_router
-from app.routers.history import router as history_router
-from app.routers.metrics import router as metrics_router
 from app.routers.trace import router as trace_router
 from app.security.auth import AdminIdentity, require_admin
 from app.settings import get_settings
@@ -19,22 +19,22 @@ from app.settings import get_settings
 settings = get_settings()
 logging.basicConfig(level=str(settings.monitor_log_level or "INFO").upper())
 
-app = FastAPI(title="OurA Navi Monitor", version="0.1.0")
+app = FastAPI(title="OurA Navi Monitor", version="1.0.0")
 
 if settings.cors_allowed_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        allow_headers=["Content-Type", "X-Monitor-Admin-Email"],
     )
 
 app.include_router(health_router)
-app.include_router(metrics_router)
-app.include_router(history_router)
-app.include_router(export_router)
+app.include_router(analytics_router)
+app.include_router(admin_router)
 app.include_router(trace_router)
+app.include_router(export_router)
 
 frontend_dir = Path(__file__).resolve().parents[1] / "frontend"
 if frontend_dir.exists():
@@ -74,14 +74,3 @@ def dashboard(_admin: AdminIdentity = Depends(require_admin)) -> HTMLResponse:
     if file_path.exists():
         return HTMLResponse(file_path.read_text(encoding="utf-8"))
     return HTMLResponse("<h1>dashboard files not found</h1>", status_code=500)
-
-
-@app.get("/ops", response_class=RedirectResponse)
-def ops_dashboard_redirect(_admin: AdminIdentity = Depends(require_admin)) -> RedirectResponse:
-    return RedirectResponse(url="/dashboard")
-
-
-@app.get("/ops-legacy", response_class=HTMLResponse)
-def ops_dashboard_legacy(_admin: AdminIdentity = Depends(require_admin)) -> HTMLResponse:
-    file_path = Path(__file__).resolve().parent / "static" / "ops.html"
-    return HTMLResponse(file_path.read_text(encoding="utf-8"))

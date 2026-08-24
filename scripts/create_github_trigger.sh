@@ -1,83 +1,78 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ID="${PROJECT_ID:-lcs-developer-483404}"
-TRIGGER_REGION="${TRIGGER_REGION:-us-central1}"
-TRIGGER_NAME="${TRIGGER_NAME:-oura-navi-monitor}"
-TRIGGER_DESCRIPTION="${TRIGGER_DESCRIPTION:-CI/CD for oura_navi_monitor (manual approval required)}"
-REPO_OWNER="${REPO_OWNER:-Aoki-311}"
-REPO_NAME="${REPO_NAME:-oura_navi_monitor}"
-BRANCH_PATTERN="${BRANCH_PATTERN:-^main$}"
-BUILD_CONFIG="${BUILD_CONFIG:-cloudbuild.yaml}"
-SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-projects/${PROJECT_ID}/serviceAccounts/lcs-agent@lcs-developer-483404.iam.gserviceaccount.com}"
-INCLUDED_FILES="${INCLUDED_FILES:-app/**,frontend/**,deploy/**,scripts/**,sql/**,tests/**,e2e/**,Dockerfile,requirements.txt,cloudbuild.yaml,.env.example}"
-IGNORED_FILES="${IGNORED_FILES:-**/.venv/**,**/__pycache__/**,**/*.pyc,**/.DS_Store,docs/**,**/*.md}"
+PROJECT_ID=""
+TRIGGER_REGION="us-central1"
+TRIGGER_NAME="oura-navi-monitor"
+REPO_OWNER="Aoki-311"
+REPO_NAME="oura_navi_monitor"
+BRANCH_PATTERN="^main$"
+SERVICE_ACCOUNT=""
+IAP_AUDIENCE=""
+APPLY="false"
 
-command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found"; exit 1; }
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project) PROJECT_ID="$2"; shift 2 ;;
+    --region) TRIGGER_REGION="$2"; shift 2 ;;
+    --name) TRIGGER_NAME="$2"; shift 2 ;;
+    --repo-owner) REPO_OWNER="$2"; shift 2 ;;
+    --repo-name) REPO_NAME="$2"; shift 2 ;;
+    --branch-pattern) BRANCH_PATTERN="$2"; shift 2 ;;
+    --service-account) SERVICE_ACCOUNT="$2"; shift 2 ;;
+    --iap-audience) IAP_AUDIENCE="$2"; shift 2 ;;
+    --apply) APPLY="true"; shift ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
 
-gcloud config set project "${PROJECT_ID}" >/dev/null
+[[ -n "${PROJECT_ID}" && -n "${SERVICE_ACCOUNT}" && -n "${IAP_AUDIENCE}" ]] || {
+  echo "--project, exact --service-account and exact --iap-audience are required" >&2
+  exit 2
+}
+
+INCLUDED_FILES="app/**,frontend/**,deploy/**,scripts/**,sql/**,tests/**,e2e/**,Dockerfile,requirements.txt,requirements-dev.txt,cloudbuild.yaml,.env.example"
+IGNORED_FILES="**/.venv/**,**/__pycache__/**,**/*.pyc,**/.DS_Store,docs/**,**/*.md"
+echo "mode=$([[ "${APPLY}" == "true" ]] && echo apply || echo plan)"
+echo "project=${PROJECT_ID} region=${TRIGGER_REGION} trigger=${TRIGGER_NAME}"
+echo "repo=${REPO_OWNER}/${REPO_NAME} branch=${BRANCH_PATTERN} service_account=${SERVICE_ACCOUNT}"
+echo "iap_audience=${IAP_AUDIENCE}"
+if [[ "${APPLY}" != "true" ]]; then
+  exit 0
+fi
+
+[[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || {
+  echo "approved credential is required" >&2
+  exit 2
+}
+command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
 
 trigger_id="$(
-  gcloud builds triggers list \
-    --project="${PROJECT_ID}" \
+  gcloud --project="${PROJECT_ID}" builds triggers list \
     --region="${TRIGGER_REGION}" \
     --filter="name=${TRIGGER_NAME}" \
     --format="value(id)" \
-    | head -n1
+    | head -n 1
 )"
 
-if [[ -n "${trigger_id}" ]]; then
-  echo "Updating existing trigger: ${TRIGGER_NAME} (${trigger_id})"
-  gcloud builds triggers update github "${trigger_id}" \
-    --project="${PROJECT_ID}" \
-    --region="${TRIGGER_REGION}" \
-    --description="${TRIGGER_DESCRIPTION}" \
-    --repo-owner="${REPO_OWNER}" \
-    --repo-name="${REPO_NAME}" \
-    --branch-pattern="${BRANCH_PATTERN}" \
-    --build-config="${BUILD_CONFIG}" \
-    --included-files="${INCLUDED_FILES}" \
-    --ignored-files="${IGNORED_FILES}" \
-    --service-account="${SERVICE_ACCOUNT}" \
-    --include-logs-with-status \
-    --require-approval
-else
-  echo "Creating trigger: ${TRIGGER_NAME}"
-  set +e
-  create_out="$(
-    gcloud builds triggers create github \
-      --project="${PROJECT_ID}" \
-      --region="${TRIGGER_REGION}" \
-      --name="${TRIGGER_NAME}" \
-      --description="${TRIGGER_DESCRIPTION}" \
-      --repo-owner="${REPO_OWNER}" \
-      --repo-name="${REPO_NAME}" \
-      --branch-pattern="${BRANCH_PATTERN}" \
-      --build-config="${BUILD_CONFIG}" \
-      --included-files="${INCLUDED_FILES}" \
-      --ignored-files="${IGNORED_FILES}" \
-      --service-account="${SERVICE_ACCOUNT}" \
-      --include-logs-with-status \
-      --require-approval 2>&1
-  )"
-  code=$?
-  set -e
-  if [[ ${code} -ne 0 ]]; then
-    echo "${create_out}"
-    if echo "${create_out}" | grep -q "Repository mapping does not exist"; then
-      echo
-      echo "Repository mapping is missing."
-      echo "Open this URL once with a human admin account, connect ${REPO_OWNER}/${REPO_NAME}, then rerun this script:"
-      echo "https://console.cloud.google.com/cloud-build/triggers;region=global/connect?project=${PROJECT_ID}"
-    fi
-    exit "${code}"
-  fi
-  echo "${create_out}"
-fi
+common_args=(
+  --project="${PROJECT_ID}"
+  --region="${TRIGGER_REGION}"
+  --description="CI creates a no-traffic OurA Navi Monitor candidate"
+  --repo-owner="${REPO_OWNER}"
+  --repo-name="${REPO_NAME}"
+  --branch-pattern="${BRANCH_PATTERN}"
+  --build-config="cloudbuild.yaml"
+  --included-files="${INCLUDED_FILES}"
+  --ignored-files="${IGNORED_FILES}"
+  --service-account="${SERVICE_ACCOUNT}"
+  --substitutions="_IAP_AUDIENCE=${IAP_AUDIENCE}"
+  --include-logs-with-status
+  --require-approval
+)
 
-echo
-echo "Trigger ready. Any push to ${BRANCH_PATTERN} will start a build in PENDING_APPROVAL."
-echo "Included files: ${INCLUDED_FILES}"
-echo "Ignored files:  ${IGNORED_FILES}"
-echo "Approve deploy with:"
-echo "  gcloud beta builds approve <BUILD_ID> --project=${PROJECT_ID}"
+if [[ -n "${trigger_id}" ]]; then
+  gcloud builds triggers update github "${trigger_id}" "${common_args[@]}"
+else
+  gcloud builds triggers create github --name="${TRIGGER_NAME}" "${common_args[@]}"
+fi

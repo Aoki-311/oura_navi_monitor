@@ -1,11 +1,14 @@
 export function numberOrNull(value) {
+  if (value === undefined || value === null || value === "") return null;
   const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) throw new Error("数値データが不正です");
+  return n;
 }
 
 export function countOrZero(value) {
   const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+  if (!Number.isFinite(n) || n < 0) throw new Error("件数データが不正です");
+  return Math.trunc(n);
 }
 
 export function displayCount(value) {
@@ -48,8 +51,4 @@ export function truncateMiddle(value, keepStart = 10, keepEnd = 6) {
   const text = String(value || "");
   if (text.length <= keepStart + keepEnd + 3) return text || "-";
   return `${text.slice(0, keepStart)}...${text.slice(-keepEnd)}`;
-}
-
-export function safeArray(value) {
-  return Array.isArray(value) ? value : [];
 }

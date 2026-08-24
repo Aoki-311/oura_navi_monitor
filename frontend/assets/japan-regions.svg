@@ -1,0 +1,16 @@
+<svg class="japanMapSvg" viewBox="0 0 720 520" xmlns="http://www.w3.org/2000/svg" aria-label="日本地域別利用状況">
+  <defs>
+    <filter id="mapGlow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <g class="mapGrid" opacity=".18"><path d="M40 80H680M40 160H680M40 240H680M40 320H680M40 400H680M120 40V470M240 40V470M360 40V470M480 40V470M600 40V470"/></g>
+  <g data-area-key="北海道東北" class="mapRegion"><path d="M551 48l73 12 28 38-18 31-48-7-25 24-33-19 8-34-24-20z"/><path d="M520 146l40 12 20 41-13 54-32 22-22-38 8-45-18-25z"/><text x="585" y="91">北海道・東北</text></g>
+  <g data-area-key="関東B" class="mapRegion"><path d="M493 248l42 25 7 48-28 34-38-16-8-50z"/><text x="515" y="300">関東B</text></g>
+  <g data-area-key="関東A" class="mapRegion"><path d="M449 260l43-12-15 41-2 51-36 22-20-39z"/><text x="455" y="315">関東A</text></g>
+  <g data-area-key="首都圏B" class="mapRegion"><path d="M465 340l51 15-7 37-48 7-22-26z"/><text x="487" y="375">首都圏B</text></g>
+  <g data-area-key="首都圏A" class="mapRegion"><path d="M421 325l45 15-27 33-37-4-8-29z"/><text x="427" y="351">首都圏A</text></g>
+  <g data-area-key="東海北陸" class="mapRegion"><path d="M341 287l77-18 12 52-36 19-17 43-54-10-18-42z"/><text x="368" y="322">東海・北陸</text></g>
+  <g data-area-key="関西" class="mapRegion"><path d="M265 319l66-30 13 48-32 43-54 4-21-31z"/><text x="293" y="345">関西</text></g>
+  <g data-area-key="中四国" class="mapRegion"><path d="M139 327l98-20 32 27-18 35-104 10-27-27z"/><path d="M183 393l70-5 19 23-24 29-73-4-18-22z"/><text x="195" y="353">中国</text><text x="216" y="419">四国</text></g>
+  <g data-area-key="九州" class="mapRegion"><path d="M72 377l63-18 25 31-9 39-26 14-10 39-36-17 8-35-27-18z"/><text x="111" y="409">九州</text></g>
+  <g data-area-key="本社・虎ノ門" class="mapMarker" filter="url(#mapGlow)"><circle cx="438" cy="341" r="10"/><circle cx="438" cy="341" r="20" class="mapPulse"/><text x="459" y="337">本社</text><text x="459" y="354">虎ノ門</text></g>
+</svg>
