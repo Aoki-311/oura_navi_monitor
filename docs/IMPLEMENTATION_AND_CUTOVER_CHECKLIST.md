@@ -122,7 +122,7 @@ monitor_field_split_8_1.xlsx
 本轮没有执行以下删除。执行前必须只读 inventory，确认每个对象真实存在、类型
 正确、没有未知下游消费者，并由用户另外授权。
 
-### BigQuery 对象（17 个）
+### BigQuery 对象（18 个）
 
 ```text
 monitor_answer_events
@@ -142,6 +142,7 @@ v_request_user_metric_events
 v_answer_action_events
 v_monitor_event_message_join_keys
 run_googleapis_com_stderr
+run_googleapis_com_varlog_system
 ```
 
 保留 dataset `oura_navi_monitor` 和两个同名 raw owner：
@@ -172,7 +173,7 @@ lcs_rag_app_restore_failed
 `--policy-id projects/{project}/alertPolicies/{id}` 传入。通知渠道保留并复用于新的
 HTTP 5xx、回答失败、事件发射失败、刷新失败和刷新过期告警。
 
-删除脚本默认只打印 17 个完整 BQ 对象、保留的两个 raw 表和待删 policy ID；
+删除脚本默认只打印 18 个完整 BQ 对象、保留的两个 raw 表和待删 policy ID；
 `--apply` 还要求精确确认字符串、DTS 完整资源名和冻结时间；没有 glob 或 dataset
 级删除。
 
@@ -253,7 +254,7 @@ git diff --check
 
 状态：全部通过。LCS frontend ESLint、production build、npm audit 通过，
 pip-audit 为 0 findings；真实名单 plan 为 83 人，`global=69`、`user_map=80`、
-`management=83`，部门 61/11/8/3；删除 plan 精确打印 17 个旧 BQ 对象。
+`management=83`，部门 61/11/8/3；删除 plan 精确打印 18 个旧 BQ 对象。
 
 ### 前端本地真实页面链路
 

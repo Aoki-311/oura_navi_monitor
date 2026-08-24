@@ -250,5 +250,9 @@ def test_obsolete_deletion_retains_canonical_raw_tables() -> None:
     )
     assert "run_googleapis_com_stdout" not in object_line
     assert "run_googleapis_com_requests" not in object_line
+    obsolete_objects = object_line.removeprefix("OBJECTS=(").removesuffix(")").split()
+    assert len(obsolete_objects) == 18
+    assert "run_googleapis_com_stderr" in obsolete_objects
+    assert "run_googleapis_com_varlog_system" in obsolete_objects
     assert "canonical raw tables retained" in script
     assert "--policy-id" in script

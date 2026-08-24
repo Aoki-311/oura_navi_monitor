@@ -23,7 +23,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "${PROJECT_ID}" ]] || { echo "--project is required" >&2; exit 2; }
-OBJECTS=(monitor_answer_events monitor_user_daily monitor_system_hourly monitor_dashboard_snapshots v_monitor_excluded_identities v_requests v_query_suggest_results v_query_suggest_degraded v_sync_telemetry v_ask_audit_events v_followup_resolution_events v_followup_open_result_events v_coverage_gap_workitems v_request_user_metric_events v_answer_action_events v_monitor_event_message_join_keys run_googleapis_com_stderr)
+OBJECTS=(monitor_answer_events monitor_user_daily monitor_system_hourly monitor_dashboard_snapshots v_monitor_excluded_identities v_requests v_query_suggest_results v_query_suggest_degraded v_sync_telemetry v_ask_audit_events v_followup_resolution_events v_followup_open_result_events v_coverage_gap_workitems v_request_user_metric_events v_answer_action_events v_monitor_event_message_join_keys run_googleapis_com_stderr run_googleapis_com_varlog_system)
 echo "mode=$([[ "${APPLY}" == "true" ]] && echo apply || echo plan)"
 echo "project=${PROJECT_ID} dataset=${DATASET_ID} object_count=${#OBJECTS[@]}"
 for object in "${OBJECTS[@]}"; do echo "${PROJECT_ID}.${DATASET_ID}.${object}"; done
