@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts.render_runtime_env import render_refresh_env, render_runtime_env
+from scripts.render_runtime_env import (
+    render_refresh_env,
+    render_runtime_env,
+    validate_iap_audience,
+)
 
 
 def test_runtime_env_has_one_exact_iap_audience_owner(tmp_path: Path) -> None:
@@ -21,7 +25,19 @@ def test_runtime_env_has_one_exact_iap_audience_owner(tmp_path: Path) -> None:
     assert 'MONITOR_IAP_AUDIENCE: "/projects/123/global/backendServices/456"' in text
 
 
-@pytest.mark.parametrize("value", ["", " ", "REQUIRED"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        " ",
+        "REQUIRED",
+        "MUST_BE_CONFIGURED",
+        "audience.example",
+        "/projects/project-id/global/backendServices/456",
+        "/projects/123/regions/us-central1/backendServices/456",
+        "/projects/123/global/backendServices/backend-name",
+    ],
+)
 def test_runtime_env_rejects_missing_iap_audience(tmp_path: Path, value: str) -> None:
     source = tmp_path / "base.yaml"
     source.write_text('MONITOR_PROJECT_ID: "project"\n', encoding="utf-8")
@@ -31,6 +47,13 @@ def test_runtime_env_rejects_missing_iap_audience(tmp_path: Path, value: str) ->
             output=tmp_path / "runtime.yaml",
             iap_audience=value,
         )
+
+
+def test_iap_audience_validator_returns_the_exact_normalized_value() -> None:
+    assert (
+        validate_iap_audience(" /projects/123/global/backendServices/456 ")
+        == "/projects/123/global/backendServices/456"
+    )
 
 
 def test_refresh_env_replaces_the_single_analytics_start_owner(tmp_path: Path) -> None:

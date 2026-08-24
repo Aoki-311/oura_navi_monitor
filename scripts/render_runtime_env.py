@@ -7,10 +7,23 @@ import re
 from pathlib import Path
 
 
+_IAP_AUDIENCE_RE = re.compile(
+    r"^/projects/[1-9][0-9]*/global/backendServices/[1-9][0-9]*$"
+)
+
+
+def validate_iap_audience(value: str) -> str:
+    audience = str(value or "").strip()
+    if not _IAP_AUDIENCE_RE.fullmatch(audience):
+        raise ValueError(
+            "exact IAP signed-header audience must match "
+            "/projects/{PROJECT_NUMBER}/global/backendServices/{BACKEND_SERVICE_ID}"
+        )
+    return audience
+
+
 def render_runtime_env(*, source: Path, output: Path, iap_audience: str) -> None:
-    audience = str(iap_audience or "").strip()
-    if not audience or audience == "REQUIRED":
-        raise ValueError("exact IAP signed-header audience is required")
+    audience = validate_iap_audience(iap_audience)
     text = source.read_text(encoding="utf-8").rstrip() + "\n"
     if "MONITOR_IAP_AUDIENCE:" in text:
         raise ValueError("MONITOR_IAP_AUDIENCE must have one build-time owner")

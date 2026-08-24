@@ -32,6 +32,8 @@
 - [x] PC/iPad/mobile 响应式合同加入 E2E。
 - [x] 旧代码、SQL、脚本、页面、adapter 和冲突文档从工作树删除。
 - [x] Monitor Cloud Build 只创建无流量候选；正式切流只有一个显式脚本。
+- [x] Monitor IAP audience 只由 Cloud Build Trigger 提供；构建配置没有假默认值，
+  Trigger plan/只读回读/写入三种状态不会互相冒充。
 - [x] 生产身份只接受精确 audience/issuer 校验的 IAP JWT；未签名 email header
   只能在显式本机测试模式使用。
 - [x] 后端正式响应的内层字段也是封闭 Pydantic 契约；前端缺字段直接显示
@@ -186,12 +188,16 @@ HTTP 5xx、回答失败、事件发射失败、刷新失败和刷新过期告警
 - 未确认 Firestore 最早可读时间和必要索引；
 - 未冻结 `MONITOR_ANALYTICS_START_AT`；
 - 未验收 83/69/80 名单结果；
-- `MONITOR_IDENTITY_HMAC_KEY` secret 不存在，或 LCS/Monitor 未使用同一 secret；
-- LCS service account / Monitor job account 缺少经过审批的最小权限；
+- `MONITOR_IDENTITY_HMAC_KEY` secret 不存在，或 LCS、Monitor Web 与 Monitor
+  refresh job 未固定到同一已启用的数字版本；不得以 `latest` 代替版本一致性证明；
+- LCS runtime account、Monitor runtime/job account 缺少经过审批的该精确 secret
+  版本最小访问权限；
 - 结构化 stdout 尚未证明落为 `jsonPayload`；
 - Web demand 注释真实遵循率、request ID 连接或 PII 检查失败；
 - Monitor 候选未完成 IAP 登录和业务口径验收。
 - 未取得 IAP protected backend 的精确 Signed Header JWT audience。
+- 当前 GitHub Trigger 尚未用 `scripts/create_github_trigger.sh --verify` 回读证明
+  `_IAP_AUDIENCE`、人工审批、main 分支、构建文件和服务账号与仓库合同完全一致。
 
 ## 6. 一次性原地切换顺序
 
@@ -210,8 +216,9 @@ HTTP 5xx、回答失败、事件发射失败、刷新失败和刷新过期告警
 10. 精确删除第 4 节旧对象、DTS、metrics 和 policies。
 11. 运行 `bootstrap_gcp.sh --stage activate --analytics-start-at ...`；脚本必须验证
     source view 和一次成功重建水位后，才启动唯一 refresh job + 15 分钟 scheduler。
-12. 使用精确 IAP audience 构建 Monitor 无流量候选；完成 IAP 登录、三页和真实
-    数据业务验收。
+12. 使用精确 IAP audience 更新 GitHub Trigger，并用 `--verify` 回读完整合同；
+    只有 `next_push_build_ready=true` 后才批准 Monitor 构建无流量候选，再完成 IAP
+    登录、三页和真实数据业务验收。
 13. 显式把已验收 Monitor revision 切到 100%。
 14. 确认生产流量、事件和数据水位，再结束维护。
 
@@ -226,7 +233,8 @@ PYTHONPATH=. .venv/bin/python -m pytest -q
 .venv/bin/python -m compileall -q app scripts tests
 ```
 
-状态：通过。`72 passed in 1.18s`；compileall 无错误。
+状态：通过。最终 Monitor 全量回归 `87 passed`；compileall 无错误。新增 Trigger
+合同 RED 覆盖占位值、错误资源格式、错误分支/构建文件/人工审批和真实只读回读路径。
 
 ### LCS 合同与回归
 
@@ -255,7 +263,9 @@ git diff --check
 
 另用 PyYAML 解析 Monitor/LCS 两套 Cloud Build 与环境 YAML；用正式 renderer
 展开 9 份 SQL 和原子 publisher，确认没有 `${...}` 遗留。所有 cloud 脚本只运行
-不带 `--apply` 的 plan 分支。
+不带 `--apply` 的 plan 分支。Monitor Trigger plan 只能证明目标参数通过本地校验，
+固定显示 `trigger_contract_verified=false`；真实 Trigger 必须另行获得只读授权后用
+`--verify` 回读，不能从 plan 推断。
 
 状态：全部通过。真实名单 plan 为 83 人，`global=69`、`user_map=80`、
 `management=83`，部门 61/11/8/3；删除 plan 精确打印 17 个旧 BQ 对象。
@@ -275,10 +285,8 @@ git diff --check
 
 ### 最终差异与安全复核
 
-- Monitor `main`、本地 HEAD 与 `origin/main` 均仍为
-  `73f43a17ee2abcd9a12fc79086b50f59039f5f62`；
-- LCS `main`、本地 HEAD 与 `origin/main` 均仍为
-  `86cfb56753bc16191e8baf671b0cbe075007d60b`；
+- 最终 commit/push 后必须分别回读 Monitor/LCS 的 `HEAD`、`origin/main` 和
+  `git ls-remote origin refs/heads/main`；本清单不把旧 SHA 当作新提交的证明；
 - 两仓 `git diff --check` 通过，旧 owner 文件均已在本地工作树消失；
 - active `backend/src`、`backend/deploy` 与 Monitor 运行目录没有旧日志事件读取/输出；
 - 私钥、API key、OAuth token 模式扫描无命中；正式配置中只保留用户明确指定的
@@ -290,10 +298,10 @@ git diff --check
 
 | 层次 | 当前状态 | 证明 |
 | --- | --- | --- |
-| 本地代码 | 本地实现、旧路径关闭与最终验证完成 | 72 个 Monitor 测试、201 个 LCS 测试、10 个 E2E 通过 |
+| 本地代码 | 本地实现、旧路径关闭与最终验证完成 | 87 个 Monitor 测试、LCS 与 E2E 结果须绑定各自最后修改重新回读 |
 | Git commit | 本轮提交承载本地实现 | 最终 SHA 以 Git 回读为准 |
 | Git push | 本轮已授权推送 `main` | 最终状态以 `origin/main` 回读为准 |
-| Cloud Build | push 只允许产生待审批记录，不批准执行 | 两个触发器均要求人工审批 |
+| Cloud Build | push 只允许产生待审批记录，不批准执行 | Trigger 还必须用正式脚本回读完整合同；仅看“要求人工审批”不够 |
 | Cloud Run 候选 | 未创建 | Cloud Build 未批准、未执行 |
 | IAP 登录验收 | 未执行 | 无候选 |
 | 业务验收 | 未执行 | 无真实新数据链 |
