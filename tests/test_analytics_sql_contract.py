@@ -114,11 +114,15 @@ def test_api_views_do_not_read_logging_raw_tables() -> None:
     assert "run_googleapis_com_requests" not in sql
 
 
-def test_missing_persistence_is_visible_coverage_not_a_pipeline_wide_blocker() -> None:
-    sql = _sql("check_data_quality.sql").lower()
-    assert "terminal_without_persistence_measurement" in sql
-    assert "'coverage'" in sql
-    assert "'critical'" in sql
+def test_incomplete_observability_is_visible_coverage_not_a_pipeline_wide_blocker() -> None:
+    normalized = " ".join(_sql("check_data_quality.sql").lower().split())
+    assert (
+        "check_name in ( 'accepted_http_without_question_event', "
+        "'question_without_terminal', "
+        "'terminal_without_persistence_measurement' )"
+    ) in normalized
+    assert "'coverage'" in normalized
+    assert "'critical'" in normalized
 
 
 def test_delayed_message_write_uses_answer_timestamp_for_a_bounded_partition_update() -> None:
@@ -137,7 +141,7 @@ def test_unmatched_source_identity_is_detected_before_scope_filtering() -> None:
     assert "countif(scope.user_id is null)" in sql
 
 
-def test_one_sided_question_or_answer_telemetry_blocks_publish() -> None:
+def test_one_sided_telemetry_is_measured_while_orphan_answers_still_block_publish() -> None:
     sql = _sql("check_data_quality.sql").lower()
     assert "question_without_terminal" in sql
     assert "answer_without_question" in sql

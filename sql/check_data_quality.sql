@@ -115,7 +115,15 @@ WITH source_questions AS (
 SELECT
   check_name,
   failure_count,
-  IF(check_name = 'terminal_without_persistence_measurement', 'coverage', 'critical') AS severity,
+  IF(
+    check_name IN (
+      'accepted_http_without_question_event',
+      'question_without_terminal',
+      'terminal_without_persistence_measurement'
+    ),
+    'coverage',
+    'critical'
+  ) AS severity,
   failure_count = 0 AS passed
 FROM checks
 ORDER BY check_name;
