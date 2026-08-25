@@ -7,6 +7,7 @@ from typing import Any
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from app.domain.management_errors import ManagementError, revision_text
 from app.settings import Settings
 
 
@@ -109,6 +110,7 @@ class UserDirectoryRepository:
         user: dict[str, Any],
         *,
         change: dict[str, Any] | None,
+        expected_updated_at: str = "",
     ) -> dict[str, Any]:
         roster_id = str(user.get("roster_id") or "").strip()
         if not roster_id:
@@ -123,7 +125,7 @@ class UserDirectoryRepository:
         action = str((change or {}).get("action") or "").strip()
         if change is not None and not change_id:
             raise ValueError("change_id is required")
-        claim_refs = {
+        new_claim_refs = {
             (kind, value): self._claim_collection().document(
                 self._claim_document_id(kind, value)
             )
@@ -133,9 +135,17 @@ class UserDirectoryRepository:
         @firestore.transactional
         def commit(transaction: Any) -> None:
             current = user_ref.get(transaction=transaction)
+            current_payload = dict(current.to_dict() or {}) if current.exists else {}
+            old_claim_refs = {
+                (kind, value): self._claim_collection().document(
+                    self._claim_document_id(kind, value)
+                )
+                for kind, value in self._user_claim_values(current_payload)
+            }
+            all_claim_refs = {**old_claim_refs, **new_claim_refs}
             claim_snapshots = {
                 key: ref.get(transaction=transaction)
-                for key, ref in claim_refs.items()
+                for key, ref in all_claim_refs.items()
             }
             label_snapshots = {
                 label_id: self._label_collection().document(label_id).get(
@@ -147,15 +157,33 @@ class UserDirectoryRepository:
                 raise ValueError("user already exists")
             if action == "update" and not current.exists:
                 raise ValueError("user not found")
+            if action == "update" and revision_text(current_payload.get("updated_at")) != str(
+                expected_updated_at or ""
+            ).strip():
+                raise ManagementError("update_conflict", "user update conflict")
+            existing_label_ids = set(current_payload.get("label_ids") or [])
             for snapshot in label_snapshots.values():
                 label = dict(snapshot.to_dict() or {}) if snapshot.exists else {}
-                if not snapshot.exists or label.get("is_active") is not True:
-                    raise ValueError("unknown or inactive labels")
-            for (kind, _value), snapshot in claim_snapshots.items():
+                label_id = str(label.get("label_id") or "")
+                if not snapshot.exists or (
+                    label.get("is_active") is not True and label_id not in existing_label_ids
+                ):
+                    raise ManagementError("invalid_roster_value", "unknown or inactive labels")
+            for (kind, value), snapshot in claim_snapshots.items():
+                if (kind, value) not in new_claim_refs:
+                    continue
                 claim = dict(snapshot.to_dict() or {}) if snapshot.exists else {}
                 if snapshot.exists and str(claim.get("target_id") or "") != roster_id:
-                    raise ValueError(f"{kind} already exists")
-            for (kind, _value), ref in claim_refs.items():
+                    code = "duplicate_email" if kind == "email" else "duplicate_identity"
+                    raise ManagementError(code, f"{kind} already exists")
+            for claim_key, ref in old_claim_refs.items():
+                if claim_key in new_claim_refs:
+                    continue
+                snapshot = claim_snapshots[claim_key]
+                claim = dict(snapshot.to_dict() or {}) if snapshot.exists else {}
+                if snapshot.exists and str(claim.get("target_id") or "") == roster_id:
+                    transaction.delete(ref)
+            for (kind, _value), ref in new_claim_refs.items():
                 transaction.set(
                     ref,
                     {
@@ -178,8 +206,14 @@ class UserDirectoryRepository:
         self,
         user: dict[str, Any],
         change: dict[str, Any],
+        *,
+        expected_updated_at: str = "",
     ) -> dict[str, Any]:
-        return self._put_user_transaction(user, change=change)
+        return self._put_user_transaction(
+            user,
+            change=change,
+            expected_updated_at=expected_updated_at,
+        )
 
     def list_labels(self, *, include_inactive: bool = True) -> list[dict[str, Any]]:
         query = self._label_collection()
@@ -202,6 +236,7 @@ class UserDirectoryRepository:
         label: dict[str, Any],
         *,
         change: dict[str, Any] | None,
+        expected_updated_at: str = "",
     ) -> dict[str, Any]:
         label_id = str(label.get("label_id") or "").strip()
         if not label_id:
@@ -241,8 +276,12 @@ class UserDirectoryRepository:
                 raise ValueError("label already exists")
             if action == "update" and not current.exists:
                 raise ValueError("label not found")
+            if action == "update" and revision_text(current_payload.get("updated_at")) != str(
+                expected_updated_at or ""
+            ).strip():
+                raise ManagementError("update_conflict", "label update conflict")
             if new_claim.exists and str((new_claim.to_dict() or {}).get("target_id") or "") != label_id:
-                raise ValueError("label name already exists")
+                raise ManagementError("duplicate_label", "label name already exists")
             if old_claim_ref is not None and old_claim is not None and old_claim.exists:
                 if str((old_claim.to_dict() or {}).get("target_id") or "") == label_id:
                     transaction.delete(old_claim_ref)
@@ -268,8 +307,14 @@ class UserDirectoryRepository:
         self,
         label: dict[str, Any],
         change: dict[str, Any],
+        *,
+        expected_updated_at: str = "",
     ) -> dict[str, Any]:
-        return self._put_label_transaction(label, change=change)
+        return self._put_label_transaction(
+            label,
+            change=change,
+            expected_updated_at=expected_updated_at,
+        )
 
     def delete_label(self, label_id: str) -> None:
         self._label_collection().document(str(label_id)).delete()
@@ -278,6 +323,8 @@ class UserDirectoryRepository:
         self,
         label_id: str,
         change: dict[str, Any],
+        *,
+        expected_updated_at: str,
     ) -> None:
         resolved_label_id = str(label_id or "").strip()
         change_id = str(change.get("change_id") or "").strip()
@@ -291,6 +338,10 @@ class UserDirectoryRepository:
             if not current.exists:
                 raise ValueError("label not found")
             payload = dict(current.to_dict() or {})
+            if revision_text(payload.get("updated_at")) != str(
+                expected_updated_at or ""
+            ).strip():
+                raise ManagementError("update_conflict", "label delete conflict")
             name_claim = self._label_claim_value(payload)
             claim_ref = self._claim_collection().document(
                 self._claim_document_id("label_name", name_claim)
@@ -302,7 +353,7 @@ class UserDirectoryRepository:
                 )
             ).limit(1)
             if any(True for _document in transaction.get(usage_query)):
-                raise ValueError("label is in use")
+                raise ManagementError("label_in_use", "label is in use")
             transaction.delete(label_ref)
             if claim.exists and str((claim.to_dict() or {}).get("target_id") or "") == resolved_label_id:
                 transaction.delete(claim_ref)

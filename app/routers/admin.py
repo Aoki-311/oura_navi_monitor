@@ -6,16 +6,20 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.contracts.admin import (
+    LABEL_COLORS,
     LabelCreate,
+    LabelDelete,
     LabelListResponse,
     LabelPatch,
     LabelView,
+    ManagementMetadataResponse,
     UserCreate,
     UserListResponse,
     UserPatch,
     UserView,
 )
 from app.dependencies import get_user_management_service
+from app.domain.management_errors import ManagementError
 from app.security.auth import AdminIdentity, require_admin
 from app.services.user_management import UserManagementService
 
@@ -39,6 +43,10 @@ def _user_payload(value: dict[str, Any]) -> dict[str, Any]:
         "mrExperience": value.get("mr_experience") or "-",
         "labelIds": list(value.get("label_ids") or []),
         "isActive": bool(value.get("is_active")),
+        "identityBound": bool(
+            str(value.get("chat_user_id") or "").strip()
+            or str(value.get("user_id") or "").strip()
+        ),
         "updatedAt": _iso(value.get("updated_at")),
         "updatedBy": value.get("updated_by") or "",
     }
@@ -58,10 +66,27 @@ def _label_payload(value: dict[str, Any]) -> dict[str, Any]:
 
 def _translated(exc: Exception) -> HTTPException:
     if isinstance(exc, KeyError):
-        return HTTPException(status_code=404, detail=str(exc.args[0] if exc.args else "not found"))
-    message = str(exc)
-    code = 409 if "exists" in message or "in use" in message else 422
-    return HTTPException(status_code=code, detail=message)
+        return HTTPException(
+            status_code=404,
+            detail={"code": "not_found", "message": str(exc.args[0] if exc.args else "not found")},
+        )
+    if isinstance(exc, ManagementError):
+        status_code = 409 if exc.code in {
+            "bound_email",
+            "duplicate_email",
+            "duplicate_identity",
+            "duplicate_label",
+            "label_in_use",
+            "update_conflict",
+        } else 422
+        return HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        )
+    return HTTPException(
+        status_code=422,
+        detail={"code": "invalid_request", "message": str(exc)},
+    )
 
 
 @router.get("/users", response_model=UserListResponse)
@@ -71,6 +96,15 @@ def list_users(
     service: UserManagementService = Depends(get_user_management_service),
 ) -> dict[str, Any]:
     return {"users": [_user_payload(item) for item in service.list_users(include_inactive=include_inactive)]}
+
+
+@router.get("/metadata", response_model=ManagementMetadataResponse)
+def management_metadata(
+    _admin: AdminIdentity = Depends(require_admin),
+    service: UserManagementService = Depends(get_user_management_service),
+) -> dict[str, Any]:
+    metadata = service.metadata()
+    return {**metadata, "labelColors": sorted(LABEL_COLORS)}
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED, response_model=UserView)
@@ -111,9 +145,13 @@ def update_label(label_id: str, payload: LabelPatch, admin: AdminIdentity = Depe
 
 
 @router.delete("/labels/{label_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_label(label_id: str, admin: AdminIdentity = Depends(require_admin), service: UserManagementService = Depends(get_user_management_service)) -> Response:
+def delete_label(label_id: str, payload: LabelDelete, admin: AdminIdentity = Depends(require_admin), service: UserManagementService = Depends(get_user_management_service)) -> Response:
     try:
-        service.delete_label(label_id, actor=admin.email)
+        service.delete_label(
+            label_id,
+            actor=admin.email,
+            expected_updated_at=payload.expected_updated_at,
+        )
     except (KeyError, ValueError) as exc:
         raise _translated(exc) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

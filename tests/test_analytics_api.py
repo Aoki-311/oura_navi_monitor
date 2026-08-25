@@ -11,15 +11,15 @@ class FakeAnalyticsService:
     def overview(self, **_kwargs):
         return {
             "scope": "global",
-            "status": "ready",
-            "dataThrough": "2026-08-23T01:00:00Z",
+            "scopeUserCount": 69,
+            "freshness": {"state": "fresh", "dataThrough": "2026-08-23T01:00:00Z"},
             "kpis": {
                 "activeUsers": 20,
                 "adoptionRate": 20 / 69,
                 "returnRate": 0.5,
                 "questionsPerActiveUser": 3.2,
-                "completeDeliveryRate": 0.91,
-                "p95LatencyMs": 72000,
+                "completeDelivery": {"value": 0.91, "measuredCount": 20, "totalCount": 20},
+                "p95Latency": {"valueMs": 72000, "measuredCount": 20, "totalCount": 20},
             },
             "hourlyQuestions": [],
             "deviceDistribution": [],
@@ -40,15 +40,14 @@ class FakeAnalyticsService:
         }
 
     def regions(self, **_kwargs):
-        return {"status": "ready", "dataThrough": "2026-08-23T01:00:00Z", "regions": []}
+        return {"scopeUserCount": 80, "freshness": {"state": "fresh", "dataThrough": "2026-08-23T01:00:00Z"}, "regions": []}
 
     def users(self, **_kwargs):
-        return {"status": "ready", "dataThrough": "2026-08-23T01:00:00Z", "users": []}
+        return {"scopeUserCount": 80, "freshness": {"state": "fresh", "dataThrough": "2026-08-23T01:00:00Z"}, "users": []}
 
     def user_detail(self, roster_id: str, **_kwargs):
         return {
-            "status": "ready",
-            "dataThrough": "2026-08-23T01:00:00Z",
+            "freshness": {"state": "fresh", "dataThrough": "2026-08-23T01:00:00Z"},
             "profile": {
                 "rosterId": roster_id,
                 "name": "利用者",
@@ -65,7 +64,7 @@ class FakeAnalyticsService:
                 "activeDays": 0,
                 "questions": 0,
                 "questionsPerActiveDay": None,
-                "completeDeliveryRate": None,
+                "completeDelivery": {"value": None, "measuredCount": 0, "totalCount": 0},
             },
             "comparisons": {
                 "area": {
@@ -73,14 +72,14 @@ class FakeAnalyticsService:
                     "peerCount": 1,
                     "averageQuestions": 0.0,
                     "averageActiveDays": 0.0,
-                    "averageCompleteDeliveryRate": None,
+                    "averageCompleteDelivery": {"value": None, "measuredCount": 0, "totalCount": 1},
                 },
                 "role": {
                     "label": "本社MR",
                     "peerCount": 1,
                     "averageQuestions": 0.0,
                     "averageActiveDays": 0.0,
-                    "averageCompleteDeliveryRate": None,
+                    "averageCompleteDelivery": {"value": None, "measuredCount": 0, "totalCount": 1},
                 },
             },
             "trend": [],
@@ -95,7 +94,6 @@ class FakeAnalyticsService:
             "questionCategories": [],
             "modes": [],
             "devices": [],
-            "conversations": [],
         }
 
 
@@ -116,7 +114,7 @@ def test_only_unversioned_analytics_contract_is_exposed() -> None:
     try:
         response = client.get("/api/analytics/overview", headers=headers)
         assert response.status_code == 200
-        assert response.json()["kpis"]["completeDeliveryRate"] == 0.91
+        assert response.json()["kpis"]["completeDelivery"]["value"] == 0.91
         assert client.get("/api/metrics/dashboard", headers=headers).status_code == 404
         assert client.get("/ops", headers=headers).status_code == 404
         assert client.get("/ops-legacy", headers=headers).status_code == 404

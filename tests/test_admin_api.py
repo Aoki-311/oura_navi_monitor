@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from app.dependencies import get_user_management_service
+from app.domain.management_errors import ManagementError
 from app.main import app
 from app.settings import get_settings
 
@@ -39,10 +40,20 @@ class _AdminService:
     def list_labels(self, **_kwargs):
         return []
 
-    def delete_label(self, label_id, *, actor):
+    @staticmethod
+    def metadata():
+        return {
+            "areas": ["関西"],
+            "workplaces": ["大阪"],
+            "roles": ["本社MR"],
+            "departments": ["DM専任", "ヘルスケア本社", "DM本社", "管理者"],
+        }
+
+    def delete_label(self, label_id, *, actor, expected_updated_at):
         assert actor == "admin@example.com"
+        assert expected_updated_at == "2026-08-24T00:00:00+00:00"
         if label_id == "in_use":
-            raise ValueError("label is in use")
+            raise ManagementError("label_in_use", "label is in use")
         self.deleted.append(label_id)
 
 
@@ -73,6 +84,12 @@ def test_admin_contract_rejects_scope_flags_and_translates_label_conflict() -> N
         response = client.get("/api/admin/users", headers=headers)
         assert response.status_code == 200
         assert "scope" not in response.json()["users"][0]
+        assert response.json()["users"][0]["identityBound"] is False
+
+        metadata = client.get("/api/admin/metadata", headers=headers)
+        assert metadata.status_code == 200
+        assert metadata.json()["areas"] == ["関西"]
+        assert metadata.json()["departments"] == ["DM専任", "ヘルスケア本社", "DM本社", "管理者"]
 
         rejected = client.post(
             "/api/admin/users",
@@ -81,7 +98,12 @@ def test_admin_contract_rejects_scope_flags_and_translates_label_conflict() -> N
         )
         assert rejected.status_code == 422
 
-        conflict = client.delete("/api/admin/labels/in_use", headers=headers)
+        conflict = client.request(
+            "DELETE",
+            "/api/admin/labels/in_use",
+            json={"expected_updated_at": "2026-08-24T00:00:00+00:00"},
+            headers=headers,
+        )
         assert conflict.status_code == 409
     finally:
         app.dependency_overrides.clear()

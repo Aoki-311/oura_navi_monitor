@@ -12,7 +12,9 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.http_request_events` (
 )
 PARTITION BY request_date
 CLUSTER BY endpoint_class, status, revision_name
-OPTIONS (require_partition_filter = TRUE, partition_expiration_days = ${FACT_RETENTION_DAYS});
+OPTIONS (require_partition_filter = TRUE);
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.http_request_events`
+SET OPTIONS (partition_expiration_days = NULL);
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.question_events` (
   event_id STRING NOT NULL,
@@ -43,12 +45,20 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.question_events` (
   product_resolved_count INT64,
   producer_revision STRING,
   producer_git_sha STRING,
+  record_origin STRING,
+  measurement_profile STRING,
   source_event_ts TIMESTAMP,
   materialized_at TIMESTAMP
 )
 PARTITION BY question_date
 CLUSTER BY roster_id, primary_question_category, primary_product_key, mode
-OPTIONS (require_partition_filter = TRUE, partition_expiration_days = ${FACT_RETENTION_DAYS});
+OPTIONS (require_partition_filter = TRUE);
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
+ADD COLUMN IF NOT EXISTS record_origin STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
+ADD COLUMN IF NOT EXISTS measurement_profile STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
+SET OPTIONS (partition_expiration_days = NULL);
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.answer_events` (
   event_id STRING NOT NULL,
@@ -99,12 +109,20 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.answer_events` (
   revision_name STRING,
   git_sha STRING,
   build_id STRING,
+  record_origin STRING,
+  measurement_profile STRING,
   source_event_ts TIMESTAMP,
   materialized_at TIMESTAMP
 )
 PARTITION BY answer_date
 CLUSTER BY roster_id, terminal, primary_question_category, revision_name
-OPTIONS (require_partition_filter = TRUE, partition_expiration_days = ${FACT_RETENTION_DAYS});
+OPTIONS (require_partition_filter = TRUE);
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
+ADD COLUMN IF NOT EXISTS record_origin STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
+ADD COLUMN IF NOT EXISTS measurement_profile STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
+SET OPTIONS (partition_expiration_days = NULL);
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.answer_action_events` (
   event_id STRING NOT NULL,
@@ -127,7 +145,9 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.answer_action_events` (
 )
 PARTITION BY action_date
 CLUSTER BY roster_id, action, target_message_id
-OPTIONS (require_partition_filter = TRUE, partition_expiration_days = ${FACT_RETENTION_DAYS});
+OPTIONS (require_partition_filter = TRUE);
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_action_events`
+SET OPTIONS (partition_expiration_days = NULL);
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.demand_events` (
   event_id STRING NOT NULL,
@@ -152,7 +172,9 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.demand_events` (
 )
 PARTITION BY question_date
 CLUSTER BY question_category, delivery_state, roster_id
-OPTIONS (require_partition_filter = TRUE, partition_expiration_days = ${FACT_RETENTION_DAYS});
+OPTIONS (require_partition_filter = TRUE);
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.demand_events`
+SET OPTIONS (partition_expiration_days = NULL);
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.citation_events` (
   event_id STRING NOT NULL,
@@ -176,7 +198,9 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.citation_events` (
 )
 PARTITION BY answer_date
 CLUSTER BY source_type, primary_product_key, document_key
-OPTIONS (require_partition_filter = TRUE, partition_expiration_days = ${FACT_RETENTION_DAYS});
+OPTIONS (require_partition_filter = TRUE);
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.citation_events`
+SET OPTIONS (partition_expiration_days = NULL);
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.conversation_events` (
   event_id STRING NOT NULL,
@@ -197,7 +221,9 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.conversation_events` (
 )
 PARTITION BY updated_date
 CLUSTER BY roster_id, primary_mode, status
-OPTIONS (require_partition_filter = TRUE, partition_expiration_days = ${FACT_RETENTION_DAYS});
+OPTIONS (require_partition_filter = TRUE);
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.conversation_events`
+SET OPTIONS (partition_expiration_days = NULL);
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.user_scope` (
   roster_id STRING NOT NULL,

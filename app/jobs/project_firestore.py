@@ -1,18 +1,70 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from collections import Counter
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
+from zoneinfo import ZoneInfo
 
 from google.cloud import bigquery, firestore
+from google.api_core.exceptions import (
+    DeadlineExceeded,
+    InternalServerError,
+    ServiceUnavailable,
+    TooManyRequests,
+)
+from google.api_core.retry import Retry
 from google.cloud.firestore_v1.base_query import FieldFilter
+from google.cloud.firestore_v1.field_path import FieldPath
 
 from app.contracts.admin import normalize_email
 from app.domain.analysis_scopes import Department, membership_for
 from app.repositories.user_directory import UserDirectoryRepository
 from app.services.user_management import UserManagementService
 from app.settings import Settings
+
+
+class ProjectionDataError(ValueError):
+    """A source document cannot be projected without inventing analytics data."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class ProjectionReadError(RuntimeError):
+    """A bounded canonical Firestore read could not be completed."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class ChatRootRecord:
+    root_id: str
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ChatConversationRecord:
+    root_id: str
+    conversation_id: str
+    conversation: dict[str, Any]
+    messages: list[dict[str, Any]]
+
+
+@dataclass
+class FullChatSnapshot:
+    roots: list[ChatRootRecord] = field(default_factory=list)
+    conversations: list[ChatConversationRecord] = field(default_factory=list)
+    issues: Counter[str] = field(default_factory=Counter)
+
+
+ProgressCallback = Callable[[str, int], None]
+NO_INTERNAL_RETRY = Retry(predicate=lambda _exc: False, deadline=0)
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -33,40 +85,53 @@ def _firestore_iso(value: datetime) -> str:
     return resolved.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _local_date(value: datetime, *, timezone_name: str):
+    return value.astimezone(ZoneInfo(timezone_name)).date()
+
+
 def _stable_id(*parts: str) -> str:
     seed = "|".join(str(part or "").strip() for part in parts)
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
 
 
 def project_conversation(
-    *, roster_id: str, user_id: str, conversation_id: str, conversation: dict[str, Any], messages: list[dict[str, Any]]
+    *, roster_id: str, user_id: str, conversation_id: str,
+    conversation: dict[str, Any], messages: list[dict[str, Any]],
+    timezone_name: str,
 ) -> dict[str, Any]:
-    user_messages = [item for item in messages if str(item.get("role") or "").lower() == "user"]
-    assistant_messages = [item for item in messages if str(item.get("role") or "").lower() == "assistant"]
+    user_messages = [item for item in messages if str(item.get("role") or "").strip().lower() == "user"]
+    assistant_messages = [item for item in messages if str(item.get("role") or "").strip().lower() == "assistant"]
     timestamps = [value for item in messages if (value := _timestamp(item.get("timestamp") or item.get("updatedAt"))) is not None]
     modes = Counter(str(item.get("modeAtSend") or "").strip().lower() for item in messages if str(item.get("modeAtSend") or "").strip())
-    updated_at = _timestamp(conversation.get("updatedAt")) or max(timestamps, default=datetime.now(timezone.utc))
+    conversation_updated_at = _timestamp(conversation.get("updatedAt"))
+    if not timestamps and conversation_updated_at is None:
+        raise ProjectionDataError("missing_conversation_timestamp")
+    first_active_at = min(timestamps) if timestamps else conversation_updated_at
+    last_active_at = max(timestamps) if timestamps else conversation_updated_at
+    if first_active_at is None or last_active_at is None:
+        raise ProjectionDataError("missing_conversation_timestamp")
     return {
         "event_id": f"conversation:{_stable_id(roster_id, conversation_id)}",
         "conversation_id": conversation_id,
         "user_id": user_id,
         "roster_id": roster_id,
-        "first_active_at": min(timestamps, default=updated_at),
-        "last_active_at": max(timestamps, default=updated_at),
-        "updated_date": updated_at.date(),
+        "first_active_at": first_active_at,
+        "last_active_at": last_active_at,
+        "updated_date": _local_date(last_active_at, timezone_name=timezone_name),
         "user_message_count": len(user_messages),
         "assistant_message_count": len(assistant_messages),
         "followup_count": max(0, len(user_messages) - 1),
-        "active_days": len({value.date() for value in timestamps}),
+        "active_days": len({_local_date(value, timezone_name=timezone_name) for value in timestamps}),
         "primary_mode": modes.most_common(1)[0][0] if modes else str(conversation.get("mode") or ""),
         "status": str(conversation.get("visibility") or "active"),
-        "source_event_ts": updated_at,
+        "source_event_ts": last_active_at,
         "materialized_at": datetime.now(timezone.utc),
     }
 
 
 def project_citations(
-    *, roster_id: str, user_id: str, conversation_id: str, messages: Iterable[dict[str, Any]]
+    *, roster_id: str, user_id: str, conversation_id: str,
+    messages: Iterable[dict[str, Any]], timezone_name: str,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for message in messages:
@@ -88,7 +153,7 @@ def project_citations(
                     "event_id": f"citation:{_stable_id(roster_id, conversation_id, message_id, citation_id, str(index))}",
                     "answer_event_id": f"answer:{request_id}" if request_id else "",
                     "answer_ts": answer_ts,
-                    "answer_date": answer_ts.date(),
+                    "answer_date": _local_date(answer_ts, timezone_name=timezone_name),
                     "user_id": user_id,
                     "roster_id": roster_id,
                     "message_id": message_id,
@@ -148,6 +213,177 @@ def struct_array_parameter(
     return bigquery.ArrayQueryParameter(name, row_type, values)
 
 
+def _conversation_owner(path: str, *, root_collection: str) -> tuple[str, str] | None:
+    parts = str(path or "").split("/")
+    if (
+        len(parts) == 4
+        and parts[0] == root_collection
+        and parts[2] == "conversations"
+        and all(parts)
+    ):
+        return parts[1], parts[3]
+    return None
+
+
+def _message_owner(path: str, *, root_collection: str) -> tuple[str, str] | None:
+    parts = str(path or "").split("/")
+    if (
+        len(parts) == 6
+        and parts[0] == root_collection
+        and parts[2] == "conversations"
+        and parts[4] == "messages"
+        and all(parts)
+    ):
+        return parts[1], parts[3]
+    return None
+
+
+class FirestoreChatReader:
+    """The only reader for a complete persisted chat snapshot.
+
+    A full rebuild uses one root stream, one conversations collection-group
+    stream, and one messages collection-group stream.  It never performs one
+    messages RPC per conversation.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        root_collection: str,
+        read_timeout_seconds: int,
+        read_page_size: int = 1000,
+    ) -> None:
+        self._client = client
+        self._root_collection = str(root_collection or "").strip()
+        self._read_timeout_seconds = max(1, int(read_timeout_seconds))
+        self._read_page_size = max(1, int(read_page_size))
+
+    def _paged_collection_group(
+        self,
+        name: str,
+        *,
+        progress: ProgressCallback | None,
+    ):
+        cursor = None
+        total = 0
+        empty_failures = 0
+        while True:
+            query = (
+                self._client.collection_group(name)
+                .order_by(FieldPath.document_id())
+                .limit(self._read_page_size)
+            )
+            if cursor is not None:
+                query = query.start_after(cursor)
+            page_count = 0
+            interrupted = None
+            try:
+                for document in query.stream(
+                    retry=NO_INTERNAL_RETRY,
+                    timeout=self._read_timeout_seconds,
+                ):
+                    page_count += 1
+                    total += 1
+                    cursor = document
+                    yield document
+                    if progress is not None and total % 250 == 0:
+                        progress(f"firestore_{name}_read", total)
+            except (
+                DeadlineExceeded,
+                InternalServerError,
+                ServiceUnavailable,
+                TooManyRequests,
+            ) as exc:
+                interrupted = exc
+
+            if page_count > 0:
+                empty_failures = 0
+                if progress is not None and total % 250:
+                    progress(f"firestore_{name}_read", total)
+                if interrupted is not None:
+                    if progress is not None:
+                        progress(f"firestore_{name}_resume", total)
+                    continue
+            elif interrupted is not None:
+                empty_failures += 1
+                if progress is not None:
+                    progress(f"firestore_{name}_retry", empty_failures)
+                if empty_failures >= 3:
+                    raise ProjectionReadError(
+                        f"firestore_{name}_read_failed"
+                    ) from interrupted
+                time.sleep(empty_failures)
+                continue
+
+            if page_count == 0 or page_count < self._read_page_size:
+                return
+
+    def full_snapshot(
+        self,
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> FullChatSnapshot:
+        snapshot = FullChatSnapshot()
+
+        for document in self._client.collection(self._root_collection).stream(
+            retry=NO_INTERNAL_RETRY,
+            timeout=self._read_timeout_seconds,
+        ):
+            snapshot.roots.append(
+                ChatRootRecord(root_id=document.id, payload=document.to_dict() or {})
+            )
+        if progress is not None:
+            progress("firestore_roots_read", len(snapshot.roots))
+
+        conversations: dict[tuple[str, str], dict[str, Any]] = {}
+        for document in self._paged_collection_group(
+            "conversations", progress=progress
+        ):
+            owner = _conversation_owner(
+                document.reference.path, root_collection=self._root_collection
+            )
+            if owner is None:
+                snapshot.issues["unexpected_conversation_path"] += 1
+                continue
+            if owner in conversations:
+                snapshot.issues["duplicate_conversation_path"] += 1
+                continue
+            conversations[owner] = document.to_dict() or {}
+        if progress is not None:
+            progress("firestore_conversations_read", len(conversations))
+
+        messages: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        message_count = 0
+        for document in self._paged_collection_group("messages", progress=progress):
+            owner = _message_owner(
+                document.reference.path, root_collection=self._root_collection
+            )
+            if owner is None:
+                snapshot.issues["unexpected_message_path"] += 1
+                continue
+            payload = document.to_dict() or {}
+            messages.setdefault(owner, []).append({**payload, "id": document.id})
+            message_count += 1
+
+        for owner, conversation in conversations.items():
+            conversation_messages = messages.pop(owner, [])
+            snapshot.conversations.append(
+                ChatConversationRecord(
+                    root_id=owner[0],
+                    conversation_id=owner[1],
+                    conversation=conversation,
+                    messages=conversation_messages,
+                )
+            )
+        snapshot.issues["orphan_message_conversation"] += sum(
+            len(items) for items in messages.values()
+        )
+        if snapshot.issues["orphan_message_conversation"] == 0:
+            del snapshot.issues["orphan_message_conversation"]
+        return snapshot
+
+
 class FirestoreProjector:
     """Single bounded projector for roster identity, conversations, and citations."""
 
@@ -161,6 +397,12 @@ class FirestoreProjector:
         database = str(settings.monitor_firestore_database or "(default)").strip() or "(default)"
         self._settings = settings
         self._firestore = firestore_client or firestore.Client(project=settings.monitor_project_id, database=database)
+        self._chat_reader = FirestoreChatReader(
+            self._firestore,
+            root_collection=settings.monitor_firestore_chat_collection,
+            read_timeout_seconds=settings.monitor_firestore_read_timeout_seconds,
+            read_page_size=settings.monitor_firestore_read_page_size,
+        )
         self._directory = directory or UserDirectoryRepository(settings, client=self._firestore)
         self._manager = UserManagementService(
             directory=self._directory,
@@ -171,7 +413,10 @@ class FirestoreProjector:
         users = {normalize_email(item["email"]): item for item in self._directory.list_users(include_inactive=True)}
         matched = 0
         roots = self._firestore.collection(self._settings.monitor_firestore_chat_collection)
-        for document in roots.stream():
+        for document in roots.stream(
+            retry=NO_INTERNAL_RETRY,
+            timeout=self._settings.monitor_firestore_read_timeout_seconds,
+        ):
             payload = document.to_dict() or {}
             if payload.get("identityVerified") is not True:
                 continue
@@ -217,9 +462,10 @@ class FirestoreProjector:
         *,
         window_start: datetime,
         window_end: datetime,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
         conversation_rows: list[dict[str, Any]] = []
         citation_rows: list[dict[str, Any]] = []
+        issues: Counter[str] = Counter()
         for user in self._directory.list_users(include_inactive=False):
             chat_user_id = str(user.get("chat_user_id") or "").strip()
             user_id = str(user.get("user_id") or "").strip()
@@ -231,16 +477,31 @@ class FirestoreProjector:
                 .where(filter=FieldFilter("updatedAt", ">=", _firestore_iso(window_start)))
                 .where(filter=FieldFilter("updatedAt", "<", _firestore_iso(window_end)))
             )
-            for conversation_doc in query.stream():
+            for conversation_doc in query.stream(
+                retry=NO_INTERNAL_RETRY,
+                timeout=self._settings.monitor_firestore_read_timeout_seconds
+            ):
                 conversation = conversation_doc.to_dict() or {}
-                message_docs = list(conversation_doc.reference.collection("messages").order_by("timestamp").stream())
-                messages = [{"id": item.id, **(item.to_dict() or {})} for item in message_docs]
-                conversation_rows.append(project_conversation(
-                    roster_id=user["roster_id"], user_id=user_id, conversation_id=conversation_doc.id,
-                    conversation=conversation, messages=messages,
-                ))
+                message_docs = list(
+                    conversation_doc.reference.collection("messages")
+                    .order_by("timestamp")
+                    .stream(
+                        retry=NO_INTERNAL_RETRY,
+                        timeout=self._settings.monitor_firestore_read_timeout_seconds,
+                    )
+                )
+                messages = [{**(item.to_dict() or {}), "id": item.id} for item in message_docs]
+                try:
+                    conversation_rows.append(project_conversation(
+                        roster_id=user["roster_id"], user_id=user_id, conversation_id=conversation_doc.id,
+                        conversation=conversation, messages=messages,
+                        timezone_name=self._settings.monitor_timezone,
+                    ))
+                except ProjectionDataError as exc:
+                    issues[exc.code] += 1
+                    continue
                 citation_rows.extend(project_citations(
                     roster_id=user["roster_id"], user_id=user_id, conversation_id=conversation_doc.id,
-                    messages=messages,
+                    messages=messages, timezone_name=self._settings.monitor_timezone,
                 ))
-        return conversation_rows, citation_rows
+        return conversation_rows, citation_rows, dict(sorted(issues.items()))

@@ -50,7 +50,7 @@ echo "dataset=${PROJECT_ID}.${DATASET_ID} sink=${SINK_NAME} job=${JOB_NAME}"
 echo "scheduler=${SCHEDULER_QUARTER} ttl_collections=${ADMIN_CHANGE_COLLECTION},${EXPORT_COLLECTION}"
 if [[ "${APPLY}" != "true" ]]; then
   if [[ "${STAGE}" == "prepare" ]]; then
-    echo "prepare=ttl,canonical_tables,logging_sink_writer"
+    echo "prepare=ttl,canonical_base_tables,logging_sink_writer"
     "${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}"
   else
     echo "activate=verified_source_views,refresh_job,scheduler analytics_start_at=${ANALYTICS_START_AT}"
@@ -76,7 +76,7 @@ if [[ "${STAGE}" == "prepare" ]]; then
   "${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${ROOT_DIR}/.venv/bin/python" --apply
 
   DESTINATION="bigquery.googleapis.com/projects/${PROJECT_ID}/datasets/${DATASET_ID}"
-  FILTER="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${SOURCE_SERVICE}\" AND (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Frequests\" OR (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstdout\" AND jsonPayload.monitor_event=true))"
+  FILTER="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${SOURCE_SERVICE}\" AND (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Frequests\" OR (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstdout\" AND (jsonPayload.monitor_event=true OR textPayload=~\"(request_user_metric_json|stream_terminal_json)=\")) OR (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstderr\" AND textPayload=~\"tmcs_stage_latency_json[ =]\"))"
   if gcloud --project="${PROJECT_ID}" logging sinks describe "${SINK_NAME}" >/dev/null 2>&1; then
     gcloud --project="${PROJECT_ID}" logging sinks update "${SINK_NAME}" "${DESTINATION}" --log-filter="${FILTER}" --use-partitioned-tables
   else
@@ -93,6 +93,12 @@ fi
 for object in monitor_event_source http_request_source pipeline_state pipeline_runs; do
   bq --project_id="${PROJECT_ID}" --location="${LOCATION}" show "${PROJECT_ID}:${DATASET_ID}.${object}" >/dev/null || {
     echo "canonical activation prerequisite missing: ${PROJECT_ID}.${DATASET_ID}.${object}" >&2; exit 2;
+  }
+done
+for routine in dashboard_events dashboard_user_list; do
+  bq --project_id="${PROJECT_ID}" --location="${LOCATION}" show --routine \
+    "${PROJECT_ID}:${DATASET_ID}.${routine}" >/dev/null || {
+    echo "canonical activation prerequisite missing: ${PROJECT_ID}.${DATASET_ID}.${routine}" >&2; exit 2;
   }
 done
 PUBLISHED_READY="$(bq --project_id="${PROJECT_ID}" --location="${LOCATION}" query \

@@ -48,8 +48,9 @@ async def add_security_headers(request: Request, call_next) -> Response:
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
-    if request.url.path.startswith("/dashboard-assets/"):
-        response.headers.setdefault("Cache-Control", "public, max-age=3600")
+    if request.url.path == "/dashboard" or request.url.path.startswith("/dashboard-assets/"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
     return response
 
 

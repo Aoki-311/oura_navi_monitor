@@ -11,6 +11,7 @@
     <script type="module" src="/dashboard-assets/app.js"></script>
   </head>
   <body>
+    <a class="skipLink" href="#pageRoot">本文へ移動</a>
     <header class="appHeader">
       <a class="brand" href="/dashboard" aria-label="OurA Navi User Analytics ホーム">
         <span class="brandMark">A</span>
@@ -27,7 +28,7 @@
         <button id="refreshButton" class="primaryButton">再読込</button>
       </div>
     </header>
-    <main id="pageRoot" class="pageRoot" aria-live="polite"></main>
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <main id="pageRoot" class="pageRoot" tabindex="-1"></main>
+    <div id="toast" class="toast" aria-live="polite" hidden></div>
   </body>
 </html>

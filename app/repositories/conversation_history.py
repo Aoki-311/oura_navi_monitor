@@ -23,6 +23,14 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _nonnegative_count(value: Any) -> int | None:
+    try:
+        resolved = int(value or 0)
+    except (TypeError, ValueError):
+        return None
+    return resolved if resolved >= 0 else None
+
+
 class ConversationHistoryRepository:
     """The sole Monitor reader for an already resolved LCS chat user."""
 
@@ -54,11 +62,14 @@ class ConversationHistoryRepository:
             payload = document.to_dict() or {}
             if str(payload.get("visibility") or "active").lower() == "hidden":
                 continue
+            message_count = _nonnegative_count(payload.get("messageCount"))
+            if message_count is None:
+                continue
             rows.append(
                 {
                     "conversationId": document.id,
                     "title": str(payload.get("title") or ""),
-                    "messageCount": int(payload.get("messageCount") or 0),
+                    "messageCount": message_count,
                     "updatedAt": str(payload.get("updatedAt") or ""),
                     "updatedAtJst": self._local_text(payload.get("updatedAt")),
                 }
@@ -75,27 +86,42 @@ class ConversationHistoryRepository:
     ) -> dict[str, Any]:
         if not chat_user_id or not conversation_id:
             return {"messages": [], "page": {"nextCursor": ""}}
-        query = (
+        conversation_ref = (
             self._root()
             .document(chat_user_id)
             .collection("conversations")
             .document(conversation_id)
-            .collection("messages")
-            .order_by("timestamp", direction=firestore.Query.ASCENDING)
         )
-        documents = list(query.stream())
-        offset = 0
+        conversation = conversation_ref.get()
+        conversation_payload = dict(conversation.to_dict() or {}) if conversation.exists else {}
+        if not conversation.exists or str(
+            conversation_payload.get("visibility") or "active"
+        ).lower() == "hidden":
+            raise ValueError("conversation not found")
+        messages_ref = conversation_ref.collection("messages")
+        query = messages_ref.order_by(
+            "timestamp", direction=firestore.Query.ASCENDING
+        )
         if cursor:
             try:
-                offset = max(0, int(base64.urlsafe_b64decode(cursor.encode("ascii")).decode("ascii")))
+                cursor_id = base64.urlsafe_b64decode(
+                    cursor.encode("ascii")
+                ).decode("utf-8")
             except Exception as exc:
                 raise ValueError("invalid message cursor") from exc
+            cursor_document = messages_ref.document(cursor_id).get()
+            if not cursor_document.exists:
+                raise ValueError("invalid message cursor")
+            query = query.start_after(cursor_document)
         page_size = max(1, min(int(limit), 500))
-        selected = documents[offset : offset + page_size]
+        documents = list(query.limit(page_size + 1).stream())
+        selected = documents[:page_size]
         messages = []
         for document in selected:
             payload = document.to_dict() or {}
             role = str(payload.get("role") or "").lower()
+            if role not in {"user", "assistant"}:
+                continue
             messages.append(
                 {
                     "messageId": document.id,
@@ -108,10 +134,9 @@ class ConversationHistoryRepository:
                     "status": str(payload.get("status") or ""),
                 }
             )
-        next_offset = offset + len(selected)
         next_cursor = (
-            base64.urlsafe_b64encode(str(next_offset).encode("ascii")).decode("ascii")
-            if next_offset < len(documents)
+            base64.urlsafe_b64encode(selected[-1].id.encode("utf-8")).decode("ascii")
+            if len(documents) > page_size and selected
             else ""
         )
         return {"messages": messages, "page": {"nextCursor": next_cursor}}

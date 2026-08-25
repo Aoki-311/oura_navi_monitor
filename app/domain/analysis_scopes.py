@@ -19,6 +19,22 @@ class AnalysisScope(StrEnum):
     USER_MAP = "user_map"
 
 
+def department_in_scope(
+    department: Department | str,
+    scope: AnalysisScope,
+) -> bool:
+    """Return historical eligibility without applying the current active flag."""
+
+    value = Department(department)
+    if scope is AnalysisScope.GLOBAL:
+        return value in {Department.DM_FIELD, Department.HEALTHCARE_HQ}
+    return value in {
+        Department.DM_FIELD,
+        Department.HEALTHCARE_HQ,
+        Department.DM_HQ,
+    }
+
+
 @dataclass(frozen=True)
 class ScopeMembership:
     global_enabled: bool
@@ -41,14 +57,9 @@ def membership_for(
     del label_ids
     if not is_active:
         return ScopeMembership(False, False)
-    value = Department(department)
     return ScopeMembership(
-        global_enabled=value in {Department.DM_FIELD, Department.HEALTHCARE_HQ},
-        user_map_enabled=value in {
-            Department.DM_FIELD,
-            Department.HEALTHCARE_HQ,
-            Department.DM_HQ,
-        },
+        global_enabled=department_in_scope(department, AnalysisScope.GLOBAL),
+        user_map_enabled=department_in_scope(department, AnalysisScope.USER_MAP),
     )
 
 

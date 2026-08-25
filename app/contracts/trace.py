@@ -12,7 +12,7 @@ class TraceModel(BaseModel):
 class TraceMessage(TraceModel):
     messageId: str
     timestampJst: str
-    role: str
+    role: Literal["user", "assistant"]
     roleLabel: str
     content: str
     mode: str

@@ -20,7 +20,7 @@ done
 
 [[ -n "${PROJECT_ID}" ]] || { echo "--project is required" >&2; exit 2; }
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SQL_FILES=(create_dataset.sql create_fact_tables.sql create_aggregates.sql create_api_views.sql)
+SQL_FILES=(create_dataset.sql create_fact_tables.sql create_aggregates.sql)
 
 echo "mode=$([[ "${APPLY}" == "true" ]] && echo apply || echo plan)"
 echo "project=${PROJECT_ID} location=${LOCATION} dataset=${DATASET_ID}"

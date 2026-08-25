@@ -9,13 +9,30 @@ class AnalyticsModel(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
+class DataFreshness(AnalyticsModel):
+    state: Literal["fresh", "stale", "unknown"]
+    dataThrough: str
+
+
+class RateMeasurement(AnalyticsModel):
+    value: float | None
+    measuredCount: int
+    totalCount: int
+
+
+class LatencyMeasurement(AnalyticsModel):
+    valueMs: int | None
+    measuredCount: int
+    totalCount: int
+
+
 class Kpis(AnalyticsModel):
     activeUsers: int
     adoptionRate: float | None
     returnRate: float | None
     questionsPerActiveUser: float | None
-    completeDeliveryRate: float | None
-    p95LatencyMs: int | None
+    completeDelivery: RateMeasurement
+    p95Latency: LatencyMeasurement
 
 
 class HourlyQuestion(AnalyticsModel):
@@ -57,6 +74,7 @@ class CountRow(AnalyticsModel):
 class ProductCategoryCell(AnalyticsModel):
     product: str
     category: str
+    categoryLabel: str
     count: int
 
 
@@ -92,9 +110,9 @@ class UserRow(AnalyticsModel):
     labels: list[AnalyticsLabel]
     lastActiveAt: str
     activeDays7: int
-    questionCount7: int
-    completeDeliveryRate: float | None
-    activity: Literal["high", "middle", "low", "dormant"]
+    userMessageCount7: int
+    completeDelivery: RateMeasurement
+    activity: Literal["high", "middle", "low", "dormant"] | None
     activityLabel: str
 
 
@@ -115,7 +133,7 @@ class UserSummary(AnalyticsModel):
     activeDays: int
     questions: int
     questionsPerActiveDay: float | None
-    completeDeliveryRate: float | None
+    completeDelivery: RateMeasurement
 
 
 class PeerComparison(AnalyticsModel):
@@ -123,7 +141,7 @@ class PeerComparison(AnalyticsModel):
     peerCount: int
     averageQuestions: float | None
     averageActiveDays: float | None
-    averageCompleteDeliveryRate: float | None
+    averageCompleteDelivery: RateMeasurement
 
 
 class UserComparisons(AnalyticsModel):
@@ -134,7 +152,7 @@ class UserComparisons(AnalyticsModel):
 class UserTrendRow(AnalyticsModel):
     date: str
     questions: int
-    completeDeliveryRate: float | None
+    completeDelivery: RateMeasurement
 
 
 class ConversationRow(AnalyticsModel):
@@ -147,8 +165,8 @@ class ConversationRow(AnalyticsModel):
 
 class OverviewResponse(AnalyticsModel):
     scope: Literal["global"]
-    status: Literal["ready", "unavailable"]
-    dataThrough: str
+    scopeUserCount: int
+    freshness: DataFreshness
     kpis: Kpis
     hourlyQuestions: list[HourlyQuestion]
     deviceDistribution: list[DistributionRow]
@@ -164,20 +182,19 @@ class OverviewResponse(AnalyticsModel):
 
 
 class RegionsResponse(AnalyticsModel):
-    status: Literal["ready", "unavailable"]
-    dataThrough: str
+    scopeUserCount: int
+    freshness: DataFreshness
     regions: list[RegionRow]
 
 
 class UsersResponse(AnalyticsModel):
-    status: Literal["ready", "unavailable"]
-    dataThrough: str
+    scopeUserCount: int
+    freshness: DataFreshness
     users: list[UserRow]
 
 
 class UserDetailResponse(AnalyticsModel):
-    status: Literal["ready", "unavailable"]
-    dataThrough: str
+    freshness: DataFreshness
     profile: UserProfile
     summary: UserSummary
     comparisons: UserComparisons
@@ -188,4 +205,8 @@ class UserDetailResponse(AnalyticsModel):
     questionCategories: list[DistributionRow]
     modes: list[DistributionRow]
     devices: list[DistributionRow]
+
+
+class ConversationsResponse(AnalyticsModel):
+    status: Literal["ready", "identity_unmatched"]
     conversations: list[ConversationRow]

@@ -15,6 +15,7 @@ from app.domain.analysis_scopes import AnalysisScope, Department, membership_for
 from app.domain.user_identity import roster_id_for_email
 from app.repositories.user_directory import UserDirectoryRepository
 from app.services.user_management import UserManagementService, area_key_for, normalize_roster_text
+from app.domain.management_errors import revision_text
 from app.settings import get_settings
 
 
@@ -146,6 +147,7 @@ def _apply_plan(plan: RosterPlan, *, actor: str) -> None:
                 department=item["department"],
                 mr_experience=item["mr_experience"],
                 is_active=True,
+                expected_updated_at=revision_text(existing.get("updated_at")),
             ),
             actor=actor,
         )

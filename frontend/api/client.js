@@ -1,135 +1,125 @@
 const DEFAULT_TIMEOUT_MS = 18000;
 
-export async function getJson(path, params = {}, options = {}) {
+export class ApiError extends Error {
+  constructor(message, { status = 0, code = "request_failed" } = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+function detailParts(detail) {
+  if (typeof detail === "string") return { code: "", message: detail };
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    return {
+      code: typeof detail.code === "string" ? detail.code : "",
+      message: typeof detail.message === "string" ? detail.message : "",
+    };
+  }
+  return { code: "", message: "" };
+}
+
+function localizedError(status, detail) {
+  const parsed = detailParts(detail);
+  const byCode = {
+    user_not_found: "対象ユーザーが見つかりません。",
+    update_conflict: "別の管理者が先に更新しました。最新の内容を読み直してください。",
+    label_in_use: "使用中のラベルは削除できません。",
+    duplicate_email: "同じメールアドレスのユーザーが既に登録されています。",
+    duplicate_label: "同じ名前のラベルが既に登録されています。",
+    bound_email: "LCSと連携済みのメールアドレスは通常編集できません。",
+    invalid_roster_value: "名簿項目の選択内容を確認してください。",
+  };
+  if (parsed.code && byCode[parsed.code]) return new ApiError(byCode[parsed.code], { status, code: parsed.code });
+  if (status === 401 || status === 403) return new ApiError("アクセス権限を確認できませんでした。", { status, code: "unauthorized" });
+  if (status === 404) return new ApiError("対象データが見つかりません。", { status, code: "not_found" });
+  if (status === 409) return new ApiError(parsed.message || "他の更新と競合しました。再読込してください。", { status, code: parsed.code || "conflict" });
+  if (status === 422) return new ApiError(parsed.message || "入力内容を確認してください。", { status, code: parsed.code || "invalid_input" });
+  if (status >= 500) return new ApiError("データを読み込めませんでした。時間をおいて再度お試しください。", { status, code: "server_error" });
+  return new ApiError("通信に失敗しました。", { status, code: parsed.code || "request_failed" });
+}
+
+function requestSignal(externalSignal, timeoutMs) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromExternal = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) abortFromExternal();
+  else externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    cleanup: () => {
+      window.clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", abortFromExternal);
+    },
+  };
+}
+
+async function responseDetail(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) return null;
+  try {
+    return (await response.json())?.detail ?? null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function requestJson(method, path, { params = {}, body, signal, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const url = new URL(path, window.location.origin);
   Object.entries(params || {}).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && String(value) !== "") {
-      url.searchParams.set(key, String(value));
-    }
+    if (value !== undefined && value !== null && String(value) !== "") url.searchParams.set(key, String(value));
   });
-
-  const controller = new AbortController();
-  const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS);
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-
+  const request = requestSignal(signal, Number(timeoutMs || DEFAULT_TIMEOUT_MS));
   try {
     const response = await fetch(url.toString(), {
-      credentials: "same-origin",
-      signal: controller.signal,
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new Error(`HTTP ${response.status}${body ? `: ${body.slice(0, 180)}` : ""}`);
-    }
-    return await response.json();
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
-export async function postJson(path, body = {}, options = {}) {
-  const url = new URL(path, window.location.origin);
-  const controller = new AbortController();
-  const timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS);
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url.toString(), {
-      method: "POST",
-      credentials: "same-origin",
-      signal: controller.signal,
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body || {}),
-    });
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(`HTTP ${response.status}${text ? `: ${text.slice(0, 180)}` : ""}`);
-    }
-    return await response.json();
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
-async function sendJson(method, path, body = {}, options = {}) {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), Number(options.timeoutMs || DEFAULT_TIMEOUT_MS));
-  try {
-    const response = await fetch(new URL(path, window.location.origin).toString(), {
       method,
       credentials: "same-origin",
-      signal: controller.signal,
-      headers: { Accept: "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify(body || {}),
+      signal: request.signal,
+      headers: {
+        Accept: "application/json",
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    if (!response.ok) {
-      const raw = await response.text().catch(() => "");
-      let detail = raw;
-      try { detail = JSON.parse(raw)?.detail || raw; } catch (_error) { /* use response text */ }
-      throw new Error(detail || `HTTP ${response.status}`);
+    if (!response.ok) throw localizedError(response.status, await responseDetail(response));
+    if (response.status === 204) return null;
+    return await response.json();
+  } catch (error) {
+    if (error?.name === "AbortError" && request.timedOut()) {
+      throw new ApiError("通信がタイムアウトしました。", { status: 408, code: "timeout" });
     }
-    return response.status === 204 ? null : response.json();
+    throw error;
   } finally {
-    window.clearTimeout(timer);
+    request.cleanup();
   }
+}
+
+export function isCancellation(error) {
+  return error?.name === "AbortError";
 }
 
 export function timeRangeQuery(preset) {
-  return { preset: preset || "today" };
+  return { preset: preset || "last_7d" };
 }
 
-export function getOverview(params = {}, options = {}) {
-  return getJson("/api/analytics/overview", params, options);
-}
-
-export function getUsers(params = {}, options = {}) {
-  return getJson("/api/analytics/users", params, options);
-}
-
-export function getRegions(params = {}, options = {}) {
-  return getJson("/api/analytics/regions", params, options);
-}
-
-export function getUserDetail(rosterId, params = {}, options = {}) {
-  return getJson(`/api/analytics/users/${encodeURIComponent(rosterId)}`, params, options);
-}
-
-export function getTraceMessages(params = {}, options = {}) {
-  return getJson("/api/trace/messages", params, options);
-}
-
-export function createExportJob(body = {}, options = {}) {
-  return postJson("/api/export/jobs", body, options);
-}
-
-export function getManagedUsers(params = {}, options = {}) {
-  return getJson("/api/admin/users", params, options);
-}
-
-export function createManagedUser(body, options = {}) {
-  return sendJson("POST", "/api/admin/users", body, options);
-}
-
-export function updateManagedUser(rosterId, body, options = {}) {
-  return sendJson("PATCH", `/api/admin/users/${encodeURIComponent(rosterId)}`, body, options);
-}
-
-export function getManagedLabels(params = {}, options = {}) {
-  return getJson("/api/admin/labels", params, options);
-}
-
-export function createManagedLabel(body, options = {}) {
-  return sendJson("POST", "/api/admin/labels", body, options);
-}
-
-export function updateManagedLabel(labelId, body, options = {}) {
-  return sendJson("PATCH", `/api/admin/labels/${encodeURIComponent(labelId)}`, body, options);
-}
-
-export function deleteManagedLabel(labelId, options = {}) {
-  return sendJson("DELETE", `/api/admin/labels/${encodeURIComponent(labelId)}`, {}, options);
-}
+export const getOverview = (params = {}, options = {}) => requestJson("GET", "/api/analytics/overview", { params, ...options });
+export const getUsers = (params = {}, options = {}) => requestJson("GET", "/api/analytics/users", { params, ...options });
+export const getRegions = (params = {}, options = {}) => requestJson("GET", "/api/analytics/regions", { params, ...options });
+export const getUserDetail = (rosterId, params = {}, options = {}) => requestJson("GET", `/api/analytics/users/${encodeURIComponent(rosterId)}`, { params, ...options });
+export const getUserConversations = (params = {}, options = {}) => requestJson("GET", "/api/trace/conversations", { params, ...options });
+export const getTraceMessages = (params = {}, options = {}) => requestJson("GET", "/api/trace/messages", { params, ...options });
+export const createExportJob = (body = {}, options = {}) => requestJson("POST", "/api/export/jobs", { body, ...options });
+export const getManagedUsers = (params = {}, options = {}) => requestJson("GET", "/api/admin/users", { params, ...options });
+export const getManagementMetadata = (options = {}) => requestJson("GET", "/api/admin/metadata", options);
+export const createManagedUser = (body, options = {}) => requestJson("POST", "/api/admin/users", { body, ...options });
+export const updateManagedUser = (rosterId, body, options = {}) => requestJson("PATCH", `/api/admin/users/${encodeURIComponent(rosterId)}`, { body, ...options });
+export const getManagedLabels = (params = {}, options = {}) => requestJson("GET", "/api/admin/labels", { params, ...options });
+export const createManagedLabel = (body, options = {}) => requestJson("POST", "/api/admin/labels", { body, ...options });
+export const updateManagedLabel = (labelId, body, options = {}) => requestJson("PATCH", `/api/admin/labels/${encodeURIComponent(labelId)}`, { body, ...options });
+export const deleteManagedLabel = (labelId, body, options = {}) => requestJson("DELETE", `/api/admin/labels/${encodeURIComponent(labelId)}`, { body, ...options });

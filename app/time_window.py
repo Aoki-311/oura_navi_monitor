@@ -24,8 +24,8 @@ SourceType = Literal["days", "preset", "custom"]
 
 class TimeWindowSettings(Protocol):
     monitor_timezone: str
-    monitor_retention_days: int
     monitor_default_days: int
+    monitor_analytics_start_at: str
 
 
 class TimeWindowValidationError(ValueError):
@@ -113,7 +113,19 @@ def resolve_time_window(
     if cleaned_preset and cleaned_preset not in _PRESET_SET:
         raise TimeWindowValidationError(f"unsupported preset: {cleaned_preset}")
 
-    default_days = max(1, min(int(days or settings.monitor_default_days), settings.monitor_retention_days))
+    default_days = max(1, int(days or settings.monitor_default_days))
+    analytics_start = None
+    if str(settings.monitor_analytics_start_at or "").strip():
+        try:
+            analytics_start = _parse_iso_datetime(settings.monitor_analytics_start_at, tz=tz)
+        except Exception as exc:
+            raise TimeWindowValidationError(f"invalid analytics start: {exc}") from exc
+    today_start = datetime(
+        year=now_local.year,
+        month=now_local.month,
+        day=now_local.day,
+        tzinfo=tz,
+    )
 
     source: SourceType
     selected_preset = ""
@@ -129,28 +141,9 @@ def resolve_time_window(
         source = "preset"
         selected_preset = cleaned_preset
         if cleaned_preset == "today":
-            local_start = datetime(
-                year=now_local.year,
-                month=now_local.month,
-                day=now_local.day,
-                hour=0,
-                minute=0,
-                second=0,
-                microsecond=0,
-                tzinfo=tz,
-            )
+            local_start = today_start
             local_end = now_local
         elif cleaned_preset == "yesterday":
-            today_start = datetime(
-                year=now_local.year,
-                month=now_local.month,
-                day=now_local.day,
-                hour=0,
-                minute=0,
-                second=0,
-                microsecond=0,
-                tzinfo=tz,
-            )
             local_start = today_start - timedelta(days=1)
             local_end = today_start
         elif cleaned_preset == "last_30m":
@@ -172,29 +165,36 @@ def resolve_time_window(
                 "last_14d": 14,
                 "last_30d": 30,
                 "last_60d": 60,
-                "all": settings.monitor_retention_days,
-            }[cleaned_preset]
-            local_start = now_local - timedelta(days=preset_days)
-            local_end = now_local
-        start_utc = local_start.astimezone(timezone.utc)
-        end_utc = local_end.astimezone(timezone.utc)
+            }.get(cleaned_preset)
+            if cleaned_preset == "all":
+                if analytics_start is None:
+                    raise TimeWindowValidationError("analytics start is required for all-time analysis")
+                start_utc = analytics_start
+                end_utc = now_utc
+                local_start = None
+                local_end = None
+            else:
+                local_start = today_start - timedelta(days=int(preset_days) - 1)
+                local_end = now_local
+        if cleaned_preset != "all":
+            start_utc = local_start.astimezone(timezone.utc)
+            end_utc = local_end.astimezone(timezone.utc)
     else:
         source = "days"
-        start_utc = now_utc - timedelta(days=default_days)
+        start_utc = (today_start - timedelta(days=default_days - 1)).astimezone(timezone.utc)
         end_utc = now_utc
 
     if end_utc <= start_utc:
         raise TimeWindowValidationError("end must be later than start")
 
-    retention_floor = now_utc - timedelta(days=settings.monitor_retention_days)
-    if start_utc < retention_floor:
-        start_utc = retention_floor
+    if analytics_start is not None and start_utc < analytics_start:
+        start_utc = analytics_start
 
     if end_utc > now_utc:
         end_utc = now_utc
 
     if end_utc <= start_utc:
-        end_utc = start_utc + timedelta(minutes=1)
+        raise TimeWindowValidationError("requested window has no data after analytics start")
 
     requested_days = max(1, int((end_utc - start_utc).total_seconds() // 86400) + 1)
 

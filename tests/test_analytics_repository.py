@@ -33,7 +33,10 @@ def _window() -> MetricsTimeWindow:
 
 def test_partitioned_dashboard_queries_always_bind_partition_dates() -> None:
     client = _Client()
-    repository = AnalyticsRepository(Settings(), client=client)
+    repository = AnalyticsRepository(
+        Settings(monitor_analytics_start_at="2026-03-16T00:00:00Z"),
+        client=client,
+    )
 
     repository.overview_events(window=_window())
     repository.user_detail_events(roster_id="roster_1", window=_window())
@@ -45,3 +48,18 @@ def test_partitioned_dashboard_queries_always_bind_partition_dates() -> None:
         assert str(parameters["start_date"]) == "2026-08-23"
         assert str(parameters["end_date"]) == "2026-08-24"
         assert location == "US"
+
+
+def test_user_metrics_binds_the_governed_history_start() -> None:
+    client = _Client()
+    repository = AnalyticsRepository(
+        Settings(monitor_analytics_start_at="2026-03-16T00:00:00Z"),
+        client=client,
+    )
+
+    repository.user_metrics()
+
+    sql, config, _location = client.calls[0]
+    assert "dashboard_user_list`(@history_start_date, @today)" in sql
+    parameters = {item.name: item.value for item in config.query_parameters}
+    assert str(parameters["history_start_date"]) == "2026-03-16"

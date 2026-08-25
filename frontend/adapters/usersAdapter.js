@@ -1,118 +1,202 @@
-import { analyticsTaskLabel, questionCategoryLabel } from "../viewModels/labels.js";
+import { measurementModel } from "./overviewAdapter.js";
 
 const ACTIVITY_KEYS = new Set(["high", "middle", "low", "dormant"]);
 
-function requiredArray(payload, key, label = "ユーザーデータ") {
-  if (!Array.isArray(payload?.[key])) throw new Error(`${label}の${key}が不正です`);
+function requiredText(value, key) {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${key}を確認できません。`);
+  return value;
+}
+
+function optionalText(value) {
+  return typeof value === "string" ? value : "";
+}
+
+function requiredObject(payload, key, label) {
+  const value = payload?.[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label}を表示できません。`);
+  return value;
+}
+
+function requiredArray(payload, key, label) {
+  if (!Array.isArray(payload?.[key])) throw new Error(`${label}を表示できません。`);
   return payload[key];
 }
 
-function requiredObject(payload, key, label = "ユーザーデータ") {
-  const value = payload?.[key];
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label}の${key}が不正です`);
-  return value;
-}
-
-function requiredText(value, key) {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`ユーザーデータの${key}が不正です`);
-  return value;
-}
-
-function labelRows(value) {
-  if (!Array.isArray(value)) throw new Error("ユーザーデータのlabelsが不正です");
-  return value.map((row) => ({
-    labelId: requiredText(row?.labelId, "labelId"),
-    name: requiredText(row?.name, "label name"),
-    color: requiredText(row?.color, "label color"),
-  }));
-}
-
-function requiredNumber(value, key, { nullable = false } = {}) {
+function requiredNumber(value, key, { nullable = false, integer = false } = {}) {
   if (nullable && value == null) return null;
-  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`ユーザーデータの${key}が不正です`);
+  if (typeof value !== "number" || !Number.isFinite(value) || (integer && !Number.isInteger(value))) throw new Error(`${key}を確認できません。`);
   return value;
+}
+
+function labels(value) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((row) => {
+    try {
+      return [{ labelId: requiredText(row?.labelId, "ラベルID"), name: requiredText(row?.name, "ラベル名"), color: requiredText(row?.color, "ラベル色") }];
+    } catch (_error) {
+      return [];
+    }
+  });
+}
+
+function safeMeasurement(value, issues, label) {
+  try {
+    return measurementModel(value);
+  } catch (_error) {
+    issues.push(`${label}は未計測として表示しました。`);
+    return { value: null, measuredCount: 0, totalCount: 0 };
+  }
 }
 
 export function usersModel(payload) {
-  if (!payload || !["ready", "unavailable"].includes(payload.status) || typeof payload.dataThrough !== "string" || !Array.isArray(payload.users)) throw new Error("ユーザーデータの形式が不正です");
-  return {
-    status: payload.status,
-    dataThrough: payload.dataThrough,
-    users: payload.users.map((row) => {
-      const activity = requiredText(row.activity, "activity");
-      if (!ACTIVITY_KEYS.has(activity) || !Number.isInteger(row.activeDays7) || !Number.isInteger(row.questionCount7)) throw new Error("ユーザーデータの行形式が不正です");
-      return {
-        rosterId: requiredText(row.rosterId, "rosterId"),
-        name: requiredText(row.name, "name"),
-        email: requiredText(row.email, "email"),
-        area: requiredText(row.area, "area"),
-        areaKey: requiredText(row.areaKey, "areaKey"),
-        labels: labelRows(row.labels),
-        lastActiveAt: row.lastActiveAt == null ? "" : String(row.lastActiveAt),
-        activeDays7: row.activeDays7,
-        questionCount7: row.questionCount7,
-        completeDeliveryRate: row.completeDeliveryRate,
+  if (!payload || !Array.isArray(payload.users) || !Number.isInteger(payload.scopeUserCount) || payload.scopeUserCount < 0) throw new Error("ユーザーデータの形式が不正です。");
+  const issues = [];
+  const users = payload.users.flatMap((row, index) => {
+    try {
+      const rowIssues = [];
+      const activity = ACTIVITY_KEYS.has(row?.activity) ? row.activity : null;
+      if (!activity) rowIssues.push("活性度は未計測です。");
+      const activeDays7 = Number.isInteger(row?.activeDays7) && row.activeDays7 >= 0 ? row.activeDays7 : null;
+      const userMessageCount7 = Number.isInteger(row?.userMessageCount7) && row.userMessageCount7 >= 0 ? row.userMessageCount7 : null;
+      if (activeDays7 == null || userMessageCount7 == null) rowIssues.push("直近7日の利用値は未計測です。");
+      const item = {
+        rosterId: requiredText(row?.rosterId, "ユーザーID"),
+        name: requiredText(row?.name, "社員名"),
+        email: requiredText(row?.email, "メール"),
+        area: requiredText(row?.area, "エリア"),
+        areaKey: requiredText(row?.areaKey, "エリアキー"),
+        labels: labels(row?.labels),
+        lastActiveAt: optionalText(row?.lastActiveAt),
+        activeDays7,
+        userMessageCount7,
+        completeDelivery: safeMeasurement(row?.completeDelivery, rowIssues, "回答成功率"),
         activity,
-        activityLabel: requiredText(row.activityLabel, "activityLabel"),
+        activityLabel: activity ? (optionalText(row?.activityLabel) || "未測定") : "未測定",
+        issues: rowIssues,
       };
-    }),
+      issues.push(...rowIssues.map((message) => `${item.name}: ${message}`));
+      return [item];
+    } catch (error) {
+      issues.push(`${index + 1}行目を表示できません: ${error.message}`);
+      return [];
+    }
+  });
+  return { scopeUserCount: payload.scopeUserCount, freshness: payload.freshness, users, issues };
+}
+
+export function userDetailEnvelope(payload) {
+  if (!payload || !payload.freshness || !["fresh", "stale", "unknown"].includes(payload.freshness.state)) throw new Error("ユーザー分析データの形式が不正です。");
+  return payload;
+}
+
+export function userProfileModel(payload) {
+  const profile = requiredObject(payload, "profile", "個人プロフィール");
+  return {
+    rosterId: requiredText(profile.rosterId, "ユーザーID"),
+    name: requiredText(profile.name, "社員名"),
+    email: requiredText(profile.email, "メール"),
+    area: requiredText(profile.area, "エリア"),
+    workplace: requiredText(profile.workplace, "勤務地"),
+    role: requiredText(profile.role, "役割"),
+    department: requiredText(profile.department, "部門"),
+    mrExperience: requiredText(profile.mrExperience, "MR経験"),
+    labels: labels(profile.labels),
   };
 }
 
-export function userDetailModel(payload) {
-  if (!payload?.profile?.rosterId || !["ready", "unavailable"].includes(payload.status) || typeof payload.dataThrough !== "string") throw new Error("ユーザー詳細の形式が不正です");
-  const profile = requiredObject(payload, "profile", "ユーザー詳細");
-  const summary = requiredObject(payload, "summary", "ユーザー詳細");
-  const comparisons = requiredObject(payload, "comparisons", "ユーザー詳細");
-  const areaComparison = requiredObject(comparisons, "area", "ユーザー詳細比較");
-  const roleComparison = requiredObject(comparisons, "role", "ユーザー詳細比較");
-  const comparison = (row) => ({
-    label: requiredText(row.label, "comparison label"),
-    peerCount: requiredNumber(row.peerCount, "peerCount"),
-    averageQuestions: requiredNumber(row.averageQuestions, "averageQuestions", { nullable: true }),
-    averageActiveDays: requiredNumber(row.averageActiveDays, "averageActiveDays", { nullable: true }),
-    averageCompleteDeliveryRate: requiredNumber(row.averageCompleteDeliveryRate, "averageCompleteDeliveryRate", { nullable: true }),
-  });
+export function userSummaryModel(payload) {
+  const summary = requiredObject(payload, "summary", "個人利用サマリー");
   return {
-    status: payload.status,
-    dataThrough: payload.dataThrough,
-    profile: {
-      rosterId: requiredText(profile.rosterId, "rosterId"),
-      name: requiredText(profile.name, "name"),
-      email: requiredText(profile.email, "email"),
-      area: requiredText(profile.area, "area"),
-      workplace: requiredText(profile.workplace, "workplace"),
-      role: requiredText(profile.role, "role"),
-      department: requiredText(profile.department, "department"),
-      mrExperience: requiredText(profile.mrExperience, "mrExperience"),
-      labels: labelRows(profile.labels),
-    },
-    summary: {
-      lastActiveAt: typeof summary.lastActiveAt === "string" ? summary.lastActiveAt : (() => { throw new Error("ユーザーデータのlastActiveAtが不正です"); })(),
-      activeDays: requiredNumber(summary.activeDays, "activeDays"),
-      questions: requiredNumber(summary.questions, "questions"),
-      questionsPerActiveDay: requiredNumber(summary.questionsPerActiveDay, "questionsPerActiveDay", { nullable: true }),
-      completeDeliveryRate: requiredNumber(summary.completeDeliveryRate, "completeDeliveryRate", { nullable: true }),
-    },
-    comparisons: { area: comparison(areaComparison), role: comparison(roleComparison) },
-    trend: requiredArray(payload, "trend", "ユーザー詳細"),
-    products: requiredArray(payload, "products", "ユーザー詳細"),
-    productResolution: requiredObject(payload, "productResolution", "ユーザー詳細"),
-    tasks: requiredArray(payload, "tasks", "ユーザー詳細").map((row) => ({
-      ...row,
-      label: analyticsTaskLabel(row.key),
-    })),
-    questionCategories: requiredArray(payload, "questionCategories", "ユーザー詳細").map((row) => ({
-      ...row,
-      label: questionCategoryLabel(row.key),
-    })),
-    modes: requiredArray(payload, "modes", "ユーザー詳細"),
-    devices: requiredArray(payload, "devices", "ユーザー詳細"),
-    conversations: requiredArray(payload, "conversations", "ユーザー詳細"),
+    lastActiveAt: optionalText(summary.lastActiveAt),
+    activeDays: requiredNumber(summary.activeDays, "利用日数", { integer: true }),
+    questions: requiredNumber(summary.questions, "質問数", { integer: true }),
+    questionsPerActiveDay: requiredNumber(summary.questionsPerActiveDay, "1日平均質問", { nullable: true }),
+    completeDelivery: measurementModel(summary.completeDelivery),
   };
+}
+
+function comparison(row) {
+  return {
+    label: requiredText(row?.label, "比較対象"),
+    peerCount: requiredNumber(row?.peerCount, "比較人数", { integer: true }),
+    averageQuestions: requiredNumber(row?.averageQuestions, "平均質問数", { nullable: true }),
+    averageActiveDays: requiredNumber(row?.averageActiveDays, "平均利用日", { nullable: true }),
+    averageCompleteDelivery: measurementModel(row?.averageCompleteDelivery),
+  };
+}
+
+export function userComparisonsModel(payload) {
+  const comparisons = requiredObject(payload, "comparisons", "比較分析");
+  return { area: comparison(comparisons.area), role: comparison(comparisons.role) };
+}
+
+export function userTrendModel(payload) {
+  return requiredArray(payload, "trend", "個人利用推移").map((row) => ({
+    date: requiredText(row?.date, "日付"),
+    questions: requiredNumber(row?.questions, "質問数", { integer: true }),
+    completeDelivery: measurementModel(row?.completeDelivery),
+  }));
+}
+
+function distributionRows(rows) {
+  return rows.map((row) => ({
+    key: optionalText(row?.key),
+    label: optionalText(row?.label) || "判定不能",
+    count: requiredNumber(row?.count, "件数", { integer: true }),
+    rate: requiredNumber(row?.rate, "割合", { nullable: true }),
+  }));
+}
+
+export function userNeedsModel(payload) {
+  return {
+    products: requiredArray(payload, "products", "製品分析").map((row) => ({
+      label: requiredText(row?.label, "製品名"),
+      count: requiredNumber(row?.count, "製品質問数", { integer: true }),
+    })),
+    productResolution: requiredObject(payload, "productResolution", "製品判定範囲"),
+    tasks: distributionRows(requiredArray(payload, "tasks", "タスク分析")),
+    questionCategories: distributionRows(requiredArray(payload, "questionCategories", "質問タイプ")),
+    modes: distributionRows(requiredArray(payload, "modes", "モード分析")),
+    devices: distributionRows(requiredArray(payload, "devices", "デバイス分析")),
+  };
+}
+
+export function conversationsModel(payload) {
+  if (!payload || !["ready", "identity_unmatched"].includes(payload.status) || !Array.isArray(payload.conversations)) throw new Error("会話一覧の形式が不正です。");
+  const issues = [];
+  const conversations = payload.conversations.flatMap((row, index) => {
+    try {
+      return [{
+        conversationId: requiredText(row?.conversationId, "会話ID"),
+        title: optionalText(row?.title),
+        messageCount: requiredNumber(row?.messageCount, "メッセージ数", { integer: true }),
+        updatedAt: optionalText(row?.updatedAt),
+        updatedAtJst: optionalText(row?.updatedAtJst),
+      }];
+    } catch (error) {
+      issues.push(`${index + 1}行目: ${error.message}`);
+      return [];
+    }
+  });
+  return { status: payload.status, conversations, issues };
 }
 
 export function messageModel(payload) {
-  if (!payload || !["ready", "unavailable"].includes(payload.status) || !Array.isArray(payload.messages) || typeof payload.page?.nextCursor !== "string") throw new Error("会話メッセージの形式が不正です");
-  return { status: payload.status, messages: payload.messages, nextCursor: payload.page.nextCursor };
+  if (!payload || !["ready", "identity_unmatched"].includes(payload.status) || !Array.isArray(payload.messages) || typeof payload.page?.nextCursor !== "string") throw new Error("会話メッセージの形式が不正です。");
+  const issues = [];
+  const messages = payload.messages.flatMap((row, index) => {
+    try {
+      return [{
+        messageId: requiredText(row?.messageId, "メッセージID"),
+        timestampJst: optionalText(row?.timestampJst),
+        role: requiredText(row?.role, "発言者"),
+        roleLabel: optionalText(row?.roleLabel),
+        content: optionalText(row?.content),
+      }];
+    } catch (error) {
+      issues.push(`${index + 1}行目: ${error.message}`);
+      return [];
+    }
+  });
+  return { status: payload.status, messages, nextCursor: payload.page.nextCursor, issues };
 }

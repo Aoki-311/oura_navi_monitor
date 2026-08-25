@@ -28,14 +28,19 @@ def test_iap_authenticated_email_header_is_required_and_allowlisted() -> None:
                 )
             },
         ).status_code == 403
-        assert client.get(
+        dashboard = client.get(
             "/dashboard",
             headers={
                 "x-goog-authenticated-user-email": (
                     "accounts.google.com:ADMIN@EXAMPLE.COM"
                 )
             },
-        ).status_code == 200
+        )
+        assert dashboard.status_code == 200
+        assert dashboard.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+        asset = client.get("/dashboard-assets/app.js")
+        assert asset.status_code == 200
+        assert asset.headers["cache-control"] == "no-cache, no-store, must-revalidate"
     finally:
         app.dependency_overrides.clear()
 

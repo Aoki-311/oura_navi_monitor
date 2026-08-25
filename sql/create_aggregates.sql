@@ -1,19 +1,3 @@
-CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.user_daily` (
-  activity_date DATE NOT NULL,
-  roster_id STRING NOT NULL,
-  area_key STRING,
-  area STRING,
-  role STRING,
-  department STRING,
-  active BOOL,
-  last_active_at TIMESTAMP,
-  question_count INT64,
-  materialized_at TIMESTAMP
-)
-PARTITION BY activity_date
-CLUSTER BY roster_id, area_key, department
-OPTIONS (require_partition_filter = TRUE, partition_expiration_days = ${AGGREGATE_RETENTION_DAYS});
-
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.pipeline_runs` (
   run_id STRING NOT NULL,
   started_at TIMESTAMP NOT NULL,
@@ -30,7 +14,9 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.pipeline_runs` (
 )
 PARTITION BY DATE(started_at)
 CLUSTER BY source, status
-OPTIONS (require_partition_filter = TRUE, partition_expiration_days = ${AGGREGATE_RETENTION_DAYS});
+OPTIONS (require_partition_filter = TRUE);
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.pipeline_runs`
+SET OPTIONS (partition_expiration_days = NULL);
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.pipeline_state` (
   source STRING NOT NULL,

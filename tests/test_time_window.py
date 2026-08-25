@@ -11,8 +11,8 @@ from app.time_window import TimeWindowValidationError, resolve_time_window
 @dataclass
 class _FakeSettings:
     monitor_timezone: str = "Asia/Tokyo"
-    monitor_retention_days: int = 180
     monitor_default_days: int = 7
+    monitor_analytics_start_at: str = "2026-03-16T00:00:00Z"
 
 
 class TimeWindowResolveTest(unittest.TestCase):
@@ -74,7 +74,7 @@ class TimeWindowResolveTest(unittest.TestCase):
             )
 
     def test_extended_presets_resolve(self) -> None:
-        settings = _FakeSettings(monitor_retention_days=180)
+        settings = _FakeSettings()
         for preset in ("last_60d", "all"):
             with self.subTest(preset=preset):
                 window = resolve_time_window(
@@ -99,8 +99,8 @@ class TimeWindowResolveTest(unittest.TestCase):
                 end="2026-03-16T09:00",
             )
 
-    def test_retention_clamps_old_custom_start(self) -> None:
-        settings = _FakeSettings(monitor_retention_days=1)
+    def test_analytics_start_clamps_old_custom_start_without_rolling_retention(self) -> None:
+        settings = _FakeSettings(monitor_analytics_start_at="2026-03-16T00:00:00Z")
         window = resolve_time_window(
             settings=settings,
             days=7,
@@ -108,8 +108,21 @@ class TimeWindowResolveTest(unittest.TestCase):
             start="2000-01-01T00:00",
             end="",
         )
-        floor = datetime.now(timezone.utc) - timedelta(days=1, minutes=2)
-        self.assertGreaterEqual(window.start_utc, floor)
+        self.assertEqual(window.start_utc, datetime(2026, 3, 16, tzinfo=timezone.utc))
+
+    def test_last_seven_days_starts_at_local_midnight_six_days_ago(self) -> None:
+        settings = _FakeSettings()
+        before = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Tokyo"))
+        window = resolve_time_window(
+            settings=settings,
+            days=7,
+            preset="last_7d",
+            start="",
+            end="",
+        )
+        local_start = window.start_utc.astimezone(ZoneInfo("Asia/Tokyo"))
+        self.assertEqual((local_start.hour, local_start.minute, local_start.second), (0, 0, 0))
+        self.assertEqual(local_start.date(), (before - timedelta(days=6)).date())
 
 
 if __name__ == "__main__":

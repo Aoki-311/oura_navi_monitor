@@ -10,8 +10,8 @@ from app.settings import get_settings
 class _Analytics:
     def users(self, **_kwargs):
         return {
-            "status": "ready",
-            "dataThrough": "2026-08-24T00:00:00Z",
+            "scopeUserCount": 80,
+            "freshness": {"state": "fresh", "dataThrough": "2026-08-24T00:00:00Z"},
             "users": [
                 {
                     "rosterId": "roster_1",
@@ -22,8 +22,8 @@ class _Analytics:
                     "labels": [],
                     "lastActiveAt": "2026-08-24T00:00:00Z",
                     "activeDays7": 2,
-                    "questionCount7": 4,
-                    "completeDeliveryRate": 0.75,
+                    "userMessageCount7": 4,
+                    "completeDelivery": {"value": 0.75, "measuredCount": 3, "totalCount": 4},
                     "activity": "middle",
                     "activityLabel": "中アクティブ",
                 }

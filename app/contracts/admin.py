@@ -47,6 +47,7 @@ class UserPatch(BaseModel):
     mr_experience: str | None = Field(default=None, max_length=80)
     label_ids: list[str] | None = Field(default=None, max_length=30)
     is_active: bool | None = None
+    expected_updated_at: str = Field(default="", max_length=80)
 
     @field_validator("email")
     @classmethod
@@ -73,6 +74,7 @@ class LabelPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=40)
     color: str | None = None
     is_active: bool | None = None
+    expected_updated_at: str = Field(default="", max_length=80)
 
     @field_validator("color")
     @classmethod
@@ -83,6 +85,11 @@ class LabelPatch(BaseModel):
         if color not in LABEL_COLORS:
             raise ValueError("unsupported label color")
         return color
+
+
+class LabelDelete(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    expected_updated_at: str = Field(default="", max_length=80)
 
 
 class UserView(BaseModel):
@@ -99,6 +106,7 @@ class UserView(BaseModel):
     mrExperience: str
     labelIds: list[str]
     isActive: bool
+    identityBound: bool
     updatedAt: str | None
     updatedBy: str
 
@@ -123,3 +131,13 @@ class LabelView(BaseModel):
 class LabelListResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     labels: list[LabelView]
+
+
+class ManagementMetadataResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    areas: list[str]
+    workplaces: list[str]
+    roles: list[str]
+    departments: list[Department]
+    labelColors: list[str]

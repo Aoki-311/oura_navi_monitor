@@ -1,7 +1,7 @@
 # OurA Navi Monitor 字段白话辞典
 
 本辞典回答“这个字段对非技术人员到底意味着什么”。字段按业务用途分组，不按
-日志文件分组。所有“已实现”均指 2026-08-24 本地最终代码；线上尚未部署，不能
+日志文件分组。所有“已实现”均指 2026-08-25 当前本地工作树；线上尚未部署，不能
 把它理解为生产已经有数据。
 
 状态说明：
@@ -79,6 +79,8 @@ Monitor 专用 Firestore 与受 IAP 保护的 API 中出现，不进入分析日
 | `product_resolved_count` | 其中几个能在受管产品身份中找到唯一标准产品 | 本地已实现 | 有多少候选能安全进入产品图 |
 | `producer_revision` | 哪个 LCS revision 产生了分类 | 本地已实现 | 分类变更追踪 |
 | `producer_git_sha` | 产生分类的代码 SHA | 本地已实现 | 版本差异追踪 |
+| `record_origin` | 这行来自新事件、Firestore 历史还是旧审计历史 | 本地已实现 | 区分历史能力，不建立第二套页面 |
+| `measurement_profile` | 这一行究竟能测到使用、分类还是完整交付 | 本地已实现 | 解释为什么某些旧指标是 `-` |
 
 Monitor 不保存问题原文。问题类型由 RequestSpec Builder 在现有同一次模型调用中
 产生，SQL、Firestore reader 和 JavaScript 不再读原文做关键词判断。`classification_status`
@@ -251,7 +253,7 @@ Web Writer 的机器注释如果缺失、格式错误或 demand ID 不完整，�
 | `adoptionRate` | 活跃人数 ÷ 名单人数 |
 | `returnRate` | 至少两个日期使用的人数 ÷ 活跃人数 |
 | `questionsPerActiveUser` | 每位活跃用户平均提问 |
-| `completeDeliveryRate` | 全部问题都可测量时的完整交付比例 |
+| `completeDeliveryRate` | 可测量回答中的完整交付比例，并同时显示已测量/全部数量 |
 | `p95LatencyMs` | 95% 问题在该时间内形成终态 |
 | `activeDays7` | 最近 7 日使用了几天 |
 | `questionCount7` | 最近 7 日用户消息/问题数 |
@@ -259,8 +261,14 @@ Web Writer 的机器注释如果缺失、格式错误或 demand ID 不完整，�
 | `dataThrough` | 最后一个完整发布批次处理到的时间 |
 | `productResolution` | 产品候选数、解析成功数、未完全解析问题数和解析率；只解释产品图覆盖范围 |
 
-日聚合只保留用户列表实际消费的 `user_daily`。地区、回访和产品矩阵直接从同一
-正式问题事实按页面期间计算，不再保存一套未消费、边界可能漂移的重复聚合。
+页面只读 `dashboard_events(start,end)` 和 `dashboard_user_list(start,today)` 两个
+带日期参数的语义函数。不存在 `user_daily`、snapshot、overview/detail mega view；
+地区、回访、用户列表和产品矩阵都来自同一正式问题事实。
+
+历史 `record_origin` 只有 `firestore_history` 与 `legacy_audit_history`。旧审计表只
+迁移身份、时间、精确旧分类等可证明字段；旧 `answer_success_flag`、raw payload、
+问答正文和邮箱不会进入正式事实。缺少新完整交付字段时
+`measurement_available=false`、`complete_delivery=null`，不是 0% 或 100%。
 
 ---
 

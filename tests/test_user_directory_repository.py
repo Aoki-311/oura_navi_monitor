@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from app.repositories.user_directory import UserDirectoryRepository
+from app.domain.management_errors import ManagementError, revision_text
 from app.settings import Settings
 
 
@@ -238,6 +239,39 @@ def test_verified_user_id_claim_stays_reserved_after_email_change() -> None:
     ]
     assert len(user_id_claims) == 1
     assert {value["target_id"] for value in user_id_claims} == {"roster_a"}
+    email_claims = [
+        value
+        for value in client.data["monitor_unique_claims"].values()
+        if value["claim_type"] == "email"
+    ]
+    assert len(email_claims) == 1
+
+
+def test_user_update_revision_is_checked_inside_transaction() -> None:
+    repository, client = _repository()
+    current = _user("roster_a", "a@example.com")
+    repository.put_user_and_change(
+        current,
+        _change("change_create", "create", "roster_a"),
+    )
+    changed = {**current, "name": "updated", "updated_at": datetime(2026, 8, 25, tzinfo=timezone.utc)}
+
+    with pytest.raises(ManagementError) as captured:
+        repository.put_user_and_change(
+            changed,
+            _change("change_stale", "update", "roster_a"),
+            expected_updated_at="stale-revision",
+        )
+    assert captured.value.code == "update_conflict"
+    assert client.data["monitor_users"]["roster_a"]["name"] == "roster_a"
+    assert "change_stale" not in client.data.get("monitor_admin_changes", {})
+
+    repository.put_user_and_change(
+        changed,
+        _change("change_current", "update", "roster_a"),
+        expected_updated_at=revision_text(current["updated_at"]),
+    )
+    assert client.data["monitor_users"]["roster_a"]["name"] == "updated"
 
 
 def test_label_name_claim_is_normalized_and_in_use_delete_is_atomic() -> None:
@@ -274,6 +308,43 @@ def test_label_name_claim_is_normalized_and_in_use_delete_is_atomic() -> None:
                 "target_id": "label_a",
                 "updated_at": now,
             },
+            expected_updated_at=revision_text(now),
         )
     assert "label_a" in client.data["monitor_labels"]
     assert "change_delete" not in client.data.get("monitor_admin_changes", {})
+
+
+def test_label_revision_is_rechecked_inside_update_and_delete_transactions() -> None:
+    repository, client = _repository()
+    now = datetime(2026, 8, 24, tzinfo=timezone.utc)
+    label = {
+        "label_id": "label_a",
+        "name": "初期",
+        "is_active": True,
+        "updated_at": now,
+    }
+    repository.put_label(label)
+    changed = {**label, "name": "更新", "updated_at": datetime(2026, 8, 25, tzinfo=timezone.utc)}
+
+    with pytest.raises(ManagementError) as captured:
+        repository.put_label_and_change(
+            changed,
+            {**_change("label_change", "update", "label_a"), "target_type": "label"},
+            expected_updated_at="stale",
+        )
+    assert captured.value.code == "update_conflict"
+    assert client.data["monitor_labels"]["label_a"]["name"] == "初期"
+
+    repository.put_label_and_change(
+        changed,
+        {**_change("label_change_current", "update", "label_a"), "target_type": "label"},
+        expected_updated_at=revision_text(now),
+    )
+    with pytest.raises(ManagementError) as captured:
+        repository.delete_label_and_change(
+            "label_a",
+            {**_change("label_delete_stale", "delete", "label_a"), "target_type": "label"},
+            expected_updated_at=revision_text(now),
+        )
+    assert captured.value.code == "update_conflict"
+    assert "label_a" in client.data["monitor_labels"]

@@ -21,6 +21,15 @@ steps:
         python -m compileall app
         python -m pytest -q
 
+  - id: precheck-frontend-syntax
+    name: node:22-slim
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        find frontend -name '*.js' -print0 | xargs -0 -n1 node --check
+
   - id: docker-build
     name: gcr.io/cloud-builders/docker
     args:

@@ -13,6 +13,12 @@ class _Pipeline:
         return datetime.now(timezone.utc)
 
 
+class _StalePipeline:
+    @staticmethod
+    def data_through():
+        return datetime.now(timezone.utc) - timedelta(days=2)
+
+
 class _Directory:
     def __init__(self) -> None:
         self.users = [
@@ -73,12 +79,6 @@ class _Analytics:
         return list(self.rows)
 
 
-class _Conversations:
-    @staticmethod
-    def list_conversations(*, chat_user_id: str):
-        return []
-
-
 def _window(now: datetime) -> MetricsTimeWindow:
     return MetricsTimeWindow(
         start_utc=now - timedelta(days=7),
@@ -125,14 +125,70 @@ def test_overview_does_not_publish_completion_rate_from_partial_measurement() ->
         analytics=_Analytics(rows),
         pipeline=_Pipeline(),
         directory=_Directory(),
-        conversations=_Conversations(),
         settings=Settings(),
     )
 
     payload = service.overview(window=_window(now))
 
-    assert payload["kpis"]["completeDeliveryRate"] is None
-    assert payload["kpis"]["p95LatencyMs"] == 2000
+    assert payload["kpis"]["completeDelivery"] == {
+        "value": 1.0,
+        "measuredCount": 1,
+        "totalCount": 2,
+    }
+    assert payload["kpis"]["p95Latency"] == {
+        "valueMs": 2000,
+        "measuredCount": 2,
+        "totalCount": 2,
+    }
+
+
+def test_stale_pipeline_is_metadata_and_does_not_disable_available_analytics() -> None:
+    now = datetime.now(timezone.utc)
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_StalePipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    payload = service.overview(window=_window(now))
+
+    assert "status" not in payload
+    assert payload["freshness"]["state"] == "stale"
+    assert payload["kpis"]["activeUsers"] == 0
+
+
+def test_unknown_historical_categories_are_explicitly_unclassified_without_hiding_other_metrics() -> None:
+    now = datetime.now(timezone.utc)
+    rows = [
+        {
+            "question_ts": now - timedelta(hours=1),
+            "question_date": (now - timedelta(hours=1)).date().isoformat(),
+            "roster_id": "field_1",
+            "area_key": "関西",
+            "valid_question": True,
+            "measurement_available": False,
+            "complete_delivery": None,
+            "total_latency_ms": None,
+            "mode": "internal",
+            "device_class": "desktop",
+            "primary_question_category": "legacy_unknown",
+            "classification_status": "unclassified",
+        }
+    ]
+    service = AnalyticsService(
+        analytics=_Analytics(rows),
+        pipeline=_Pipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    payload = service.overview(window=_window(now))
+
+    assert payload["kpis"]["activeUsers"] == 1
+    assert payload["questionCategories"] == [
+        {"key": "unclassified", "label": "判定不能", "count": 1, "rate": 1.0}
+    ]
 
 
 def test_regions_display_toranomon_separately_without_a_location_dictionary() -> None:
@@ -141,7 +197,6 @@ def test_regions_display_toranomon_separately_without_a_location_dictionary() ->
         analytics=_Analytics([]),
         pipeline=_Pipeline(),
         directory=_Directory(),
-        conversations=_Conversations(),
         settings=Settings(),
     )
 
@@ -175,7 +230,6 @@ def test_product_ranking_discloses_unresolved_governed_product_candidates() -> N
         analytics=_Analytics(rows),
         pipeline=_Pipeline(),
         directory=_Directory(),
-        conversations=_Conversations(),
         settings=Settings(),
     )
 
@@ -199,7 +253,6 @@ def test_user_detail_uses_actual_last_seen_even_when_outside_selected_window() -
         analytics=_Analytics([], metrics=[{"roster_id": "field_1", "last_active_at": last_seen}]),
         pipeline=_Pipeline(),
         directory=_Directory(),
-        conversations=_Conversations(),
         settings=Settings(),
     )
 
@@ -209,7 +262,7 @@ def test_user_detail_uses_actual_last_seen_even_when_outside_selected_window() -
     assert payload["summary"]["questions"] == 0
 
 
-def test_peer_completion_average_is_not_published_when_any_active_peer_is_unmeasured() -> None:
+def test_peer_completion_average_discloses_partial_peer_coverage() -> None:
     roster = [
         {"roster_id": "one", "area": "関西"},
         {"roster_id": "two", "area": "関西"},
@@ -224,7 +277,11 @@ def test_peer_completion_average_is_not_published_when_any_active_peer_is_unmeas
         },
     )
 
-    assert comparison["averageCompleteDeliveryRate"] is None
+    assert comparison["averageCompleteDelivery"] == {
+        "value": 1.0,
+        "measuredCount": 1,
+        "totalCount": 2,
+    }
 
 
 def test_activity_level_uses_one_japan_calendar_day_boundary() -> None:

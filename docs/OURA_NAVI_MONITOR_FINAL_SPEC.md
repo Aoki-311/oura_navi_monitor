@@ -1,375 +1,219 @@
 # OurA Navi Monitor 最终产品与数据规范
 
-## 0. 文档地位与当前边界
+更新日：2026-08-26
 
-本文件是 OurA Navi Monitor 产品口径、数据契约和责任边界的唯一权威。
+## 0. 文档地位与当前结论
 
-最终系统只有：
+本文件是 Monitor 产品口径、数据责任和切换顺序的唯一规范。系统不建立 `v2`、
+`v3`、`legacy`、`shadow`、`backup` 或兼容 dashboard。LCS 已公开的
+`/v3/ask/stream` 是上游业务路由，不属于 Monitor 版本命名。
 
-- 一套 LCS 分析事件；
-- 一个 `oura_navi_monitor` BigQuery dataset；
-- 一套正式事实表与聚合；
-- 一套未版本化 API；
-- 一个 `/dashboard`；
-- `全体サマリー`、`ユーザー分析`、`ユーザー管理` 三个页面。
-
-禁止建立带 `v2`、`v3`、`next`、`legacy`、`shadow`、`backup` 后缀的第二套
-Monitor 数据、API 或页面。LCS 已存在的公开 `/v3/ask/stream` 路由不属于本次
-Monitor 命名范围，不改名、不改变客户端响应。
-
-截至 2026-08-24，本地工作树已经包含本规范的实现，但未 commit、未 push、
-未构建、未创建候选、未登录验收、未业务验收、未切流，也没有修改任何云端
-BigQuery、Firestore、Logging、IAM、Scheduler 或 Cloud Run 数据。具体状态和
-验证命令以 [实施与切换清单](IMPLEMENTATION_AND_CUTOVER_CHECKLIST.md) 为准。
-
----
+当前结论是 **尚未完成**：本地业务代码已通过最终验证，但没有执行 commit、push、
+Cloud Build、部署、候选、IAP 登录验收、业务验收、BigQuery/Firestore/Logging
+写入或流量切换。线上空页面不能被本地测试结果冒充为已修复。
 
 ## 1. 最终目标
 
-OurA Navi Monitor 是 LCS RAG APP 的用户数据分析平台，不是以工程告警为主的
-运维监控台。它回答六个业务问题：
+OurA Navi Monitor 是 LCS RAG APP 的用户数据分析平台，不是工程告警台。它必须让
+非技术人员直接看懂：
 
-1. 谁在使用，是否形成持续使用？
-2. 用户在什么时间、设备和模式下使用？
-3. 用户在问什么产品、想完成什么任务？
-4. 回答是否完整交付并成功保存？
-5. 每个地区、角色和个人的使用差异是什么？
-6. 哪些会话、追问、资料和反馈能解释上述结果？
+1. 哪些员工在使用，采用率、回访率和活性如何；
+2. 用户在什么时间、设备和模式下使用；
+3. 用户在问什么类型、产品和任务；
+4. 回答是否真正完整交付，耗时如何；
+5. 地区、角色和个人之间有什么差异；
+6. 哪段会话可以解释某个用户的使用轨迹。
 
-数据错误、刷新失败和日志中断仍会被记录和告警，但不占据用户主导航，也不
-显示一条用户无法理解的“数据可信度状态条”。受影响的指标显示 `-` 或
-`データ取得不可`，绝不能伪装成 0。
+数据缺失、过期或单模块失败必须局部显示 `-`、`未計測` 或模块错误。任何一个
+请求、图表、分类或会话异常都不能让三个页面整体空白。
 
----
+## 2. 系统性根因与唯一修复
 
-## 2. 已解决的系统性根因
-
-| 根因 | 最终处理 |
+| 根因 | 唯一修复 |
 | --- | --- |
-| Monitor 依赖已经停产的文本日志事件 | LCS active answer path 直接输出四种固定结构化分析事件 |
-| 问题分类在 LCS、SQL、Firestore reader、JavaScript 各算一遍 | RequestSpec Builder 成为唯一分类 owner，其他层只保存、汇总、显示 |
-| 未知问题被默认当成“ネタ探し” | 独立 `unclassified / 判定不能`，绝不猜测 |
-| 错误率和 P95 使用没有状态/耗时的错误来源 | HTTP 指标只读 request log；回答耗时只读终态 answer event |
-| 回答成功率把拒答、部分回答、写回失败混为成功 | 统一完整交付公式和单一失败优先级 |
-| 部分测量样本被静默缩小分母 | 只要范围中存在未测量回答，完整交付率显示 `-` |
-| 69/80/管理员排除逻辑散落 | `analysis_scopes.py` 只根据部门和有效状态计算 69/80；IAP 独立 |
-| 名单邮箱与日志身份不稳定且 BigQuery 含 PII 风险 | 使用 LCS 已验证登录 subject 作为唯一 `user_id`；姓名邮箱只在 Monitor 私有名单层补齐 |
-| 15 分钟全量重建、视图无边界 | 2 小时重叠窗口、5 分钟终态等待、分区 MERGE、质量门和水位在同一事务发布 |
-| 旧 snapshot、旧 API、宽容 adapter 长期并存 | 新 owner 接管后旧文件、路由、SQL 和 fallback 已从本地工作树删除 |
-| 候选/生产静态标签长期错误 | 分析事件不再保存静态 candidate 标签；使用 revision、Git SHA、build ID |
-| Firestore 投影静默截断 500 会话/消息 | 删除静默 limit，完整流式读取变更范围 |
-| 产品名直接采用模型自由文本，可能误收用户内容 | 模型只提名候选；现有受管产品身份解析器是唯一准入 owner，未解析候选只计覆盖度、不写名称 |
-| 请求日志存在但分析事件整族停产时无法察觉 | 每批把成功 ask HTTP 与 `question_received` 对账；一侧缺失即阻止发布并告警 |
-
----
+| 新页面读取空的 canonical facts，而 4,176 行旧表仍在另一条链 | 一次性历史编译把 Firestore、旧审计表和 retained raw telemetry 合并到同一事实表 |
+| 页面依赖一个 mega response，任一字段失败就整页失败 | overview、regions、users、user detail、conversations 独立 API 与独立模块状态 |
+| 全局鲜度状态被当成页面开关 | 鲜度只做元数据；历史、部分和未测量数据仍显示 |
+| 缺字段、无记录和真实 0 被 adapter 混为 0 | 封闭 Pydantic 合同；缺失是 `null/未測定`，日期轴上的无事件日才是 0 |
+| 旧请求、导出或导航完成后覆盖新页面 | `frontend/api/client.js` 和 `frontend/app.js` 统一 AbortController 生命周期 |
+| 用户、标签、身份和地区在多处各自判断 | 用户管理 service/repository 是唯一写 owner；名单 `エリア` 是地区权威 |
+| 历史编译逐会话读取 Firestore，8 分钟仍卡住 | 一个 root stream、一个 conversations collection-group stream、一个 messages collection-group stream |
+| 坏会话没有时间时用当前时间补齐 | `ProjectionDataError` 明确排除并计数，绝不制造使用日期 |
+| 旧成功率语义错误 | 旧 `answer_success_flag` 不迁移；完整交付只读可证明的新字段 |
+| `user_daily`、snapshot 和 mega view 会互相漂移 | 事实表 + 一个 `dashboard_events(start,end)` + 一个 `dashboard_user_list(start,today)` |
 
 ## 3. 唯一责任模块
 
-| 事实 | 唯一 owner | 其他层允许做什么 |
+| 责任 | 唯一 owner | 禁止的冲突路径 |
 | --- | --- | --- |
-| 问题类型、任务、产品 | LCS RequestSpec Builder | BigQuery 原样投影，前端翻译 label |
-| 回答运行终态 | LCS TMCS service | BigQuery 关联和汇总 |
-| assistant 消息是否保存 | LCS message-write route | BigQuery 与 answer 关联 |
-| 评价、再生成、强化、修正 | LCS action emitter | Monitor 分析用户后续行为 |
-| 69/80 范围 | `app/domain/analysis_scopes.py` | API 按 scope 查询；前端不再排除 |
-| 名单、邮箱、部门、标签 | Monitor 专用 Firestore + `user_directory.py` | BigQuery 只接收无 PII 范围投影 |
-| 完整交付公式 | BigQuery `merge_incremental.sql` | Python/前端只读取结果；合同测试锁定 SQL 公式和优先级 |
-| 页面指标 | `analytics_service.py` + 三个正式 API view | JavaScript 只做可视化适配 |
-| 会话与消息正文 | LCS Firestore | 用户详细页按需分页读取，不复制进 BQ |
-| 云端刷新 | `app/jobs/refresh_analytics.py` | 一个 Cloud Run Job、一个 Scheduler |
-| Monitor 候选构建 | `cloudbuild.yaml` | 不接收生产流量 |
-| Monitor 正式切流 | `scripts/promote_candidate.sh` | 必须显式 revision 和 `--apply` |
+| 69/80 分析范围 | `app/domain/analysis_scopes.py` | SQL/前端按邮箱、标签或人数再排除 |
+| 问题类型运行时合同 | LCS RequestSpec producer + `app/domain/question_categories.py` 校验 | Monitor 关键词分类、别名猜测 |
+| 历史旧分类转换 | `migrate_legacy_question_category()` | 运行时接受旧枚举 |
+| 历史 Firestore 读取 | `FirestoreChatReader` | 每个会话再查询一次 messages |
+| 会话/引用投影 | `app/jobs/project_firestore.py` | 用当前时间、正文关键词或第二份地区表补值 |
+| 一次性历史合并 | `app/jobs/rebuild_history.py` + `sql/merge_history.sql` | 长期双读旧表 |
+| 增量发布与水位 | `app/jobs/refresh_analytics.py` | DTS 全量重建、第二个 scheduler |
+| 页面事实语义 | BigQuery `dashboard_events` table function | overview/detail 各自复制公式 |
+| 页面组装 | `app/services/analytics_service.py` | JavaScript 重算 KPI |
+| 前端请求生命周期 | `frontend/api/client.js` + page controller | 页面私有 fetch、旧请求覆盖 |
+| 名单/标签/审计 | `user_management.py` + `user_directory.py` transaction | 前端直写数据库、两套标签状态 |
+| 会话正文 | `conversation_history.py` 分页读取 LCS Firestore | 把正文复制进 BigQuery |
 
-`message_persisted` 同时携带原 assistant `answer_ts`。因此客户端延迟重试仍按原回答
-日期做有界分区更新，不依赖“写回必须与回答处在同一个刷新窗口”的偶然时序，也不
-需要每 15 分钟扫描 180 天答案。
+## 4. 用户名单、地区与范围
 
-任何新功能应扩展上述 owner，不得在 SQL、API 或前端建立第二套判断。
+首次导入权威是 `../OurA-Navi_userlist.xlsx`。2026-08-25 只读核对结果：83 行；
+`MR=61`、`本社（ヘルスケア）=8`、`本社（DM）=11`、`システム管理者=3`。
 
----
-
-## 4. 用户名单与分析范围
-
-初次导入来源：
-
-```text
-../OurA-Navi_userlist.xlsx
-```
-
-Excel `備考` 只在初次导入时拆成部门：
-
-| Excel 備考 | Monitor 部门 | 全局指标 | 用户/地图/详细 | 用户管理 |
+| Excel 備考 | Monitor 部门 | 全局 KPI | 用户/地图/详细 | 用户管理 |
 | --- | --- | ---: | ---: | ---: |
-| `MR` | `DM専任` | 是 | 是 | 是 |
-| `本社（ヘルスケア）` | `ヘルスケア本社` | 是 | 是 | 是 |
-| `本社（DM）` | `DM本社` | 否 | 是 | 是 |
-| `システム管理者` | `管理者` | 否 | 否 | 是 |
+| MR | DM専任 | 是 | 是 | 是 |
+| 本社（ヘルスケア） | ヘルスケア本社 | 是 | 是 | 是 |
+| 本社（DM） | DM本社 | 否 | 是 | 是 |
+| システム管理者 | 管理者 | 否 | 否 | 是 |
 
-初次导入验收：
+所以当前验收基线是 69 / 80 / 83，但代码只根据部门和 `is_active` 动态计算，不写死
+人数。标签只用于 Monitor 展示，不能改变范围或 IAP 权限。
 
-- 全局分析 69 人：61 名 `DM専任` + 8 名 `ヘルスケア本社`；
-- 用户一览、地图、地区排名、用户详细 80 人：上述 69 人 + 11 名 `DM本社`；
-- 用户管理 83 人：上述 80 人 + 3 名 `管理者`。
+地区直接使用 Excel `エリア`。`首都圏A` 保持原样；只有本社且勤務地为虎ノ門时
+单独显示 `本社・虎ノ門`。其他用户沿用其 `エリア` 与 `勤務地`，不创建地点字典。
 
-69/80/83 只用于初次导入验收，运行时代码不写死人数。新增、停用或改变部门后
-自动重新计算。
-
-地区规则只保留用户要求的简单结构：
-
-- `首都圏A` 继续作为东京业务区域；
-- 地区键直接使用名单中的标准化 `エリア`，不维护第二张地区代码映射；
-- 只有 `本社 + 虎ノ門` 使用独立的 `本社・虎ノ門`；
-- 其他人沿用 Excel `エリア` 与 `勤務地`；
-- 不向用户展示额外地点字典。
-
-三名 Monitor IAP 管理员仍由部署 allowlist 控制。名单中的 `管理者` 部门、
-任何标签或用户管理操作都不能授予、撤销或模拟 IAP 权限。
-
----
-
-## 5. 三个页面的最终结构
+## 5. 页面最终结构
 
 ### 5.1 全体サマリー
 
-| 模块 | 分析范围 | 内容 | 可视化 |
-| --- | --- | --- | --- |
-| 1 主要 KPI | 69 | 期间利用者数、利用率、再访率、1 人平均提问、回答成功率、P95 | 六张 KPI 卡 |
-| 2 利用环境・モード | 69 | 时间段、设备、社内/Web 模式 | 柱形图 + 两个圆环图 |
-| 3 利用推移・質問タイプ | 69 | 每日活跃/提问、问题类型 | 双轴趋势 + 横向条形图 |
-| 4 活性度分布 | 69 | 高、中、低、休眠；地区/角色构成 | 圆环 + 100% 堆叠条形图 |
-| 5 ユーザー一覧 | 80 | 姓名、邮箱、地区、最后使用、7 日利用日数、7 日消息、回答成功率、活性度 | 可横向滚动表格 |
-| 6 日本利用マップ | 80 | 活跃、提问、利用率、再访率和地区排名 | 日本 SVG 热力图 + 横向排名 |
-| 7 製品ニーズ | 69 | 产品 Top 10、产品 × 问题类型 | 横向条形图 + CSS Grid 热力矩阵 |
+| 模块 | 范围 | 内容 | 呈现 |
+| --- | ---: | --- | --- |
+| 核心 KPI | 69 | 活跃人数、利用率、回访率、人均提问、回答成功率、P95 | KPI 卡 |
+| 利用环境/模式 | 69 | 时段、设备、社内/Web | 柱形 + 圆环 |
+| 利用推移/问题类型 | 69 | 每日活跃/提问、新问题类型 | 双轴趋势 + 横条 |
+| 活性度分布 | 69 | 高、中、低、休眠；地区/角色比较 | 圆环 + 100% 堆叠 |
+| 用户一览 | 80 | 姓名、邮箱、エリア、最后使用、7 日使用日、7 日消息、成功率、活性度 | 表格 |
+| 日本使用地图 | 80 | 活跃、提问、利用率、回访率、地区排名 | SVG 热力图 + 横条 |
+| 产品需求 | 69 | 产品 Top 10、产品 × 问题类型 | 横条 + 矩阵热力图 |
 
-地图和排名点击只产生一个可关闭地区 Chip：
-
-- 用户表和地图仍按 80 人范围过滤；
-- 其余首页模块只计算该地区属于 69 人范围的用户；
-- 不增加时间以外的复杂全局筛选栏。
+地区点击只形成一个可关闭的地区筛选；不增加复杂全局筛选栏。
 
 ### 5.2 ユーザー分析
 
-1. 个人利用摘要：地区、地点、部门、MR 资历、最后利用、利用日数、提问数、
-   1 日平均提问、回答成功率、同地区/同角色平均。
-2. 个人利用趋势：问题柱形 + 完整交付率折线。
-3. 用户需求趋势：产品、问题类型、任务、模式、设备。
-4. 会话旅程：保留会话列表 + 消息列表双栏和懒加载，不增加技术字段。
-5. 标签 Chip + `ユーザー管理で編集`，编辑只在用户管理页面发生。
+1. 个人摘要：区域、地点、部门、MR 资历、最后使用、活跃天数、提问数、日均提问、
+   完整交付率、同地区/同角色比较；
+2. 个人趋势：提问柱形 + 完整交付率折线；
+3. 用户需求画像：产品、任务、问题类型、模式、设备；
+4. 会话旅程：现有会话列表 + 消息列表双栏，不增加字段；
+5. 标签 Chip 与“前往用户管理编辑”。
+
+个人分析事实和会话正文是两个请求。会话读取失败不得抹掉个人摘要，个人事实失败
+也不得让会话区伪装成空会话。
 
 ### 5.3 ユーザー管理
 
-两个子页面：`ユーザー管理`、`ラベル管理`。
+用户与标签为两个 `role=tab` 子页。可管理姓名、邮箱、エリア、勤務地、角色、部门、
+MR 资历、标签和有效状态。エリア为封闭名单值；本社自动约束虎ノ門。标签可新增、
+改名、改固定色、停用和删除；正在被使用的标签不可删除。
 
-用户可新增和修改：姓名、邮箱、エリア、勤務地、角色、部门、MR 资历、标签、
-有效/停用。停用只把用户移出当前名单分母和页面，不删除已经形成的事实；
-`user_scope` 把结构性 69/80 资格与当前 `is_active` 分开保存，因此重建也不会
-丢失停用前历史。邮箱标准化后唯一；改变邮箱不会改变已绑定的登录 `user_id`，
-历史仍属于同一 `roster_id`。
+所有编辑携带页面所见 `updated_at`。后台 transaction 再检查版本；并发冲突返回
+`update_conflict`，抽屉保持打开并显示就地错误，不覆盖他人刚保存的值。停用标签
+仍显示在已分配用户上，但不能新分配。
 
-标签可新增、改名、改固定色、停用、删除。正在使用的标签不可删除。名单/标签、
-内部唯一性 claim 与审计记录使用同一个 Firestore transaction，避免并发重名、
-“数据已改但没有审计”或相反。claim 只是 Monitor 内部一致性索引，不是第二套
-名单、权限或标签状态。
-审计和临时 CSV 导出都有 `expires_at`，云端切换时启用 Firestore TTL。
-
----
-
-## 6. 指标口径
-
-### 6.1 首页 KPI
+## 6. 指标白话口径
 
 | 指标 | 白话定义 |
 | --- | --- |
-| 期间利用者数 | 选定时间内至少提交过 1 个有效问题的人数；不是单日 DAU |
-| 利用率 | 期间利用者数 ÷ 该范围当前有效名单人数 |
-| 再访率 | 至少在 2 个不同日期使用的人数 ÷ 期间利用者数 |
-| 1 人平均提问 | 有效问题数 ÷ 期间利用者数 |
-| 回答成功率 | 完整交付问题数 ÷ 全部有效问题数；存在任何未测量问题时显示 `-` |
-| P95 应答时间 | 95% 已形成终态的问题不超过的总耗时；存在缺失终态耗时时显示 `-` |
+| 活跃人数 | 选择期间至少提交过一次有效问题的人数 |
+| 利用率 | 活跃人数 ÷ 当前范围内有效名单人数 |
+| 回访率 | 在至少两个不同日期使用的人数 ÷ 活跃人数；单日范围显示 `-` |
+| 人均提问 | 有效问题数 ÷ 活跃人数 |
+| 回答成功率 | 可测量回答中满足完整交付的比例，同时显示“已测量/全部问题” |
+| P95 | 有耗时记录的回答中，95% 不超过的耗时，同时显示测量覆盖数量 |
 
-### 6.2 回答成功率就是完整交付率
+回答成功率就是完整交付率。新数据只有同时满足终态 final、运行 completed、无遗漏/
+部分 demand、无 system/writer/assistant error，并确认消息写回，才算成功。历史字段不足
+时 `complete_delivery=null`；页面可以显示可测量子集的比例，但必须同时显示覆盖数量，
+绝不能把未测量当失败或成功。
 
-必须全部满足：
+活性度唯一口径：最近 3 日至少 3 次为高；否则最近 7 日 1–2 次为中；否则最近
+14 日至少 1 次为低；其余休眠。
 
-```text
-terminal = final
-runtime_status = completed
-demand_total > 0
-partial_demand_count = 0
-omitted_demand_count = 0
-system_fault_count = 0
-message_persisted = true
-assistant_error_present = false
-writer_error_code 为空
-```
+## 7. 问题类型
 
-礼貌拒答、范围外问题、部分回答、遗漏需求、系统错误、取消、超时、回答写回失败
-都不算成功。每个失败只保留一个主原因：
-
-```text
-stream_failed
-not_final
-not_persisted
-assistant_error
-writer_error
-system_fault
-demand_omitted
-demand_partial
-measurement_missing
-```
-
-评价、重新生成、强化和修正是独立的用户行为，不能反向篡改一次回答当时的交付
-事实。
-
-### 6.3 活性度
-
-| 区分 | 定义 |
-| --- | --- |
-| 高アクティブ | 最近 3 日有效问题至少 3 次 |
-| 中アクティブ | 非高，最近 7 日有效问题 1–2 次 |
-| 低アクティブ | 非高/中，最近 14 日至少 1 次 |
-| 休眠ユーザー | 最近 14 日 0 次 |
-
-名单 LEFT JOIN 使用事实，因此没有使用记录的人也会进入休眠分母。
-
----
-
-## 7. 问题类型、任务与产品
-
-问题类型只表达“用户想完成什么”，产品是另一条轴。
+运行时封闭枚举：
 
 | Key | 页面日文 |
 | --- | --- |
-| `product_information` | 製品情報・仕様 |
-| `price_product_code` | 価格・製品コード |
-| `comparison_fit_selection` | 比較・適合・選定 |
-| `usage_procedure` | 使用方法・手順 |
-| `troubleshooting_safety` | トラブル・安全対応 |
-| `sales_proposal` | 営業活動・提案作成 |
-| `institution_gpo_market` | 医療機関・GPO・市場情報 |
-| `document_search` | 資料・文書を探す |
-| `other_general` | その他・一般質問 |
-| `unclassified` | 判定不能 |
+| product_information | 製品情報・仕様 |
+| price_product_code | 価格・製品コード |
+| comparison_fit_selection | 比較・適合・選定 |
+| usage_procedure | 使用方法・手順 |
+| troubleshooting_safety | トラブル・安全対応 |
+| sales_proposal | 営業活動・提案作成 |
+| institution_gpo_market | 医療機関・GPO・市場情報 |
+| document_search | 資料・文書を探す |
+| other_general | その他・一般質問 |
+| unclassified | 判定不能 |
 
-任务轴：
+一次性旧 schema 只做精确枚举转换：
 
-| Key | 页面日文 |
+| 旧值 | 新值 |
 | --- | --- |
-| `fact_lookup` | 情報確認 |
-| `explanation` | 説明依頼 |
-| `comparison_selection` | 比較・選定 |
-| `procedure_guidance` | 手順確認 |
-| `troubleshooting` | 問題解決 |
-| `content_creation` | 資料・文面作成 |
-| `source_retrieval` | 資料検索 |
-| `market_research` | 市場・施設調査 |
-| `other` | その他 |
-| `unclassified` | 判定不能 |
+| product_explanation | product_information |
+| product_price | price_product_code |
+| troubleshooting | troubleshooting_safety |
+| sales_approach | sales_proposal |
+| hospital_gpo | institution_gpo_market |
+| topic_ideation | unclassified |
 
-规则：
+`topic_ideation` 过去是未知问题的默认值，不允许升级成具体业务结论。运行时 producer
+继续拒绝所有旧值；不存在关键词特判或隐藏别名。
 
-- 每个 RequestSpec demand 同时产出问题类型、任务和产品候选；
-- 同一问题可有多个类型，首页按第一个 required demand 的主类型只计一次；
-- 产品候选必须同时对应 RequestSpec 的 entity 主语，并由现有受管产品身份解析器
-  解析成功后，才保存标准产品名与不可逆产品 key；自由文本永不直接进入日志；
-- 每个问题保存产品候选数和解析成功数，未解析产品不猜名称，页面用就地说明展示
-  “有候选未纳入产品图”，而不是制造全局技术状态条；
-- 前端只翻译 label，不认识旧别名；
-- Web 模式由同一次 grounded Writer call 附带机器注释说明逐需求交付，后端在
-  用户看到和保存答案前剥离；缺失/格式错误就 `measurement_missing`，不猜成功。
-
----
-
-## 8. 唯一数据链
+## 8. 唯一数据链与正式对象
 
 ```text
-LCS accepted question / terminal answer / message write / user action
-                         ↓ structured stdout JSON
-Cloud Logging + Cloud Run request logs
-                         ↓ one Logging sink
-BigQuery oura_navi_monitor raw tables
-                         ↓ partition MERGE + Firestore projection
-canonical facts + daily aggregates + pipeline state
-                         ↓ three canonical API views
-FastAPI analytics/admin/conversation APIs
+retained Cloud Run request/stdout/stderr + LCS Firestore + retired audit table
+                         ↓ one-time history compiler
+canonical BigQuery facts ← bounded incremental canonical events
+                         ↓ dashboard_events / dashboard_user_list
+FastAPI page APIs + independent Firestore conversation API
                          ↓
-three dashboard pages
+three dashboard pages with module-local state
 ```
 
-Firestore 继续作为会话消息和 Monitor 名单/标签权威。BigQuery 不保存问答正文、
-姓名、邮箱、IP、完整 URL、完整 User-Agent 或 token。
-
-### 8.1 LCS 分析事件
-
-只有四类：
-
-- `question_received`
-- `answer_completed`
-- `message_persisted`
-- `answer_action`
-
-共同 envelope：事件/请求/会话/轮次/消息 ID、已验证登录 `user_id`、模式、设备、
-endpoint、revision、Git SHA、build ID、固定 `payload_json`。唯一 serializer 对字段、
-长度、邮箱样式内容、用户 ID 和 ID 字符集统一 fail closed；事件异常不得影响答案，
-但会产生专用失败日志，且成功 ask 请求与事件对账会阻止残缺批次发布。
-
-### 8.2 BigQuery 正式对象
-
-Cloud Logging 原始表：
+保留原始来源，不做行删除：
 
 - `run_googleapis_com_requests`
 - `run_googleapis_com_stdout`
+- `run_googleapis_com_stderr`（只用于可取得的历史 runtime truth）
 
-事实表：
+正式事实：`http_request_events`、`question_events`、`answer_events`、
+`answer_action_events`、`demand_events`、`citation_events`、`conversation_events`、
+`user_scope`、`pipeline_runs`、`pipeline_state`。
 
-- `http_request_events`
-- `question_events`
-- `answer_events`
-- `answer_action_events`
-- `demand_events`
-- `citation_events`
-- `conversation_events`
-- `user_scope`
+正式语义入口只有：
 
-日聚合与任务状态：
+- `dashboard_events(p_start_date, p_end_date)`
+- `dashboard_user_list(p_history_start, p_today)`
 
-- `user_daily`
-- `pipeline_runs`
-- `pipeline_state`
+不存在 `user_daily`、`dashboard_overview`、`dashboard_user_detail` 或 snapshot owner。
+`monitor_answer_events` 是一次性输入，不是页面 fallback；历史成功标志、raw payload、
+问题正文和邮箱均不迁移。历史 apply 和精确验证成功前不得删除它。
 
-API 只读三个视图：
+## 9. 2026-08-26 只读历史计划证据
 
-- `dashboard_overview`
-- `dashboard_user_list`
-- `dashboard_user_detail`
+使用批准凭据运行 plan，未写云端：
 
-原始源视图只有 `monitor_event_source` 与 `http_request_source`。所有事实表和日
-聚合按日期分区；请求必须带日期条件和 maximum bytes billed。
+- 83 个 chat roots、2,195 个会话、7,265 条消息；
+- 旧 `monitor_answer_events` 4,176 行去重为 3,441 个唯一请求/trace；
+- 合并后 3,331 次范围内提问、3,215 个回答、1,546 个有效会话、18,357 条引用；
+- 提问来源：Firestore 2,923；只有旧审计能补回 408；
+- 完整交付可测量 111 / 3,215，其余必须显示未测量；
+- 37 个无消息空会话排除；375 个管理员/范围外旧事件排除；312 个不在当前名单的
+  旧身份排除；6 名 80 人范围名单用户没有可绑定聊天历史；
+- 总耗时 62.1 秒，`issueCount=0`，数据截止日为 2026-08-25。
 
-### 8.3 增量任务
+这些是只读时间点结果，可能随 Firestore/日志变化。它证明过去数据仍可恢复，不
+代表已经写入 canonical facts。线上 `question_events`、`answer_events` 和 pipeline
+水位仍为空时，新 Monitor 页面仍会没有分析数据。
 
-唯一 Cloud Run Job：`oura-navi-monitor-refresh`。
-
-唯一 Scheduler：`oura-navi-monitor-refresh-quarter-hour`，每 15 分钟：
-
-1. 从上次成功水位回看 2 小时；
-2. 结束时间落后当前 5 分钟，发布范围内不允许仍无终态的问题；
-3. 更新名单身份投影；
-4. 投影变化会话和引用；
-5. 幂等 MERGE 事实；
-6. 只重算用户列表实际使用的受影响日期 `user_daily` 投影；地区和产品由同一
-   事实查询按当前选择期间计算，不保留第二套未使用聚合；
-7. 执行关键合同检查和覆盖度观察，包括成功 ask HTTP 与问题事件对账；
-8. Firestore 投影、事实 MERGE、日聚合、关键 `ASSERT`、run 状态和水位在同一个
-   BigQuery 事务提交；任一步失败都不发布半批数据。
-
-原始重复事件、未知枚举、producer invalid、无名单问题、事件单侧缺失和发布范围内
-仍无终态都属于关键失败。终态缺少
-消息写回是覆盖度问题：不冻结所有其他分析，但该回答成功率不能被计算。
-
----
-
-## 9. 正式 API
+## 10. 正式 API
 
 ```text
 GET /api/analytics/overview
@@ -377,114 +221,41 @@ GET /api/analytics/regions
 GET /api/analytics/users
 GET /api/analytics/users/{roster_id}
 
-GET   /api/admin/users
-POST  /api/admin/users
-PATCH /api/admin/users/{roster_id}
+GET /api/trace/conversations
+GET /api/trace/messages
 
-GET    /api/admin/labels
-POST   /api/admin/labels
-PATCH  /api/admin/labels/{label_id}
-DELETE /api/admin/labels/{label_id}
-
-GET  /api/trace/messages
-POST /api/export/jobs
-GET  /api/export/jobs/{job_id}
-GET  /api/export/jobs/{job_id}/download
+GET /api/admin/metadata
+GET/POST/PATCH /api/admin/users...
+GET/POST/PATCH/DELETE /api/admin/labels...
+POST/GET /api/export/jobs...
 ```
 
-用户名单状态、标签和资料字段使用同一个用户 PATCH，不再有 `/status`、`/labels`
-第二套写入。URL 只使用 `roster_id`，不使用邮箱。CSV 是 1 小时有效、创建者专属的
-job，不提供旧 GET CSV alias。
+静态页面资源使用 `no-store`，避免 revision 切换后浏览器继续组合旧 HTML 与新 JS。
+生产身份只接受 IAP 注入邮箱并命中三名管理员 allowlist；这次 Monitor 分析升级不
+新增任何 IAP key、页面 secret 或测试专用权限。
 
-所有页面和 API 使用 IAP 注入的 `x-goog-authenticated-user-email`，规范化后必须
-命中三名管理员 allowlist。生产环境拒绝本地 header，Cloud Run 继续禁止未认证
-访问。
+## 11. 唯一切换顺序
 
----
+不建立 backup、shadow 或长期 fallback：
 
-## 10. 前端风格与交互
+1. 最后一次本地修改后完成全量回归、JS 合同、脚本/YAML/SQL 检查和 E2E；
+2. 只读 inventory，固定实际旧对象、DTS、raw 最早日期和历史 plan 确认串；
+3. 另行获得云端写入授权后，创建/原地扩充事实表和 source views；
+4. 执行历史编译 apply，并按每个 expected event ID 验证全部落表；
+5. 用同一个增量 owner 以最长 24 小时窗口追到冻结当前水位；
+6. 构建 Monitor 无流量候选，完成 IAP 登录、三页、旧数据和局部失败验收；
+7. 此后才测试/切换 LCS 新 revision，制造 internal/Web、成功/失败/写回链的真实新事件；
+8. 刷新增窗口并确认新数据在同一页面连续出现、口径不跳变；
+9. 只有历史与新链均验收后，停止旧 DTS并精确删除旧派生对象；raw 三表保留；
+10. 分别显式切换已验收的 LCS/Monitor 流量。
 
-保留现有深色、高信息密度、青蓝色数据平台风格，不迁移 React、不新增构建体系。
+任何一步失败都修复这一个 owner，不恢复旧 API、旧表页面读取或第二套状态。
 
-统一原则：
+## 12. 完成标准
 
-- 同一成功/注意/失败/未知语义使用同一颜色；
-- 日文采用自然业务表达：`主要KPI`、`利用率`、`再訪率`、`個人利用`；
-- 表格 sticky header，移动端只在表格内部横向滚动；
-- PC 六列 KPI、iPad 三列、手机单列；
-- 会话双栏在手机变成上下结构；
-- 日本地图有 hover、键盘操作、地区联动和虎ノ門独立 marker；
-- 标签颜色来自后端固定色集合；所有用户可编辑文字在插入 HTML 前转义；
-- 每次页面刷新先销毁 Chart.js 实例；
-- 单个 API 失败只影响所属模块，不清空其他模块。
+只有以下全部具备真实证据才算完成：本地最终代码验证；旧路径关闭；历史 apply
+数量与 event ID 验证；增量水位；Monitor 构建/候选；IAP 登录；三页旧数据业务验收；
+LCS 新 revision 真实事件；新旧连续性验收；明确流量；旧派生 owner 删除。
 
----
-
-## 11. 已关闭的旧 owner
-
-本地最终代码已经删除：
-
-- 旧 metrics/history routers；
-- `bigquery_metrics.py`、`firestore_history.py`、旧 Google auth helper；
-- 旧静态 ops dashboard；
-- 旧 dashboard adapter、metric status adapter、旧六分类兼容；
-- 旧全量重建 SQL 和刷新脚本；
-- 服务账号 key 创建脚本；
-- 旧手工 Cloud Run 部署脚本和 mutable `latest` service YAML；
-- 七份与本规范冲突的旧设计/计划文档；
-- LCS 旧 observability freeze 文档和 active runtime 的旧日志 emitters。
-
-LCS 中仍用于离线质量评估的历史 fixture/工具不属于 Monitor 生产读取链；不能把
-它们重新接回 Monitor，也不能因本次用户分析升级擅自删除独立评估能力。
-
-精确文件和未来云端对象删除清单见实施清单。
-
----
-
-## 12. 原地切换原则
-
-用户已决定不保留旧 BigQuery 全量、shadow dataset、backup table 或长期双读。
-但 Cloud Run 页面所见日志实际来自有限保留期的 Cloud Logging；删除 BigQuery
-不会让 Logging 自动回填已过期历史。
-
-因此切换必须在维护窗口按以下顺序一次完成：
-
-1. 完成本地最终验证；
-2. 只读确认实际生产 revision、镜像 digest、Logging 保留边界/exclusion、
-   Firestore 最早时间、BigQuery 对象和 DTS 完整 ID；
-3. 用户确认唯一 `ANALYTICS_START_AT`，此前无法取得的数据永久舍弃；
-4. 导入 83 人名单并验收 69/80/83；
-5. 停止旧 DTS，建立正式事实表并把同名 sink 收窄到 request log 与结构化事件；
-6. 部署 LCS 候选并用真实 internal/Web 问题验证四事件连接，使保留的同名 raw
-   stdout 表取得正式 `jsonPayload` schema；
-7. 发布正式 source view，从仍可取得的 Logging 和 Firestore 原地重建正式事实；
-8. 通过行数、去重、关联、PII、枚举、完整交付和 UI 验收；
-9. 在同名 request/stdout raw 表内删除 `ANALYTICS_START_AT` 之前的旧行，并按精确
-   清单删除其他旧 BQ view/table、DTS、log metric 和 policy；不删除/重建 raw 表；
-10. 创建 Monitor 无流量候选，完成 IAP 登录和业务验收；
-11. 显式把已验收 revision 切到 100%；
-12. 确认真实生产流量后结束维护。
-
-如果中途失败，只能保持维护页、修复唯一新链，并从仍在 Logging/Firestore 的
-数据重新构建。不得恢复旧 API、旧 snapshot 或双读 fallback。
-
----
-
-## 13. 完成标准
-
-只有同时满足以下条件，整个升级才可称为完成：
-
-- LCS 四事件在 internal/Web、正常/部分/错误、写回成功/失败路径均有最终合同；
-- 问题分类只有 RequestSpec Builder 一个 producer；
-- 69/80 只有 `analysis_scopes.py` 一个 owner，83 只是管理名单数量；
-- 标签不改变 scope 或 IAP；
-- BigQuery 旧正式对象按精确清单删除，生产只剩一套；
-- 结构化事件、事实表和导出不存在姓名、邮箱、问答正文或 token；
-- 最后一次代码修改后 RED、回归、合同、类型/编译、lint/build 和本地真实页面
-  链路全部重跑；
-- LCS 和 Monitor 候选均完成实际运行验证；
-- IAP 登录、三页面、地图、会话、标签 CRUD 和真实数据业务口径由用户验收；
-- 已验收 revision 获得生产流量且旧链不再被读取。
-
-Mock、固定 fixture、测试数量、HTTP 200、构建成功或候选 revision 都不能替代
-登录验收、真实数据口径和业务验收。
+Mock、HTTP 200、测试数量、构建成功或候选 revision 均不能替代登录、真实数据和
+业务验收。

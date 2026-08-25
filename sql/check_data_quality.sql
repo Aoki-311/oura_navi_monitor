@@ -40,6 +40,9 @@ WITH source_questions AS (
   UNION ALL
   SELECT 'duplicate_answer_event_id', COUNT(*) - COUNT(DISTINCT event_id) FROM answers
   UNION ALL
+  SELECT 'duplicate_answer_request_id', COUNT(*) - COUNT(DISTINCT request_id) FROM answers
+  WHERE request_id IS NOT NULL AND request_id != ''
+  UNION ALL
   SELECT 'duplicate_source_question_event_id', COUNT(*) - COUNT(DISTINCT event_id) FROM source_questions
   UNION ALL
   SELECT 'duplicate_source_answer_event_id', COUNT(*) - COUNT(DISTINCT event_id) FROM source_answers
@@ -54,10 +57,10 @@ WITH source_questions AS (
     'product_information','price_product_code','comparison_fit_selection','usage_procedure',
     'troubleshooting_safety','sales_proposal','institution_gpo_market','document_search',
     'other_general','unclassified'
-  )) FROM answers
+  )) FROM questions
   UNION ALL
   SELECT 'unknown_secondary_question_category', COUNT(*)
-  FROM answers, UNNEST(IFNULL(question_categories, [])) category
+  FROM questions, UNNEST(IFNULL(question_categories, [])) category
   WHERE category NOT IN (
     'product_information','price_product_code','comparison_fit_selection','usage_procedure',
     'troubleshooting_safety','sales_proposal','institution_gpo_market','document_search',
@@ -65,7 +68,7 @@ WITH source_questions AS (
   )
   UNION ALL
   SELECT 'unknown_analytics_task', COUNT(*)
-  FROM answers, UNNEST(IFNULL(analytics_tasks, [])) task
+  FROM questions, UNNEST(IFNULL(analytics_tasks, [])) task
   WHERE task NOT IN (
     'fact_lookup','explanation','comparison_selection','procedure_guidance',
     'troubleshooting','content_creation','source_retrieval','market_research',
@@ -75,19 +78,26 @@ WITH source_questions AS (
   SELECT 'missing_analytics_axes', COUNTIF(
     IFNULL(ARRAY_LENGTH(question_categories), 0) = 0
     OR IFNULL(ARRAY_LENGTH(analytics_tasks), 0) = 0
-  ) FROM answers
+  ) FROM questions
   UNION ALL
-  SELECT 'invalid_classification_producer', COUNTIF(classification_status = 'producer_invalid') FROM answers
+  SELECT 'invalid_classification_producer', COUNTIF(classification_status = 'producer_invalid') FROM questions
   UNION ALL
   SELECT 'invalid_product_resolution_counts', COUNTIF(
     product_candidate_count IS NULL OR product_resolved_count IS NULL
     OR product_candidate_count < 0 OR product_resolved_count < 0
     OR product_resolved_count > product_candidate_count
-  ) FROM answers
+  ) FROM questions
   UNION ALL
-  SELECT 'unknown_classification_status', COUNTIF(classification_status IS NULL OR classification_status NOT IN (
-    'classified','unclassified','producer_invalid'
-  )) FROM answers
+  SELECT 'unknown_classification_status', COUNTIF(
+    classification_status IS NULL
+    OR NOT (
+      classification_status IN ('classified','unclassified','producer_invalid')
+      OR (
+        record_origin IN ('firestore_history', 'legacy_audit_history')
+        AND classification_status = 'not_measured'
+      )
+    )
+  ) FROM questions
   UNION ALL
   SELECT 'source_question_without_roster', COUNTIF(scope.user_id IS NULL)
   FROM source_questions source

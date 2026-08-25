@@ -21,8 +21,9 @@ fallback、旧 BigQuery 读取链或关键词分类器。
 - `app/`：FastAPI、IAP 管理员校验、分析 API、用户名单/标签管理、
   Firestore 会话读取和增量任务。
 - `frontend/`：三页面原生 ES Modules、Chart.js、日本 SVG 地图和响应式样式。
-- `sql/`：同一 `oura_navi_monitor` dataset 内的正式事实表、日聚合、
-  三个 API 视图和数据质量检查。
+- `sql/`：同一 `oura_navi_monitor` dataset 内的正式事实表、一个有日期参数的
+  `dashboard_events` 语义函数、一个用户列表函数和数据质量检查；不维护
+  `user_daily` 或第二套 dashboard 快照。
 - `scripts/`：默认仅输出 plan；需要云端写入的脚本必须同时提供精确参数、
   受批准凭据和 `--apply`。
 - `deploy/`：唯一运行环境配置。Monitor Web 服务的候选创建由
@@ -56,7 +57,8 @@ MONITOR_ADMIN_ALLOWLIST=2401145@tc.terumo.co.jp \
 - 标签只影响 Monitor 展示，不能改变 69/80 范围或 IAP 权限。
 - 仓库修改不等于 BigQuery、Firestore、Logging、IAM、Scheduler、Cloud Run
   或流量已经改变。
-- Cloud Logging 是有限保留期的日志来源，不是永久备份。旧 BigQuery 对象
-  删除前必须先确定 `ANALYTICS_START_AT` 和实际可重建时间边界。
+- 历史原始来源 `run_googleapis_com_requests`、stdout、stderr 与 LCS Firestore
+  不删除。旧 `monitor_answer_events` 只有在历史编译、数量核对和正式事实验收后
+  才能删除；它的旧成功标志不会迁移成“完整交付率”。
 - 构建成功、候选 revision、IAP 登录验收、业务验收和生产流量是六个不同
   状态，不能互相代替。

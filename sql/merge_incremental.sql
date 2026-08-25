@@ -1,6 +1,6 @@
 -- Required parameters: @window_start TIMESTAMP, @window_end TIMESTAMP.
 -- The job owns transaction boundaries and advances pipeline_state only after
--- this script, refresh_daily.sql, and check_data_quality.sql all succeed.
+-- this script and check_data_quality.sql both succeed.
 
 MERGE `${PROJECT_ID}.${DATASET_ID}.http_request_events` target
 USING (
@@ -80,6 +80,8 @@ USING (
       CAST(NULL AS INT64) AS product_resolved_count,
       revision_name AS producer_revision,
       git_sha AS producer_git_sha,
+      'canonical_event' AS record_origin,
+      'question_event' AS measurement_profile,
       source_ts AS source_event_ts,
       CURRENT_TIMESTAMP() AS materialized_at,
       ROW_NUMBER() OVER (PARTITION BY event_id ORDER BY source_ts DESC, insert_id DESC) AS row_number
@@ -112,6 +114,8 @@ WHEN MATCHED THEN UPDATE SET
   attachment_count = source.attachment_count,
   producer_revision = source.producer_revision,
   producer_git_sha = source.producer_git_sha,
+  record_origin = source.record_origin,
+  measurement_profile = source.measurement_profile,
   source_event_ts = source.source_event_ts,
   materialized_at = source.materialized_at
 WHEN NOT MATCHED THEN INSERT ROW;
@@ -169,6 +173,8 @@ USING (
       revision_name,
       git_sha,
       build_id,
+      'canonical_event' AS record_origin,
+      'complete_delivery_full' AS measurement_profile,
       source_ts AS source_event_ts,
       CURRENT_TIMESTAMP() AS materialized_at,
       payload_json,
@@ -203,7 +209,8 @@ WHEN MATCHED THEN UPDATE SET
   unsupported_claim_count = source.unsupported_claim_count, total_latency_ms = source.total_latency_ms,
   stage_latency_ms = source.stage_latency_ms, writer_error_code = source.writer_error_code,
   retry_count = source.retry_count, revision_name = source.revision_name, git_sha = source.git_sha,
-  build_id = source.build_id,
+  build_id = source.build_id, record_origin = source.record_origin,
+  measurement_profile = source.measurement_profile,
   source_event_ts = source.source_event_ts, materialized_at = source.materialized_at
 WHEN NOT MATCHED THEN INSERT (
   event_id, answer_ts, answer_date, user_id, roster_id, request_id, trace_id, conversation_id, turn_id,
@@ -215,6 +222,7 @@ WHEN NOT MATCHED THEN INSERT (
   unsupported_claim_count, total_latency_ms, stage_latency_ms, writer_error_code, retry_count,
   message_persisted, assistant_error_present, persistence_error_code, measurement_available,
   complete_delivery, primary_failure_reason, revision_name, git_sha, build_id,
+  record_origin, measurement_profile,
   source_event_ts, materialized_at
 ) VALUES (
   source.event_id, source.answer_ts, source.answer_date, source.user_id, source.roster_id, source.request_id,
@@ -229,7 +237,8 @@ WHEN NOT MATCHED THEN INSERT (
   source.stage_latency_ms, source.writer_error_code, source.retry_count, source.message_persisted,
   source.assistant_error_present, source.persistence_error_code, source.measurement_available,
   source.complete_delivery, source.primary_failure_reason, source.revision_name, source.git_sha,
-  source.build_id, source.source_event_ts, source.materialized_at
+  source.build_id, source.record_origin, source.measurement_profile,
+  source.source_event_ts, source.materialized_at
 );
 
 -- Enrich the question once from the sole RequestSpec producer carried by its answer.

@@ -52,7 +52,6 @@ def get_analytics_service() -> AnalyticsService:
         analytics=get_analytics_repository(),
         pipeline=get_pipeline_repository(),
         directory=get_user_directory_repository(),
-        conversations=get_conversation_history_repository(),
         settings=get_settings(),
     )
 

@@ -16,6 +16,7 @@ def test_release_configuration_removes_the_legacy_identity_secret_binding() -> N
     assert "oura-navi-monitor-identity-hmac" not in cloudbuild
     assert "--set-secrets" not in cloudbuild
     assert "--remove-secrets=MONITOR_IDENTITY_HMAC_KEY" in cloudbuild
+    assert 'MONITOR_REFRESH_MAX_WINDOW_HOURS: "24"' in runtime_files
 
 
 def test_refresh_env_replaces_the_single_analytics_start_owner(tmp_path: Path) -> None:

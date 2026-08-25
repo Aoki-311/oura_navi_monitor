@@ -20,7 +20,7 @@ def test_canonical_sql_files_and_objects_exist_once() -> None:
         "create_fact_tables.sql",
         "create_aggregates.sql",
         "merge_incremental.sql",
-        "refresh_daily.sql",
+        "merge_history.sql",
         "create_api_views.sql",
         "check_data_quality.sql",
     }
@@ -34,12 +34,10 @@ def test_canonical_sql_files_and_objects_exist_once() -> None:
         "citation_events",
         "conversation_events",
         "user_scope",
-        "user_daily",
         "pipeline_runs",
         "pipeline_state",
-        "dashboard_overview",
+        "dashboard_events",
         "dashboard_user_list",
-        "dashboard_user_detail",
     ):
         assert object_name in combined
 
@@ -72,8 +70,8 @@ def test_verified_user_id_is_the_only_fact_identity_contract() -> None:
     source_sql = _sql("create_source_tables.sql").lower()
     fact_sql = _sql("create_fact_tables.sql").lower()
     projection_sql = _sql("merge_firestore_projection.sql").lower()
-    assert "jsonpayload.user_id" in source_sql
-    assert "jsonpayload.user_key" not in source_sql
+    assert "json_value(event_payload, '$.user_id')" in source_sql
+    assert "$.user_key" not in source_sql
     assert "user_id string not null" in fact_sql
     assert "roster_id string not null,\n  user_id string," in fact_sql
     assert "user_key" not in fact_sql
@@ -90,7 +88,7 @@ def test_firestore_projection_is_part_of_the_single_partition_bounded_publish() 
 
 
 def test_scope_flags_are_not_reimplemented_as_department_literals() -> None:
-    sql = _sql("refresh_daily.sql").lower()
+    sql = (_sql("merge_incremental.sql") + _sql("create_api_views.sql")).lower()
     assert "department in" not in sql
 
 
@@ -104,13 +102,10 @@ def test_activity_level_has_one_python_owner_not_a_second_sql_case() -> None:
 
 
 def test_user_list_preserves_the_actual_last_question_timestamp() -> None:
-    aggregate_sql = _sql("create_aggregates.sql").lower()
-    refresh_sql = _sql("refresh_daily.sql").lower()
     view_sql = _sql("create_api_views.sql").lower()
-    assert "last_active_at timestamp" in aggregate_sql
-    assert "max(qa.question_ts) as last_active_at" in refresh_sql
-    assert "max(last_active_at) as last_active_at" in view_sql
+    assert "max(question_ts) as last_active_at" in view_sql
     assert "timestamp(last_seen.last_active_date" not in view_sql
+    assert "drop table if exists `${project_id}.${dataset_id}.user_daily`" in view_sql
 
 
 def test_api_views_do_not_read_logging_raw_tables() -> None:
@@ -162,9 +157,17 @@ def test_invalid_classification_producer_is_a_visible_critical_failure() -> None
     assert "product_resolved_count > product_candidate_count" in sql
 
 
-def test_user_daily_does_not_duplicate_completion_or_activity_formulas() -> None:
+def test_historical_unmeasured_classification_is_explicit_and_cannot_be_claimed_by_producers() -> None:
+    history_sql = _sql("merge_history.sql").lower()
+    quality_sql = _sql("check_data_quality.sql").lower()
+    assert "'not_measured'" in history_sql
+    normalized = " ".join(quality_sql.split())
+    assert "record_origin in ('firestore_history', 'legacy_audit_history')" in normalized
+    assert "and classification_status = 'not_measured'" in normalized
+
+
+def test_semantic_sql_does_not_duplicate_completion_or_activity_formulas() -> None:
     aggregate_sql = _sql("create_aggregates.sql").lower()
-    refresh_sql = _sql("refresh_daily.sql").lower()
     sql = _sql("create_api_views.sql").lower()
     for duplicate in (
         "complete_count",
@@ -175,8 +178,23 @@ def test_user_daily_does_not_duplicate_completion_or_activity_formulas() -> None
         "activity_level",
     ):
         assert duplicate not in aggregate_sql
-        assert duplicate not in refresh_sql
         assert duplicate not in sql
+
+
+def test_cutover_publishes_page_semantics_only_after_history_and_incremental_data() -> None:
+    root = Path(__file__).resolve().parents[1]
+    bootstrap = (root / "scripts" / "bootstrap_monitor_data.sh").read_text(
+        encoding="utf-8"
+    )
+    rebuild = (root / "scripts" / "rebuild_monitor_data.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "create_api_views.sql" not in bootstrap
+    history_position = rebuild.index("app.jobs.rebuild_history --apply")
+    refresh_position = rebuild.index("run_monitor_refresh.sh")
+    semantic_position = rebuild.index("render_sql('create_api_views.sql'")
+    assert history_position < refresh_position < semantic_position
+    assert "PREFLIGHT_CONFIRM" in rebuild
 
 
 def test_complete_delivery_formula_and_failure_priority_have_one_sql_owner() -> None:
@@ -213,7 +231,7 @@ def test_fact_daily_quality_and_watermark_publish_in_one_transaction() -> None:
     sql = render_publish_sql(Settings()).lower()
     assert sql.startswith("begin transaction;")
     assert "merge `lcs-developer-483404.oura_navi_monitor.question_events`" in sql
-    assert "delete from `lcs-developer-483404.oura_navi_monitor.user_daily`" in sql
+    assert "user_daily" not in sql
     assert "assert (" in sql
     assert "canonical monitor data quality gate failed" in sql
     assert "pipeline_state" in sql
@@ -239,6 +257,32 @@ def test_cloud_bootstrap_separates_sink_prepare_from_refresh_activation() -> Non
     assert "render_refresh_env" in (
         ROOT_DIR / "scripts" / "render_runtime_env.py"
     ).read_text(encoding="utf-8")
+    assert "jsonPayload.monitor_event=true" in script
+    assert "request_user_metric_json|stream_terminal_json" in script
+    assert "tmcs_stage_latency_json[ =]" in script
+    assert "run.googleapis.com%2Fstderr" in script
+
+
+def test_one_rebuild_script_compiles_history_before_bounded_incremental_catchup() -> None:
+    script = (ROOT_DIR / "scripts" / "rebuild_monitor_data.sh").read_text(
+        encoding="utf-8"
+    )
+    history = script.index("app.jobs.rebuild_history --apply")
+    catchup = script.index("--until-current")
+    assert history < catchup
+    assert "--history-confirm" in script
+    assert "shadow" in script
+    assert "backup" in script
+
+
+def test_sql_validation_script_is_read_only_and_uses_dry_run() -> None:
+    script = (ROOT_DIR / "scripts" / "dry_run_monitor_sql.py").read_text(
+        encoding="utf-8"
+    )
+    assert "dry_run=True" in script
+    assert "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE" in script
+    assert "GOOGLE_APPLICATION_CREDENTIALS" in script
+    assert "--apply" not in script
 
 
 def test_obsolete_deletion_retains_canonical_raw_tables() -> None:
@@ -251,8 +295,12 @@ def test_obsolete_deletion_retains_canonical_raw_tables() -> None:
     assert "run_googleapis_com_stdout" not in object_line
     assert "run_googleapis_com_requests" not in object_line
     obsolete_objects = object_line.removeprefix("OBJECTS=(").removesuffix(")").split()
-    assert len(obsolete_objects) == 18
-    assert "run_googleapis_com_stderr" in obsolete_objects
+    assert len(obsolete_objects) == 17
+    assert "run_googleapis_com_stderr" not in obsolete_objects
     assert "run_googleapis_com_varlog_system" in obsolete_objects
-    assert "canonical raw tables retained" in script
+    assert "historical raw sources retained without row deletion" in script
+    assert "delete from" not in script.lower()
     assert "--policy-id" in script
+    assert "--history-confirm" in script
+    assert "source = 'history_rebuild'" in script
+    assert '"${HISTORY_ISSUES}" == "0"' in script

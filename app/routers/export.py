@@ -77,14 +77,16 @@ def _create_content(request: ExportJobRequest, service: AnalyticsService, settin
         rows = [
             [
                 item.name, item.email, item.area, item.lastActiveAt or "-",
-                item.activeDays7, item.questionCount7,
-                _percent(item.completeDeliveryRate), item.activityLabel,
+                item.activeDays7, item.userMessageCount7,
+                _percent(item.completeDelivery.value),
+                f"{item.completeDelivery.measuredCount}/{item.completeDelivery.totalCount}",
+                item.activityLabel,
             ]
             for item in payload.users
         ]
         return (
             "monitor_users.csv",
-            _csv_text(["社員名", "メール", "エリア", "最終利用", "直近7日利用日数", "直近7日メッセージ数", "回答成功率", "活性度"], rows),
+            _csv_text(["社員名", "メール", "エリア", "最終利用", "直近7日利用日数", "直近7日メッセージ数", "回答成功率", "回答成功率計測範囲", "活性度"], rows),
             len(rows),
         )
     try:
@@ -105,11 +107,12 @@ def _create_content(request: ExportJobRequest, service: AnalyticsService, settin
         profile.department, profile.mrExperience, summary.lastActiveAt or "-",
         summary.activeDays, summary.questions,
         summary.questionsPerActiveDay if summary.questionsPerActiveDay is not None else "-",
-        _percent(summary.completeDeliveryRate),
+        _percent(summary.completeDelivery.value),
+        f"{summary.completeDelivery.measuredCount}/{summary.completeDelivery.totalCount}",
     ]]
     return (
         f"monitor_user_{request.rosterId}.csv",
-        _csv_text(["社員名", "メール", "エリア", "勤務地", "部門", "MR経験", "最終利用", "利用日数", "質問数", "利用日平均質問", "回答成功率"], rows),
+        _csv_text(["社員名", "メール", "エリア", "勤務地", "部門", "MR経験", "最終利用", "利用日数", "質問数", "利用日平均質問", "回答成功率", "回答成功率計測範囲"], rows),
         1,
     )
 

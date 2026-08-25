@@ -28,8 +28,7 @@ def render_sql(name: str, settings: Settings) -> str:
         "DATASET_ID": settings.monitor_bq_dataset,
         "BQ_LOCATION": settings.monitor_bq_location,
         "MONITOR_TIMEZONE": settings.monitor_timezone,
-        "FACT_RETENTION_DAYS": str(settings.monitor_fact_retention_days),
-        "AGGREGATE_RETENTION_DAYS": str(settings.monitor_aggregate_retention_days),
+        "SOURCE_SERVICE": settings.monitor_source_service,
     }
     for key, value in values.items():
         text = text.replace("${" + key + "}", str(value))
@@ -43,13 +42,11 @@ def render_publish_sql(settings: Settings) -> str:
 
     projection_sql = render_sql("merge_firestore_projection.sql", settings)
     fact_sql = render_sql("merge_incremental.sql", settings)
-    daily_sql = render_sql("refresh_daily.sql", settings)
     quality_sql = render_sql("check_data_quality.sql", settings).rstrip().removesuffix(";")
     return f"""
 BEGIN TRANSACTION;
 {projection_sql}
 {fact_sql}
-{daily_sql}
 ASSERT (
   SELECT COUNTIF(severity = 'critical' AND passed IS NOT TRUE) = 0
   FROM ({quality_sql})
@@ -90,10 +87,10 @@ class AnalyticsRefreshJob:
 
     def window(self, *, now: datetime | None = None) -> tuple[datetime, datetime]:
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        window_end = current - timedelta(minutes=self._settings.monitor_refresh_delay_minutes)
+        target_end = current - timedelta(minutes=self._settings.monitor_refresh_delay_minutes)
         config = bigquery.QueryJobConfig(maximum_bytes_billed=self._settings.monitor_query_maximum_bytes)
         rows = list(self._client.query(
-            f"SELECT MAX(data_through) AS data_through FROM `{self._dataset}.pipeline_state` WHERE status = 'succeeded'",
+            f"SELECT MAX(data_through) AS data_through FROM `{self._dataset}.pipeline_state` WHERE source = 'published' AND status = 'succeeded'",
             job_config=config, location=self._settings.monitor_bq_location,
         ).result())
         watermark = rows[0].get("data_through") if rows else None
@@ -103,6 +100,12 @@ class AnalyticsRefreshJob:
         window_start = max(
             _parse_start(self._settings.monitor_analytics_start_at),
             base.astimezone(timezone.utc) - timedelta(minutes=self._settings.monitor_refresh_overlap_minutes),
+        )
+        window_end = min(
+            target_end,
+            window_start + timedelta(
+                hours=max(1, int(self._settings.monitor_refresh_max_window_hours))
+            ),
         )
         if window_end <= window_start:
             raise ValueError("refresh window is empty")
@@ -134,7 +137,7 @@ class AnalyticsRefreshJob:
             scope_rows = self._projector.user_scope_rows()
             if not scope_rows:
                 raise RuntimeError("canonical user scope is empty")
-            conversation_rows, citation_rows = self._projector.changed_conversation_rows(
+            conversation_rows, citation_rows, projection_issues = self._projector.changed_conversation_rows(
                 window_start=window_start, window_end=window_end
             )
             fallback_start = window_start.date()
@@ -181,6 +184,7 @@ class AnalyticsRefreshJob:
                 "runId": run_id, "status": "succeeded", "windowStart": window_start.isoformat(),
                 "windowEnd": window_end.isoformat(), "matchedUsers": matched_users, "scopeRows": len(scope_rows),
                 "conversationRows": len(conversation_rows), "citationRows": len(citation_rows),
+                "projectionIssues": projection_issues,
                 "dataQualityChecks": checks,
             }
         except Exception as exc:
@@ -195,17 +199,50 @@ class AnalyticsRefreshJob:
             )
             raise
 
+    def run_until_current(
+        self,
+        *,
+        now: datetime | None = None,
+        max_runs: int = 1000,
+    ) -> dict[str, Any]:
+        frozen_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        target_end = frozen_now - timedelta(
+            minutes=self._settings.monitor_refresh_delay_minutes
+        )
+        runs: list[dict[str, Any]] = []
+        for _attempt in range(max(1, int(max_runs))):
+            result = self.run(now=frozen_now)
+            runs.append(result)
+            published_end = datetime.fromisoformat(
+                str(result["windowEnd"]).replace("Z", "+00:00")
+            )
+            if published_end >= target_end:
+                return {
+                    "status": "succeeded",
+                    "runCount": len(runs),
+                    "windowStart": runs[0]["windowStart"],
+                    "windowEnd": runs[-1]["windowEnd"],
+                    "lastRun": runs[-1],
+                }
+        raise RuntimeError("incremental refresh did not reach the frozen target")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the single OurA Navi Monitor incremental pipeline")
     parser.add_argument("--apply", action="store_true", help="execute cloud mutations")
+    parser.add_argument(
+        "--until-current",
+        action="store_true",
+        help="advance bounded windows until the frozen current target is published",
+    )
     args = parser.parse_args()
     settings = get_settings()
     if not args.apply:
         print(json.dumps({"mode": "plan", "project": settings.monitor_project_id, "dataset": settings.monitor_bq_dataset}, sort_keys=True))
         return 0
     try:
-        result = AnalyticsRefreshJob(settings).run()
+        job = AnalyticsRefreshJob(settings)
+        result = job.run_until_current() if args.until_current else job.run()
     except Exception as exc:
         print(json.dumps({
             "monitor_pipeline_event": True,

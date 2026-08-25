@@ -1,62 +1,119 @@
+const freshness = { state: "fresh", dataThrough: "2026-08-23T01:00:00Z" };
+const measurement = (value, measuredCount, totalCount) => ({ value, measuredCount, totalCount });
+
 const overview = {
-  scope: "global", status: "ready", dataThrough: "2026-08-23T01:00:00Z",
-  kpis: { activeUsers: 24, adoptionRate: 24 / 69, returnRate: .5, questionsPerActiveUser: 3.2, completeDeliveryRate: .91, p95LatencyMs: 72000 },
+  scope: "global",
+  scopeUserCount: 69,
+  freshness,
+  kpis: {
+    activeUsers: 24,
+    adoptionRate: 24 / 69,
+    returnRate: .5,
+    questionsPerActiveUser: 3.2,
+    completeDelivery: measurement(.91, 70, 77),
+    p95Latency: { valueMs: 72000, measuredCount: 75, totalCount: 77 },
+  },
   hourlyQuestions: Array.from({ length: 24 }, (_, hour) => ({ hour: `${String(hour).padStart(2, "0")}:00`, count: hour + 1 })),
   deviceDistribution: [{ key: "desktop", label: "PC", count: 50, rate: .8 }, { key: "mobile", label: "モバイル", count: 12, rate: .2 }],
   modeDistribution: [{ key: "internal", label: "社内モード", count: 49, rate: .79 }, { key: "websearch", label: "Web検索モード", count: 13, rate: .21 }],
   usageTrend: [{ date: "2026-08-22", activeUsers: 18, questions: 49 }, { date: "2026-08-23", activeUsers: 20, questions: 62 }],
-  questionCategories: [{ key: "product_information", count: 32, rate: .52 }, { key: "comparison_fit_selection", count: 20, rate: .32 }, { key: "unclassified", count: 10, rate: .16 }],
+  questionCategories: [{ key: "product_information", label: "製品情報・仕様", count: 32, rate: .52 }, { key: "comparison_fit_selection", label: "比較・適合・選定", count: 20, rate: .32 }, { key: "unclassified", label: "判定不能", count: 10, rate: .16 }],
   activityDistribution: [{ key: "high", label: "高アクティブ", count: 10, rate: 10 / 69 }, { key: "middle", label: "中アクティブ", count: 14, rate: 14 / 69 }, { key: "low", label: "低アクティブ", count: 20, rate: 20 / 69 }, { key: "dormant", label: "休眠ユーザー", count: 25, rate: 25 / 69 }],
   activityByArea: [{ label: "関西", total: 10, segments: [{ key: "high", label: "高アクティブ", count: 3, rate: .3 }, { key: "middle", label: "中アクティブ", count: 2, rate: .2 }, { key: "low", label: "低アクティブ", count: 2, rate: .2 }, { key: "dormant", label: "休眠ユーザー", count: 3, rate: .3 }] }],
   activityByRole: [{ label: "本社MR", total: 10, segments: [{ key: "high", label: "高アクティブ", count: 3, rate: .3 }, { key: "middle", label: "中アクティブ", count: 2, rate: .2 }, { key: "low", label: "低アクティブ", count: 2, rate: .2 }, { key: "dormant", label: "休眠ユーザー", count: 3, rate: .3 }] }],
   topProducts: [{ label: "テルフュージョン", count: 28 }, { label: "ケモセーフ", count: 17 }],
-  productQuestionMatrix: [{ product: "テルフュージョン", category: "product_information", count: 16 }, { product: "テルフュージョン", category: "comparison_fit_selection", count: 12 }],
+  productQuestionMatrix: [{ product: "テルフュージョン", category: "product_information", categoryLabel: "製品情報・仕様", count: 16 }, { product: "テルフュージョン", category: "comparison_fit_selection", categoryLabel: "比較・適合・選定", count: 12 }],
   productResolution: { candidateCount: 45, resolvedCount: 45, unresolvedQuestions: 0, resolutionRate: 1 },
 };
 
-const users = { status: "ready", dataThrough: overview.dataThrough, users: [
-  { rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", area: "関西", areaKey: "関西", labels: [{ labelId: "label_1", name: "重点", color: "#23d28f" }], lastActiveAt: "2026-08-23T01:00:00Z", activeDays7: 4, questionCount7: 12, completeDeliveryRate: .92, activity: "high", activityLabel: "高アクティブ" },
-  { rosterId: "roster_2", name: "佐藤 花子", email: "user2@example.com", area: "本社", areaKey: "本社・虎ノ門", labels: [], lastActiveAt: "", activeDays7: 0, questionCount7: 0, completeDeliveryRate: null, activity: "dormant", activityLabel: "休眠ユーザー" },
+const users = { scopeUserCount: 80, freshness, users: [
+  { rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", area: "関西", areaKey: "関西", labels: [{ labelId: "label_1", name: "重点", color: "#23d28f" }], lastActiveAt: "2026-08-23T01:00:00Z", activeDays7: 4, userMessageCount7: 12, completeDelivery: measurement(.92, 11, 12), activity: "high", activityLabel: "高アクティブ" },
+  { rosterId: "roster_2", name: "佐藤 花子", email: "user2@example.com", area: "本社", areaKey: "本社・虎ノ門", labels: [], lastActiveAt: "", activeDays7: 0, userMessageCount7: 0, completeDelivery: measurement(null, 0, 0), activity: "dormant", activityLabel: "休眠ユーザー" },
 ] };
 
-const regions = { status: "ready", dataThrough: overview.dataThrough, regions: [
+const regions = { scopeUserCount: 80, freshness, regions: [
   { areaKey: "関西", area: "関西", rosterUsers: 10, activeUsers: 6, questions: 42, adoptionRate: .6, returnRate: .5 },
   { areaKey: "本社・虎ノ門", area: "本社・虎ノ門", rosterUsers: 19, activeUsers: 8, questions: 35, adoptionRate: 8 / 19, returnRate: .375 },
 ] };
 
-const detail = { status: "ready", dataThrough: overview.dataThrough,
+const detail = {
+  freshness,
   profile: { rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", area: "関西", workplace: "大阪", role: "本社MR", department: "DM専任", mrExperience: "10年", labels: users.users[0].labels },
-  summary: { lastActiveAt: "2026-08-23T01:00:00Z", activeDays: 5, questions: 20, questionsPerActiveDay: 4, completeDeliveryRate: .9 },
-  comparisons: { area: { label: "関西", peerCount: 10, averageQuestions: 8.2, averageActiveDays: 3.1, averageCompleteDeliveryRate: .84 }, role: { label: "本社MR", peerCount: 39, averageQuestions: 7.3, averageActiveDays: 2.8, averageCompleteDeliveryRate: .86 } },
-  trend: [{ date: "2026-08-22", questions: 7, completeDeliveryRate: .86 }, { date: "2026-08-23", questions: 13, completeDeliveryRate: .92 }],
-  products: [{ label: "テルフュージョン", count: 12 }], tasks: [{ key: "fact_lookup", count: 4 }],
+  summary: { lastActiveAt: "2026-08-23T01:00:00Z", activeDays: 5, questions: 20, questionsPerActiveDay: 4, completeDelivery: measurement(.9, 18, 20) },
+  comparisons: {
+    area: { label: "関西", peerCount: 10, averageQuestions: 8.2, averageActiveDays: 3.1, averageCompleteDelivery: measurement(.84, 8, 10) },
+    role: { label: "本社MR", peerCount: 39, averageQuestions: 7.3, averageActiveDays: 2.8, averageCompleteDelivery: measurement(.86, 30, 39) },
+  },
+  trend: [{ date: "2026-08-22", questions: 7, completeDelivery: measurement(.86, 7, 7) }, { date: "2026-08-23", questions: 13, completeDelivery: measurement(.92, 11, 13) }],
+  products: [{ label: "テルフュージョン", count: 12 }],
+  tasks: [{ key: "fact_lookup", label: "情報確認", count: 4, rate: .2 }],
   productResolution: { candidateCount: 12, resolvedCount: 12, unresolvedQuestions: 0, resolutionRate: 1 },
-  questionCategories: [{ key: "product_information", count: 12, rate: .6 }],
-  modes: [{ label: "社内モード", count: 18, rate: .9 }], devices: [{ label: "PC", count: 16, rate: .8 }],
-  conversations: [{ conversationId: "conv_1", title: "製品情報の確認", messageCount: 4, updatedAtJst: "2026-08-23 10:00:00" }],
+  questionCategories: [{ key: "product_information", label: "製品情報・仕様", count: 12, rate: .6 }],
+  modes: [{ key: "internal", label: "社内モード", count: 18, rate: .9 }],
+  devices: [{ key: "desktop", label: "PC", count: 16, rate: .8 }],
 };
 
-const managedUsers = { users: [{ rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", area: "関西", areaKey: "関西", workplace: "大阪", role: "本社MR", department: "DM専任", mrExperience: "10年", labelIds: ["label_1"], isActive: true, updatedAt: "2026-08-23T01:00:00Z", updatedBy: "admin@example.com" }] };
+const conversations = { status: "ready", conversations: [{ conversationId: "conv_1", title: "製品情報の確認", messageCount: 4, updatedAt: "2026-08-23T01:00:00Z", updatedAtJst: "2026-08-23 10:00:00" }] };
+const managedUsers = { users: [{ rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", area: "関西", areaKey: "関西", workplace: "大阪", role: "本社MR", department: "DM専任", mrExperience: "10年", labelIds: ["label_1"], isActive: true, identityBound: true, updatedAt: "2026-08-23T01:00:00Z", updatedBy: "admin@example.com" }] };
 const managedLabels = { labels: [{ labelId: "label_1", name: "重点", color: "#23d28f", usageCount: 1, isActive: true, updatedAt: "2026-08-23T01:00:00Z", updatedBy: "admin@example.com" }] };
+const managementMetadata = { areas: ["北海道東北", "関東A", "関東B", "首都圏A", "首都圏B", "東海北陸", "関西", "中四国", "九州", "本社"], workplaces: ["大阪", "虎ノ門"], roles: ["本社MR", "本社メンバー"], departments: ["DM専任", "ヘルスケア本社", "DM本社", "管理者"], labelColors: ["#23d28f", "#386dff", "#ffb340", "#ff5b74", "#7c5cff", "#27d9d2", "#5f6285"] };
 
-async function installApiMocks(page, { failOverview = false, overviewOverride = {}, usersOverride = {}, requests = [] } = {}) {
+async function installApiMocks(page, {
+  failOverview = false,
+  failDetail = false,
+  failConversations = false,
+  managementUserConflict = false,
+  overviewOverride = {},
+  overviewByPreset = {},
+  overviewDelayByPreset = {},
+  usersOverride = {},
+  detailOverride = {},
+  managedUsersOverride = {},
+  managedLabelsOverride = {},
+  managementMetadataOverride = {},
+  requests = [],
+} = {}) {
   await page.route(/\/api\/(analytics|trace|admin|export)\//, async (route) => {
-    const request = route.request(); const url = new URL(request.url()); requests.push({ method: request.method(), path: url.pathname, search: url.search, body: request.postDataJSON?.() });
-    if (url.pathname === "/api/analytics/overview") return failOverview ? route.fulfill({ status: 503, json: { detail: "集計停止" } }) : route.fulfill({ json: { ...overview, ...overviewOverride } });
+    const request = route.request();
+    const url = new URL(request.url());
+    requests.push({ method: request.method(), path: url.pathname, search: url.search, body: request.postDataJSON?.() });
+    if (url.pathname === "/api/analytics/overview") {
+      const preset = url.searchParams.get("preset") || "last_7d";
+      const delay = Number(overviewDelayByPreset[preset] || 0);
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+      return failOverview
+        ? route.fulfill({ status: 503, json: { detail: { code: "source_unavailable", message: "集計停止" } } })
+        : route.fulfill({ json: { ...overview, ...overviewOverride, ...(overviewByPreset[preset] || {}) } });
+    }
     if (url.pathname === "/api/analytics/regions") return route.fulfill({ json: regions });
     if (url.pathname === "/api/analytics/users") return route.fulfill({ json: { ...users, ...usersOverride } });
-    if (url.pathname === "/api/analytics/users/roster_1") return route.fulfill({ json: detail });
+    if (url.pathname === "/api/analytics/users/roster_1") return failDetail
+      ? route.fulfill({ status: 503, json: { detail: { code: "source_unavailable", message: "個人分析停止" } } })
+      : route.fulfill({ json: { ...detail, ...detailOverride } });
+    if (url.pathname === "/api/trace/conversations") return failConversations
+      ? route.fulfill({ status: 503, json: { detail: { code: "source_unavailable", message: "会話停止" } } })
+      : route.fulfill({ json: conversations });
     if (url.pathname === "/api/trace/messages") return route.fulfill({ json: { status: "ready", messages: [{ messageId: "m1", timestampJst: "2026-08-23 10:00:00", role: "user", roleLabel: "ユーザー", content: "製品の仕様を教えてください", mode: "internal", feedback: "none", status: "done" }, { messageId: "m2", timestampJst: "2026-08-23 10:00:05", role: "assistant", roleLabel: "アシスタント", content: "仕様を確認しました。", mode: "internal", feedback: "none", status: "done" }], page: { nextCursor: "" } } });
-    if (url.pathname === "/api/admin/users" && request.method() === "GET") return route.fulfill({ json: managedUsers });
-    if (url.pathname === "/api/admin/labels" && request.method() === "GET") return route.fulfill({ json: managedLabels });
+    if (url.pathname === "/api/admin/users" && request.method() === "GET") return route.fulfill({ json: { ...managedUsers, ...managedUsersOverride } });
+    if (url.pathname === "/api/admin/labels" && request.method() === "GET") return route.fulfill({ json: { ...managedLabels, ...managedLabelsOverride } });
+    if (url.pathname === "/api/admin/metadata" && request.method() === "GET") return route.fulfill({ json: { ...managementMetadata, ...managementMetadataOverride } });
     if (url.pathname.startsWith("/api/admin/")) {
+      if (managementUserConflict && request.method() === "PATCH" && url.pathname.includes("/users/")) {
+        return route.fulfill({ status: 409, json: { detail: { code: "update_conflict", message: "user update conflict" } } });
+      }
       if (request.method() === "DELETE") return route.fulfill({ status: 204, body: "" });
-      return route.fulfill({ status: 200, json: {} });
+      if (url.pathname.includes("/users/")) return route.fulfill({ status: 200, json: managedUsers.users[0] });
+      if (url.pathname === "/api/admin/users") return route.fulfill({ status: 201, json: managedUsers.users[0] });
+      if (url.pathname.includes("/labels/")) return route.fulfill({ status: 200, json: managedLabels.labels[0] });
+      return route.fulfill({ status: 201, json: managedLabels.labels[0] });
     }
     if (url.pathname === "/api/export/jobs") return route.fulfill({ status: 201, json: { jobId: "job_1", filename: "monitor.csv", downloadUrl: "/api/export/jobs/job_1/download" } });
-    return route.fulfill({ status: 404, json: { detail: "not mocked" } });
+    return route.fulfill({ status: 404, json: { detail: { code: "not_found", message: "not mocked" } } });
   });
   return requests;
 }
 
-module.exports = { overview, users, regions, detail, managedUsers, managedLabels, installApiMocks };
+module.exports = {
+  overview, users, regions, detail, conversations, managedUsers, managedLabels,
+  managementMetadata, installApiMocks,
+};

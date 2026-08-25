@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.domain.analysis_scopes import AnalysisScope, Department, display_area, membership_for
-from app.domain.question_categories import QuestionCategory
+from app.domain.analytics_tasks import analytics_task, analytics_task_label
+from app.domain.analysis_scopes import (
+    AnalysisScope,
+    Department,
+    department_in_scope,
+    display_area,
+    membership_for,
+)
+from app.domain.question_categories import (
+    analytics_question_category,
+    question_category_label,
+)
 from app.settings import Settings
 from app.time_window import MetricsTimeWindow
 
@@ -46,18 +56,40 @@ def _p95(values: list[int]) -> int | None:
     return int(ordered[index])
 
 
-def _complete_delivery_rate(rows: list[dict[str, Any]]) -> float | None:
-    """Never publish a rate calculated from a silently reduced denominator."""
+def _complete_delivery_measurement(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    measured = [
+        item
+        for item in rows
+        if item.get("measurement_available") is True
+        and isinstance(item.get("complete_delivery"), bool)
+    ]
+    return {
+        "value": _rate(
+            sum(item.get("complete_delivery") is True for item in measured),
+            len(measured),
+        ),
+        "measuredCount": len(measured),
+        "totalCount": len(rows),
+    }
 
-    if not rows or any(item.get("measurement_available") is not True for item in rows):
-        return None
-    return _rate(sum(item.get("complete_delivery") is True for item in rows), len(rows))
 
-
-def _complete_latency_p95(rows: list[dict[str, Any]]) -> int | None:
-    if not rows or any(item.get("total_latency_ms") is None for item in rows):
-        return None
-    return _p95([int(item["total_latency_ms"]) for item in rows])
+def _complete_latency_measurement(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    values: list[int] = []
+    for item in rows:
+        value = item.get("total_latency_ms")
+        if value is None:
+            continue
+        try:
+            resolved = int(value)
+        except (TypeError, ValueError):
+            continue
+        if resolved >= 0:
+            values.append(resolved)
+    return {
+        "valueMs": _p95(values),
+        "measuredCount": len(values),
+        "totalCount": len(rows),
+    }
 
 
 def _distribution(counter: Counter[str], labels: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -73,6 +105,25 @@ def _distribution(counter: Counter[str], labels: dict[str, str] | None = None) -
             row["label"] = labels.get(key, key)
         rows.append(row)
     return rows
+
+
+def _local_date_axis(window: MetricsTimeWindow) -> list[str]:
+    timezone_value = ZoneInfo(window.timezone)
+    first = window.start_utc.astimezone(timezone_value).date()
+    last = (window.end_utc - timedelta(microseconds=1)).astimezone(timezone_value).date()
+    values: list[str] = []
+    current = first
+    while current <= last:
+        values.append(current.isoformat())
+        current += timedelta(days=1)
+    return values
+
+
+def _return_rate(days_by_user: dict[str, set[str]], *, window: MetricsTimeWindow) -> float | None:
+    active_users = len(days_by_user)
+    if active_users == 0 or len(_local_date_axis(window)) < 2:
+        return None
+    return _rate(sum(len(days) >= 2 for days in days_by_user.values()), active_users)
 
 
 def _analytics_labels(
@@ -118,26 +169,27 @@ class AnalyticsService:
         analytics: Any,
         pipeline: Any,
         directory: Any,
-        conversations: Any,
         settings: Settings,
     ) -> None:
         self._analytics = analytics
         self._pipeline = pipeline
         self._directory = directory
-        self._conversations = conversations
         self._settings = settings
 
-    def _freshness(self) -> tuple[str, str]:
+    def _freshness(self) -> dict[str, str]:
         value = self._pipeline.data_through()
         if value is None:
-            return "unavailable", ""
+            return {"state": "unknown", "dataThrough": ""}
         now = datetime.now(timezone.utc)
-        status = (
-            "ready"
+        state = (
+            "fresh"
             if (now - value).total_seconds() <= self._settings.monitor_data_freshness_minutes * 60
-            else "unavailable"
+            else "stale"
         )
-        return status, value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        return {
+            "state": state,
+            "dataThrough": value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
 
     def _roster(self, scope: AnalysisScope, *, area_key: str = "") -> list[dict[str, Any]]:
         users = self._directory.list_users(include_inactive=False)
@@ -149,7 +201,7 @@ class AnalyticsService:
         ]
 
     def overview(self, *, window: MetricsTimeWindow, area_key: str = "") -> dict[str, Any]:
-        status, data_through = self._freshness()
+        freshness = self._freshness()
         roster = self._roster(AnalysisScope.GLOBAL, area_key=area_key)
         roster_ids = {str(item["roster_id"]) for item in roster}
         events = [
@@ -171,7 +223,6 @@ class AnalyticsService:
         for item in events:
             roster_id = str(item.get("roster_id") or "")
             days_by_user[roster_id].add(str(item.get("question_date") or ""))
-        returning = sum(len(days) >= 2 for days in days_by_user.values())
         hourly = Counter()
         date_users: dict[str, set[str]] = defaultdict(set)
         date_questions = Counter()
@@ -192,8 +243,8 @@ class AnalyticsService:
             day = str(item.get("question_date") or "")
             date_users[day].add(str(item.get("roster_id") or ""))
             date_questions[day] += 1
-            category = QuestionCategory(
-                str(item.get("primary_question_category") or "")
+            category = analytics_question_category(
+                item.get("primary_question_category")
             ).value
             categories[category] += 1
             devices[str(item.get("device_class") or "unknown")] += 1
@@ -229,24 +280,34 @@ class AnalyticsService:
 
         return {
             "scope": "global",
-            "status": status,
-            "dataThrough": data_through,
+            "scopeUserCount": len(roster),
+            "freshness": freshness,
             "kpis": {
                 "activeUsers": len(active_ids),
                 "adoptionRate": _rate(len(active_ids), len(roster)),
-                "returnRate": _rate(returning, len(active_ids)),
+                "returnRate": _return_rate(days_by_user, window=window),
                 "questionsPerActiveUser": _rate(len(events), len(active_ids)),
-                "completeDeliveryRate": _complete_delivery_rate(events),
-                "p95LatencyMs": _complete_latency_p95(events),
+                "completeDelivery": _complete_delivery_measurement(events),
+                "p95Latency": _complete_latency_measurement(events),
             },
             "hourlyQuestions": [{"hour": key, "count": hourly.get(key, 0)} for key in (f"{hour:02d}:00" for hour in range(24))],
             "deviceDistribution": _distribution(devices, {"desktop": "PC", "mobile": "モバイル", "unknown": "不明"}),
             "modeDistribution": _distribution(modes, {"internal": "社内モード", "websearch": "Web検索モード"}),
             "usageTrend": [
-                {"date": day, "activeUsers": len(date_users[day]), "questions": date_questions[day]}
-                for day in sorted(date_questions)
+                {
+                    "date": day,
+                    "activeUsers": len(date_users[day]),
+                    "questions": date_questions[day],
+                }
+                for day in _local_date_axis(window)
             ],
-            "questionCategories": _distribution(categories),
+            "questionCategories": _distribution(
+                categories,
+                {
+                    key: question_category_label(key)
+                    for key in categories
+                },
+            ),
             "activityDistribution": [
                 {"key": key, "label": _ACTIVITY_LABELS[key], "count": activity_counter.get(key, 0), "rate": _rate(activity_counter.get(key, 0), len(roster))}
                 for key in _ACTIVITY_ORDER
@@ -255,7 +316,12 @@ class AnalyticsService:
             "activityByRole": [self._stacked_activity(label, values) for label, values in sorted(by_role.items())],
             "topProducts": [{"label": key, "count": value} for key, value in products.most_common(10)],
             "productQuestionMatrix": [
-                {"product": product, "category": category, "count": count}
+                {
+                    "product": product,
+                    "category": category,
+                    "categoryLabel": question_category_label(category),
+                    "count": count,
+                }
                 for (product, category), count in matrix.items()
                 if product in {name for name, _count in products.most_common(10)}
             ],
@@ -283,7 +349,7 @@ class AnalyticsService:
         }
 
     def regions(self, *, window: MetricsTimeWindow) -> dict[str, Any]:
-        status, data_through = self._freshness()
+        freshness = self._freshness()
         roster = self._roster(AnalysisScope.USER_MAP)
         roster_ids = {str(item["roster_id"]) for item in roster}
         events = [
@@ -310,10 +376,14 @@ class AnalyticsService:
                 "activeUsers": len(active),
                 "questions": len(area_events),
                 "adoptionRate": _rate(len(active), len(users)),
-                "returnRate": _rate(sum(len(value) >= 2 for value in days.values()), len(active)),
+                "returnRate": _return_rate(days, window=window),
             })
         regions.sort(key=lambda item: (item["activeUsers"], item["questions"]), reverse=True)
-        return {"status": status, "dataThrough": data_through, "regions": regions}
+        return {
+            "scopeUserCount": len(roster),
+            "freshness": freshness,
+            "regions": regions,
+        }
 
     def users(
         self,
@@ -323,7 +393,7 @@ class AnalyticsService:
         activity: str = "",
         window: MetricsTimeWindow,
     ) -> dict[str, Any]:
-        status, data_through = self._freshness()
+        freshness = self._freshness()
         roster = self._roster(AnalysisScope.USER_MAP, area_key=area_key)
         metrics = {str(item.get("roster_id") or ""): item for item in self._analytics.user_metrics()}
         activity_times: dict[str, list[datetime]] = defaultdict(list)
@@ -368,18 +438,24 @@ class AnalyticsService:
                     else ""
                 ),
                 "activeDays7": int(metric.get("active_days_7") or 0),
-                "questionCount7": int(metric.get("question_count_7") or 0),
-                "completeDeliveryRate": _complete_delivery_rate(selected_events),
+                "userMessageCount7": int(metric.get("user_message_count_7") or 0),
+                "completeDelivery": _complete_delivery_measurement(selected_events),
                 "activity": level,
                 "activityLabel": _ACTIVITY_LABELS[level],
             })
         rows.sort(key=lambda item: str(item.get("lastActiveAt") or ""), reverse=True)
-        return {"status": status, "dataThrough": data_through, "users": rows}
+        return {
+            "scopeUserCount": len(roster),
+            "freshness": freshness,
+            "users": rows,
+        }
 
     def user_detail(self, roster_id: str, *, window: MetricsTimeWindow) -> dict[str, Any]:
-        status, data_through = self._freshness()
+        freshness = self._freshness()
         user = self._directory.get_user(roster_id)
-        if user is None or not membership_for(Department(user["department"]), is_active=bool(user["is_active"])).includes(AnalysisScope.USER_MAP):
+        if user is None or not department_in_scope(
+            Department(user["department"]), AnalysisScope.USER_MAP
+        ):
             raise KeyError("user not found")
         events = self._analytics.user_detail_events(roster_id=roster_id, window=window)
         labels = {str(item.get("label_id") or ""): item for item in self._directory.list_labels(include_inactive=True)}
@@ -395,11 +471,15 @@ class AnalyticsService:
             < int(item.get("product_candidate_count") or 0)
             for item in events
         )
-        tasks = Counter(task for item in events for task in list(item.get("analytics_tasks") or []) if str(task or ""))
+        tasks = Counter()
+        for item in events:
+            source_tasks = list(item.get("analytics_tasks") or [])
+            if not source_tasks:
+                source_tasks = ["unclassified"]
+            for task in source_tasks:
+                tasks[analytics_task(task).value] += 1
         categories = Counter(
-            QuestionCategory(
-                str(item.get("primary_question_category") or "")
-            ).value
+            analytics_question_category(item.get("primary_question_category")).value
             for item in events
         )
         modes = Counter(str(item.get("mode") or "unknown") for item in events)
@@ -413,7 +493,6 @@ class AnalyticsService:
             {},
         )
         last_active = _as_datetime(user_metric.get("last_active_at"))
-        conversations = self._conversations.list_conversations(chat_user_id=str(user.get("chat_user_id") or ""))
         peer_roster = self._roster(AnalysisScope.USER_MAP)
         peer_ids = {str(item["roster_id"]) for item in peer_roster}
         peer_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -426,8 +505,7 @@ class AnalyticsService:
             "role": self._peer_comparison(user=user, roster=peer_roster, events=peer_events, field="role"),
         }
         return {
-            "status": status,
-            "dataThrough": data_through,
+            "freshness": freshness,
             "profile": {
                 "rosterId": roster_id,
                 "name": user["name"],
@@ -444,16 +522,18 @@ class AnalyticsService:
                 "activeDays": len(dates),
                 "questions": len(events),
                 "questionsPerActiveDay": _rate(len(events), len(dates)),
-                "completeDeliveryRate": _complete_delivery_rate(events),
+                "completeDelivery": _complete_delivery_measurement(events),
             },
             "comparisons": comparisons,
             "trend": [
                 {
                     "date": day,
-                    "questions": len(rows),
-                    "completeDeliveryRate": _complete_delivery_rate(rows),
+                    "questions": len(day_rows.get(day, [])),
+                    "completeDelivery": _complete_delivery_measurement(
+                        day_rows.get(day, [])
+                    ),
                 }
-                for day, rows in sorted(day_rows.items())
+                for day in _local_date_axis(window)
             ],
             "products": [{"label": key, "count": value} for key, value in products.most_common(10)],
             "productResolution": {
@@ -465,11 +545,16 @@ class AnalyticsService:
                     product_candidate_count,
                 ),
             },
-            "tasks": _distribution(tasks),
-            "questionCategories": _distribution(categories),
+            "tasks": _distribution(
+                tasks,
+                {key: analytics_task_label(key) for key in tasks},
+            ),
+            "questionCategories": _distribution(
+                categories,
+                {key: question_category_label(key) for key in categories},
+            ),
             "modes": _distribution(modes, {"internal": "社内モード", "websearch": "Web検索モード"}),
             "devices": _distribution(devices, {"desktop": "PC", "mobile": "モバイル", "unknown": "不明"}),
-            "conversations": conversations,
         }
 
     @staticmethod
@@ -488,24 +573,25 @@ class AnalyticsService:
             for item in peers
         ]
         complete_rates: list[float] = []
-        completion_coverage_complete = True
         for item in peers:
             peer_rows = events.get(str(item["roster_id"]), [])
             if not peer_rows:
                 continue
-            complete_rate = _complete_delivery_rate(peer_rows)
-            if complete_rate is None:
-                completion_coverage_complete = False
-                continue
-            complete_rates.append(complete_rate)
+            measurement = _complete_delivery_measurement(peer_rows)
+            if measurement["value"] is not None:
+                complete_rates.append(float(measurement["value"]))
         return {
             "label": label,
             "peerCount": len(peers),
             "averageQuestions": sum(questions) / len(questions) if questions else None,
             "averageActiveDays": sum(active_days) / len(active_days) if active_days else None,
-            "averageCompleteDeliveryRate": (
-                sum(complete_rates) / len(complete_rates)
-                if completion_coverage_complete and complete_rates
-                else None
-            ),
+            "averageCompleteDelivery": {
+                "value": (
+                    sum(complete_rates) / len(complete_rates)
+                    if complete_rates
+                    else None
+                ),
+                "measuredCount": len(complete_rates),
+                "totalCount": len(peers),
+            },
         }

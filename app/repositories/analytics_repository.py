@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -11,7 +11,7 @@ from app.time_window import MetricsTimeWindow
 
 
 class AnalyticsRepository:
-    """Read only the three canonical dashboard views; never raw logs."""
+    """Read only the partition-bounded canonical semantic functions."""
 
     def __init__(self, settings: Settings, *, client: Any | None = None) -> None:
         self._settings = settings
@@ -20,6 +20,14 @@ class AnalyticsRepository:
 
     def _view(self, name: str) -> str:
         return f"`{self._dataset}.{name}`"
+
+    def _history_start_date(self):
+        text = str(self._settings.monitor_analytics_start_at or "").strip()
+        if not text:
+            raise ValueError("MONITOR_ANALYTICS_START_AT is required for historical user metrics")
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        resolved = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return resolved.astimezone(ZoneInfo(self._settings.monitor_timezone)).date()
 
     def _run(self, sql: str, parameters: list[Any]) -> list[dict[str, Any]]:
         config = bigquery.QueryJobConfig(
@@ -50,7 +58,7 @@ class AnalyticsRepository:
     def overview_events(self, *, window: MetricsTimeWindow, area_key: str = "") -> list[dict[str, Any]]:
         sql = f"""
         SELECT *
-        FROM {self._view('dashboard_overview')}
+        FROM {self._view('dashboard_events')}(@start_date, @end_date)
         WHERE question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts
           AND question_ts < @end_ts
@@ -70,7 +78,7 @@ class AnalyticsRepository:
     def activity_events(self, *, end: datetime, area_key: str = "") -> list[dict[str, Any]]:
         sql = f"""
         SELECT roster_id, question_ts, question_date, area_key, area, role
-        FROM {self._view('dashboard_overview')}
+        FROM {self._view('dashboard_events')}(@start_date, @end_date)
         WHERE question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts
           AND question_ts < @end_ts
@@ -96,15 +104,23 @@ class AnalyticsRepository:
         )
 
     def user_metrics(self) -> list[dict[str, Any]]:
+        today = datetime.now(timezone.utc).astimezone(
+            ZoneInfo(self._settings.monitor_timezone)
+        ).date()
         return self._run(
-            f"SELECT * FROM {self._view('dashboard_user_list')} ORDER BY last_active_at DESC",
-            [],
+            f"SELECT * FROM {self._view('dashboard_user_list')}(@history_start_date, @today) ORDER BY last_active_at DESC",
+            [
+                bigquery.ScalarQueryParameter(
+                    "history_start_date", "DATE", self._history_start_date()
+                ),
+                bigquery.ScalarQueryParameter("today", "DATE", today),
+            ],
         )
 
     def user_detail_events(self, *, roster_id: str, window: MetricsTimeWindow) -> list[dict[str, Any]]:
         sql = f"""
         SELECT *
-        FROM {self._view('dashboard_user_detail')}
+        FROM {self._view('dashboard_events')}(@start_date, @end_date)
         WHERE roster_id = @roster_id
           AND question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts

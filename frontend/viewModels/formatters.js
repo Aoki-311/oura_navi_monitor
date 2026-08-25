@@ -5,14 +5,16 @@ export function numberOrNull(value) {
   return n;
 }
 
-export function countOrZero(value) {
+export function countOrNull(value) {
+  if (value === undefined || value === null || value === "") return null;
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) throw new Error("件数データが不正です");
   return Math.trunc(n);
 }
 
 export function displayCount(value) {
-  return countOrZero(value).toLocaleString("ja-JP");
+  const count = countOrNull(value);
+  return count === null ? "-" : count.toLocaleString("ja-JP");
 }
 
 export function displayRate(value, digits = 1) {
@@ -20,9 +22,22 @@ export function displayRate(value, digits = 1) {
   return n === null ? "-" : `${(n * 100).toFixed(digits)}%`;
 }
 
-export function displayMs(value) {
+export function displayDuration(value) {
   const n = numberOrNull(value);
-  return n === null ? "-" : `${Math.round(n).toLocaleString("ja-JP")} ms`;
+  if (n === null) return "-";
+  const seconds = Math.max(0, n) / 1000;
+  if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}秒`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return remainder ? `${minutes}分${remainder}秒` : `${minutes}分`;
+}
+
+export function measurementCoverage(value) {
+  const measured = countOrNull(value?.measuredCount);
+  const total = countOrNull(value?.totalCount);
+  if (measured === null || total === null) return "計測範囲不明";
+  if (total === 0) return "対象回答なし";
+  return measured === total ? `全${total.toLocaleString("ja-JP")}件を計測` : `${measured.toLocaleString("ja-JP")} / ${total.toLocaleString("ja-JP")}件を計測`;
 }
 
 export function displayNullable(value) {
