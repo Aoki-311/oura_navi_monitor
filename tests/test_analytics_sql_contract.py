@@ -319,6 +319,15 @@ def test_sql_validation_script_is_read_only_and_uses_dry_run() -> None:
     assert "--apply" not in script
 
 
+def test_build_approval_shell_adapter_never_materializes_an_access_token() -> None:
+    script = (ROOT_DIR / "scripts" / "approve_pending_build.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "cloud_build_approval.py" in script
+    assert "print-access-token" not in script
+    assert "Authorization: Bearer" not in script
+
+
 def test_obsolete_deletion_retains_canonical_raw_tables() -> None:
     script = (ROOT_DIR / "scripts" / "delete_obsolete_monitor_resources.sh").read_text(
         encoding="utf-8"

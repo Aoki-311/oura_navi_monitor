@@ -37,6 +37,18 @@ fi
   echo "approved credential is required" >&2
   exit 2
 }
-command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
-gcloud --project="${PROJECT_ID}" beta builds "${ACTION}" "${BUILD_ID}" \
-  --region="${BUILD_REGION}"
+if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && "${GOOGLE_APPLICATION_CREDENTIALS}" != "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]]; then
+  echo "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential" >&2
+  exit 2
+fi
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
+[[ -x "${PYTHON_BIN}" ]] || { echo "repository Python runtime not found" >&2; exit 2; }
+
+GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" \
+  "${PYTHON_BIN}" "${ROOT_DIR}/scripts/cloud_build_approval.py" \
+  --project "${PROJECT_ID}" \
+  --region "${BUILD_REGION}" \
+  --build-id "${BUILD_ID}" \
+  --action "${ACTION}"
