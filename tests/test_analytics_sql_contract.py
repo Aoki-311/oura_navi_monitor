@@ -166,6 +166,36 @@ def test_historical_unmeasured_classification_is_explicit_and_cannot_be_claimed_
     assert "and classification_status = 'not_measured'" in normalized
 
 
+def test_history_merge_has_explicit_target_partition_filter_for_every_fact() -> None:
+    history_sql = _sql("merge_history.sql").lower()
+    assert history_sql.count("target.question_date = @history_partition_date") == 1
+    assert history_sql.count("target.answer_date = @history_partition_date") == 2
+    assert history_sql.count("target.updated_date = @history_partition_date") == 1
+
+
+def test_incremental_join_has_an_explicit_event_identity_owner() -> None:
+    incremental_sql = _sql("merge_incremental.sql").lower()
+    assert incremental_sql.count("event.user_id") == 8
+
+
+def test_canonical_merges_never_depend_on_physical_column_order() -> None:
+    for name in (
+        "merge_history.sql",
+        "merge_incremental.sql",
+        "merge_firestore_projection.sql",
+    ):
+        assert "insert row" not in _sql(name).lower()
+
+
+def test_persistence_enrichment_has_an_explicit_target_partition_window() -> None:
+    normalized = " ".join(_sql("merge_incremental.sql").lower().split())
+    assert (
+        "answer.answer_date between date_sub(date(@window_start, "
+        "'${monitor_timezone}'), interval 1 day) and date_add(date(@window_end, "
+        "'${monitor_timezone}'), interval 1 day)"
+    ) in normalized
+
+
 def test_semantic_sql_does_not_duplicate_completion_or_activity_formulas() -> None:
     aggregate_sql = _sql("create_aggregates.sql").lower()
     sql = _sql("create_api_views.sql").lower()

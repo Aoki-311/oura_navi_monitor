@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.jobs.rebuild_history import (
     HistoryRebuildJob,
@@ -170,8 +171,61 @@ def test_history_merge_has_no_parallel_table_or_plaintext_content_contract() -> 
     assert "question_events" in sql
     assert "answer_events" in sql
     assert "'firestore_history', 'legacy_audit_history'" in sql
+    assert "insert row" not in sql
     for forbidden in ("user_email", "answer_text", "raw_query", " content "):
         assert forbidden not in sql
+
+
+class _CompletedQuery:
+    def result(self):
+        return []
+
+
+class _RecordingBigQuery:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def query(self, sql, *, job_config, location):
+        self.calls.append((sql, job_config, location))
+        return _CompletedQuery()
+
+
+def test_history_apply_binds_exact_target_partition_for_every_daily_merge() -> None:
+    client = _RecordingBigQuery()
+    job = HistoryRebuildJob.__new__(HistoryRebuildJob)
+    job.settings = SimpleNamespace(
+        monitor_project_id="project",
+        monitor_bq_dataset="dataset",
+        monitor_bq_location="US",
+        monitor_query_maximum_bytes=1_000_000,
+    )
+    job.bigquery = client
+    rows = HistoryRows(
+        questions=[
+            {"event_id": "question-1", "question_date": date(2026, 8, 20)},
+            {"event_id": "question-2", "question_date": date(2026, 8, 21)},
+        ]
+    )
+
+    partitions = job.apply(rows)
+
+    assert [item["date"] for item in partitions] == ["2026-08-20", "2026-08-21"]
+    assert len(client.calls) == 2
+    for expected_date, (sql, config, location) in zip(
+        (date(2026, 8, 20), date(2026, 8, 21)), client.calls
+    ):
+        assert location == "US"
+        parameters = {
+            parameter["name"]: parameter
+            for parameter in config._properties["query"]["queryParameters"]
+        }
+        assert (
+            parameters["history_partition_date"]["parameterValue"]["value"]
+            == expected_date.isoformat()
+        )
+        assert "target.question_date = @history_partition_date" in sql
+        assert "target.answer_date = @history_partition_date" in sql
+        assert "target.updated_date = @history_partition_date" in sql
 
 
 class _Directory:

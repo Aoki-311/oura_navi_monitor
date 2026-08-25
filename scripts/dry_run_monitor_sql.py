@@ -79,6 +79,9 @@ def _parameters(name: str) -> list[Any]:
         ]
     if name == "merge_history.sql":
         return [
+            bigquery.ScalarQueryParameter(
+                "history_partition_date", "DATE", today
+            ),
             struct_array_parameter("history_questions", QUESTION_SCHEMA, []),
             struct_array_parameter("history_answers", ANSWER_SCHEMA, []),
             struct_array_parameter(
@@ -104,6 +107,9 @@ def _cutover_sequence(settings) -> tuple[str, list[Any]]:
     window_end = datetime.now(timezone.utc)
     window_start = window_end - timedelta(hours=1)
     parameters = [
+        bigquery.ScalarQueryParameter(
+            "history_partition_date", "DATE", today
+        ),
         struct_array_parameter("history_questions", QUESTION_SCHEMA, []),
         struct_array_parameter("history_answers", ANSWER_SCHEMA, []),
         struct_array_parameter(

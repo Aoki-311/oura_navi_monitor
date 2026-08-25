@@ -1,11 +1,15 @@
--- Required array parameters: @history_questions, @history_answers,
--- @history_conversations, and @history_citations. This one-time compiler writes
--- the same canonical facts as the incremental owner; it creates no second table.
+-- Required parameters: @history_partition_date plus @history_questions,
+-- @history_answers, @history_conversations, and @history_citations. The scalar
+-- date is an explicit target-table partition bound; relying only on a source
+-- field equality does not satisfy BigQuery require_partition_filter.
+-- This one-time compiler writes the same canonical facts as the incremental
+-- owner; it creates no second table.
 
 MERGE `${PROJECT_ID}.${DATASET_ID}.question_events` target
 USING UNNEST(@history_questions) source
 ON target.event_id = source.event_id
   AND target.question_date = source.question_date
+  AND target.question_date = @history_partition_date
 WHEN MATCHED AND target.record_origin IN ('firestore_history', 'legacy_audit_history') THEN UPDATE SET
   question_ts = source.question_ts,
   user_id = source.user_id,
@@ -54,6 +58,7 @@ MERGE `${PROJECT_ID}.${DATASET_ID}.answer_events` target
 USING UNNEST(@history_answers) source
 ON target.event_id = source.event_id
   AND target.answer_date = source.answer_date
+  AND target.answer_date = @history_partition_date
 WHEN MATCHED AND target.record_origin IN ('firestore_history', 'legacy_audit_history') THEN UPDATE SET
   answer_ts = source.answer_ts,
   user_id = source.user_id,
@@ -121,6 +126,7 @@ MERGE `${PROJECT_ID}.${DATASET_ID}.conversation_events` target
 USING UNNEST(@history_conversations) source
 ON target.event_id = source.event_id
   AND target.updated_date = source.updated_date
+  AND target.updated_date = @history_partition_date
 WHEN MATCHED THEN UPDATE SET
   conversation_id = source.conversation_id, user_id = source.user_id,
   roster_id = source.roster_id, first_active_at = source.first_active_at,
@@ -131,12 +137,24 @@ WHEN MATCHED THEN UPDATE SET
   primary_mode = source.primary_mode, status = source.status,
   source_event_ts = source.source_event_ts,
   materialized_at = CURRENT_TIMESTAMP()
-WHEN NOT MATCHED THEN INSERT ROW;
+WHEN NOT MATCHED THEN INSERT (
+  event_id, conversation_id, user_id, roster_id, first_active_at,
+  last_active_at, updated_date, user_message_count, assistant_message_count,
+  followup_count, active_days, primary_mode, status, source_event_ts,
+  materialized_at
+) VALUES (
+  source.event_id, source.conversation_id, source.user_id, source.roster_id,
+  source.first_active_at, source.last_active_at, source.updated_date,
+  source.user_message_count, source.assistant_message_count,
+  source.followup_count, source.active_days, source.primary_mode, source.status,
+  source.source_event_ts, source.materialized_at
+);
 
 MERGE `${PROJECT_ID}.${DATASET_ID}.citation_events` target
 USING UNNEST(@history_citations) source
 ON target.event_id = source.event_id
   AND target.answer_date = source.answer_date
+  AND target.answer_date = @history_partition_date
 WHEN MATCHED THEN UPDATE SET
   answer_event_id = source.answer_event_id, answer_ts = source.answer_ts,
   user_id = source.user_id, roster_id = source.roster_id,
@@ -148,4 +166,16 @@ WHEN MATCHED THEN UPDATE SET
   primary_product_key = source.primary_product_key,
   source_event_ts = source.source_event_ts,
   materialized_at = CURRENT_TIMESTAMP()
-WHEN NOT MATCHED THEN INSERT ROW;
+WHEN NOT MATCHED THEN INSERT (
+  event_id, answer_event_id, answer_ts, answer_date, user_id, roster_id,
+  message_id, citation_order, source_type, source_system, document_key,
+  display_title, page_number, access_status, trust_tier,
+  primary_product_key, source_event_ts, materialized_at
+) VALUES (
+  source.event_id, source.answer_event_id, source.answer_ts,
+  source.answer_date, source.user_id, source.roster_id, source.message_id,
+  source.citation_order, source.source_type, source.source_system,
+  source.document_key, source.display_title, source.page_number,
+  source.access_status, source.trust_tier, source.primary_product_key,
+  source.source_event_ts, source.materialized_at
+);

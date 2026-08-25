@@ -955,6 +955,9 @@ class HistoryRebuildJob:
         results = []
         for activity_date, values in sorted(by_date.items()):
             parameters = [
+                bigquery.ScalarQueryParameter(
+                    "history_partition_date", "DATE", activity_date
+                ),
                 struct_array_parameter("history_questions", QUESTION_SCHEMA, values["questions"]),
                 struct_array_parameter("history_answers", ANSWER_SCHEMA, values["answers"]),
                 struct_array_parameter("history_conversations", CONVERSATION_SCHEMA, values["conversations"]),

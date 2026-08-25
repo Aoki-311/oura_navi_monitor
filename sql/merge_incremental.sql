@@ -45,7 +45,14 @@ WHEN MATCHED THEN UPDATE SET request_ts = source.request_ts, request_date = sour
   endpoint_class = source.endpoint_class, method = source.method, status = source.status,
   latency_ms = source.latency_ms, revision_name = source.revision_name,
   source_event_ts = source.source_event_ts, materialized_at = source.materialized_at
-WHEN NOT MATCHED THEN INSERT ROW;
+WHEN NOT MATCHED THEN INSERT (
+  event_id, request_ts, request_date, endpoint_class, method, status,
+  latency_ms, revision_name, source_event_ts, materialized_at
+) VALUES (
+  source.event_id, source.request_ts, source.request_date,
+  source.endpoint_class, source.method, source.status, source.latency_ms,
+  source.revision_name, source.source_event_ts, source.materialized_at
+);
 
 MERGE `${PROJECT_ID}.${DATASET_ID}.question_events` target
 USING (
@@ -55,7 +62,7 @@ USING (
       event_id,
       COALESCE(event_ts, source_ts) AS question_ts,
       DATE(COALESCE(event_ts, source_ts), '${MONITOR_TIMEZONE}') AS question_date,
-      user_id,
+      event.user_id,
       scope.roster_id,
       request_id,
       trace_id,
@@ -118,7 +125,29 @@ WHEN MATCHED THEN UPDATE SET
   measurement_profile = source.measurement_profile,
   source_event_ts = source.source_event_ts,
   materialized_at = source.materialized_at
-WHEN NOT MATCHED THEN INSERT ROW;
+WHEN NOT MATCHED THEN INSERT (
+  event_id, question_ts, question_date, user_id, roster_id, request_id,
+  trace_id, conversation_id, turn_id, message_id, mode, device_class,
+  endpoint_class, valid_question, attachment_count,
+  primary_question_category, question_categories, classification_status,
+  is_multi_intent, analytics_tasks, primary_product_key,
+  primary_product_name, product_keys, product_names,
+  product_candidate_count, product_resolved_count, producer_revision,
+  producer_git_sha, record_origin, measurement_profile, source_event_ts,
+  materialized_at
+) VALUES (
+  source.event_id, source.question_ts, source.question_date, source.user_id,
+  source.roster_id, source.request_id, source.trace_id,
+  source.conversation_id, source.turn_id, source.message_id, source.mode,
+  source.device_class, source.endpoint_class, source.valid_question,
+  source.attachment_count, source.primary_question_category,
+  source.question_categories, source.classification_status,
+  source.is_multi_intent, source.analytics_tasks, source.primary_product_key,
+  source.primary_product_name, source.product_keys, source.product_names,
+  source.product_candidate_count, source.product_resolved_count,
+  source.producer_revision, source.producer_git_sha, source.record_origin,
+  source.measurement_profile, source.source_event_ts, source.materialized_at
+);
 
 MERGE `${PROJECT_ID}.${DATASET_ID}.answer_events` target
 USING (
@@ -128,7 +157,7 @@ USING (
       event_id,
       COALESCE(event_ts, source_ts) AS answer_ts,
       DATE(COALESCE(event_ts, source_ts), '${MONITOR_TIMEZONE}') AS answer_date,
-      user_id,
+      event.user_id,
       scope.roster_id,
       request_id,
       trace_id,
@@ -283,6 +312,9 @@ FROM (
 ) persistence
 WHERE persistence.answer_ts IS NOT NULL
   AND answer.answer_date BETWEEN
+    DATE_SUB(DATE(@window_start, '${MONITOR_TIMEZONE}'), INTERVAL 1 DAY)
+    AND DATE_ADD(DATE(@window_end, '${MONITOR_TIMEZONE}'), INTERVAL 1 DAY)
+  AND answer.answer_date BETWEEN
     DATE_SUB(DATE(persistence.answer_ts, '${MONITOR_TIMEZONE}'), INTERVAL 1 DAY)
     AND DATE_ADD(DATE(persistence.answer_ts, '${MONITOR_TIMEZONE}'), INTERVAL 1 DAY)
   AND answer.request_id = persistence.request_id
@@ -326,7 +358,7 @@ USING (
   FROM (
     SELECT event_id, COALESCE(event_ts, source_ts) AS action_ts,
       DATE(COALESCE(event_ts, source_ts), '${MONITOR_TIMEZONE}') AS action_date,
-      user_id, scope.roster_id, request_id, conversation_id, turn_id, message_id,
+      event.user_id, scope.roster_id, request_id, conversation_id, turn_id, message_id,
       JSON_VALUE(payload_json, '$.target_message_id') AS target_message_id,
       JSON_VALUE(payload_json, '$.action') AS action,
       JSON_VALUE(payload_json, '$.feedback') AS feedback,
@@ -350,7 +382,17 @@ WHEN MATCHED THEN UPDATE SET action_ts = source.action_ts, action_date = source.
   target_message_id = source.target_message_id, action = source.action, feedback = source.feedback,
   mode = source.mode, request_mode = source.request_mode, client_origin = source.client_origin,
   source_event_ts = source.source_event_ts, materialized_at = source.materialized_at
-WHEN NOT MATCHED THEN INSERT ROW;
+WHEN NOT MATCHED THEN INSERT (
+  event_id, action_ts, action_date, user_id, roster_id, request_id,
+  conversation_id, turn_id, message_id, target_message_id, action, feedback,
+  mode, request_mode, client_origin, source_event_ts, materialized_at
+) VALUES (
+  source.event_id, source.action_ts, source.action_date, source.user_id,
+  source.roster_id, source.request_id, source.conversation_id, source.turn_id,
+  source.message_id, source.target_message_id, source.action, source.feedback,
+  source.mode, source.request_mode, source.client_origin,
+  source.source_event_ts, source.materialized_at
+);
 
 MERGE `${PROJECT_ID}.${DATASET_ID}.demand_events` target
 USING (
@@ -390,4 +432,16 @@ WHEN MATCHED THEN UPDATE SET question_event_id = source.question_event_id, quest
   requirement = source.requirement, delivery_state = source.delivery_state, evidence_state = source.evidence_state,
   system_fault = source.system_fault, reason_codes = source.reason_codes,
   source_event_ts = source.source_event_ts, materialized_at = source.materialized_at
-WHEN NOT MATCHED THEN INSERT ROW;
+WHEN NOT MATCHED THEN INSERT (
+  event_id, question_event_id, question_ts, question_date, user_id,
+  roster_id, demand_id, demand_order, question_category, analytics_task,
+  product_keys, product_names, requirement, delivery_state, evidence_state,
+  system_fault, reason_codes, source_event_ts, materialized_at
+) VALUES (
+  source.event_id, source.question_event_id, source.question_ts,
+  source.question_date, source.user_id, source.roster_id, source.demand_id,
+  source.demand_order, source.question_category, source.analytics_task,
+  source.product_keys, source.product_names, source.requirement,
+  source.delivery_state, source.evidence_state, source.system_fault,
+  source.reason_codes, source.source_event_ts, source.materialized_at
+);
