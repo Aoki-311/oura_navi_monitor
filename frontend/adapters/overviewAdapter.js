@@ -109,8 +109,8 @@ export function usageTrendModel(payload) {
 
 export function taskModel(payload) {
   return {
-    rows: distributionRows(requiredArray(payload, "requestTasks", "依頼タイプ"), "依頼タイプ"),
-    measurement: coverageModel(payload.taskMeasurement, "依頼タイプの計測範囲"),
+    rows: distributionRows(requiredArray(payload, "requestTasks", "質問種類"), "質問種類"),
+    measurement: coverageModel(payload.taskMeasurement, "質問種類の計測範囲"),
   };
 }
 
@@ -127,8 +127,8 @@ export function productsModel(payload) {
     topProducts: requiredArray(payload, "topProducts", "製品ランキング").map((row) => ({ label: String(row?.label || ""), count: requiredCount(row?.count, "製品ランキング") })),
     matrix: requiredArray(payload, "productTaskMatrix", "製品マトリクス").map((row) => ({
       product: requiredText(row?.product, "製品名"),
-      task: requiredText(row?.task, "依頼タスク"),
-      taskLabel: requiredText(row?.taskLabel, "依頼タスク名"),
+      task: requiredText(row?.task, "質問種類"),
+      taskLabel: requiredText(row?.taskLabel, "質問種類名"),
       count: requiredCount(row?.count, "製品マトリクス"),
     })),
     resolution: {

@@ -59,11 +59,11 @@ export class OverviewPage {
       </div>
       <section class="panel priorityPanel" data-module="kpis"><div class="panelHead"><div><p class="sectionIndex">01</p><h3>主要KPI</h3></div><small>MR・ヘルスケア本社</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
       <section class="panel" data-module="environment"><div class="panelHead"><div><p class="sectionIndex">02</p><h3>利用環境・モード</h3></div><small>補助的な利用状況</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
-      <section class="twoGrid insightGrid"><article class="panel" data-module="usage"><div class="panelHead"><div><p class="sectionIndex">03</p><h3>利用推移</h3></div></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article><article class="panel" data-module="tasks"><div class="panelHead"><div><p class="sectionIndex">03</p><h3>依頼タイプ</h3></div><small>ユーザーが何をしたいか</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article></section>
+      <section class="twoGrid insightGrid"><article class="panel" data-module="usage"><div class="panelHead"><div><p class="sectionIndex">03</p><h3>利用推移</h3></div></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article><article class="panel" data-module="tasks"><div class="panelHead"><div><p class="sectionIndex">03</p><h3>質問種類</h3></div><small>ユーザーが何をしたいか</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article></section>
       <section class="panel" data-module="activity"><div class="panelHead"><div><p class="sectionIndex">04</p><h3>活性度分布</h3></div><small>直近14日の活躍日数で判定</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
       <section class="panel" data-module="users"><div class="panelHead"><div><p class="sectionIndex">05</p><h3>ユーザー一覧</h3></div><small>最終利用は全期間、利用日・メッセージは直近7日</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
       <section class="twoGrid mapGrid"><article class="panel" data-module="map"><div class="panelHead"><div><p class="sectionIndex">06</p><h3>日本利用マップ</h3></div><small>色の濃さ: 利用率</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article><article class="panel" data-module="ranking"><div class="panelHead"><h3>地域ランキング</h3><small>利用率順</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article></section>
-      <section class="panel" data-module="products"><div class="panelHead"><div><p class="sectionIndex">07</p><h3>製品ニーズ</h3></div><small>製品 Top 10 × 依頼タスク</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>`;
+      <section class="panel" data-module="products"><div class="panelHead"><div><p class="sectionIndex">07</p><h3>製品ニーズ</h3></div><small>製品 Top 10 × 質問種類</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>`;
   }
 
   body(name) { return this.root.querySelector(`[data-module="${name}"] [data-module-body]`); }
@@ -131,9 +131,9 @@ export class OverviewPage {
   renderTasks(model) {
     const body = this.body("tasks");
     if (model.measurement.measurementState === "no_usage") { body.innerHTML = moduleMessage("この期間に利用記録はありません。", "empty"); return; }
-    if (model.measurement.measurementState === "not_measured") { body.innerHTML = moduleMessage("この期間の依頼タイプは履歴に記録されていません。", "not_measured"); return; }
+    if (model.measurement.measurementState === "not_measured") { body.innerHTML = moduleMessage("この期間の質問種類は履歴に記録されていません。", "not_measured"); return; }
     body.innerHTML = `<div class="chartBox primaryChart"><canvas id="taskChart"></canvas></div>${model.measurement.measurementState === "partial" ? `<p class="measurementNote">${coverageNote(model.measurement)}</p>` : ""}`;
-    barChart(body.querySelector("#taskChart"), model.rows, { horizontal: true, label: "質問数", color: "#2fd5c4", summary: "依頼タイプ別の質問数" });
+    barChart(body.querySelector("#taskChart"), model.rows, { horizontal: true, label: "質問数", color: "#2fd5c4", summary: "質問種類別の質問数" });
   }
 
   renderActivity(model) {
@@ -149,7 +149,7 @@ export class OverviewPage {
     if (model.resolution.measurementState === "no_usage") { body.innerHTML = moduleMessage("この期間に利用記録はありません。", "empty"); return; }
     if (model.resolution.measurementState === "not_measured") { body.innerHTML = moduleMessage("この期間の製品項目は履歴に記録されていません。", "not_measured"); return; }
     const unresolved = Number.isInteger(model.resolution.unresolvedQuestions) ? model.resolution.unresolvedQuestions : 0;
-    body.innerHTML = `<div class="twoGrid productGrid"><article class="subPanel"><h4>質問対象（製品）Top 10</h4><div class="chartBox primaryChart"><canvas id="productChart"></canvas></div></article><article class="subPanel matrixPanel"><h4>製品 × 依頼タスク</h4><div id="productMatrix" class="productMatrix"></div></article></div>${model.resolution.measurementState === "partial" ? `<p class="measurementNote">${coverageNote(model.resolution)}</p>` : ""}${unresolved ? `<p class="measurementNote">正式な製品名を確認できなかった質問 ${displayCount(unresolved)}件は、ランキングとマトリクスに含めていません。</p>` : ""}`;
+    body.innerHTML = `<div class="twoGrid productGrid"><article class="subPanel"><h4>質問対象（製品）Top 10</h4><div class="chartBox primaryChart"><canvas id="productChart"></canvas></div></article><article class="subPanel matrixPanel"><h4>製品 × 質問種類</h4><div id="productMatrix" class="productMatrix"></div></article></div>${model.resolution.measurementState === "partial" ? `<p class="measurementNote">${coverageNote(model.resolution)}</p>` : ""}${unresolved ? `<p class="measurementNote">正式な製品名を確認できなかった質問 ${displayCount(unresolved)}件は、ランキングとマトリクスに含めていません。</p>` : ""}`;
     barChart(body.querySelector("#productChart"), model.topProducts, { horizontal: true, label: "質問数", color: "#7f88ff", summary: "質問対象製品の上位10件" });
     renderProductMatrix(body.querySelector("#productMatrix"), model.matrix);
   }

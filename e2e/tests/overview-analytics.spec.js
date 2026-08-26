@@ -7,7 +7,10 @@ test("overview renders seven analytics modules and preserves charts after refres
   for (const title of ["主要KPI", "利用環境・モード", "利用推移", "活性度分布", "ユーザー一覧", "日本利用マップ", "製品ニーズ"]) await expect(page.locator("main")).toContainText(title);
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator("#overviewUsers tbody tr")).toHaveCount(2);
-  await expect(page.locator("main")).toContainText("製品 × 依頼タスク");
+  await expect(page.locator('[data-module="tasks"] h3')).toHaveText("質問種類");
+  await expect(page.locator("main")).toContainText("製品 × 質問種類");
+  await expect(page.locator("main")).not.toContainText("依頼タイプ");
+  await expect(page.locator("main")).not.toContainText("質問の目的");
   expect(await page.locator("canvas").count()).toBeGreaterThanOrEqual(9);
   for (let index = 0; index < 6; index += 1) await page.getByRole("button", { name: "再読込" }).click();
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
