@@ -12,7 +12,7 @@ from app.contracts.admin import (
     UserPatch,
     normalize_email,
 )
-from app.domain.analysis_scopes import Department
+from app.domain.analysis_scopes import Department, membership_for
 from app.domain.management_errors import ManagementError, revision_text
 from app.domain.roster_values import (
     CANONICAL_AREAS,
@@ -136,7 +136,7 @@ class UserManagementService:
     def list_users(self, *, include_inactive: bool = True) -> list[dict[str, Any]]:
         return self._directory.list_users(include_inactive=include_inactive)
 
-    def metadata(self) -> dict[str, list[str]]:
+    def metadata(self) -> dict[str, Any]:
         users = self._directory.list_users(include_inactive=True)
         return {
             "areas": list(CANONICAL_AREAS),
@@ -155,6 +155,18 @@ class UserManagementService:
                 }
             ),
             "departments": [member.value for member in Department],
+            "departmentScopes": [
+                {
+                    "department": department.value,
+                    "globalScopeEnabled": membership_for(
+                        department, is_active=True
+                    ).global_enabled,
+                    "userMapScopeEnabled": membership_for(
+                        department, is_active=True
+                    ).user_map_enabled,
+                }
+                for department in Department
+            ],
         }
 
     def create_user(self, payload: UserCreate, *, actor: str) -> dict[str, Any]:

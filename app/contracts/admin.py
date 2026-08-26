@@ -107,6 +107,8 @@ class UserView(BaseModel):
     labelIds: list[str]
     isActive: bool
     identityBound: bool
+    globalScopeEnabled: bool
+    userMapScopeEnabled: bool
     updatedAt: str | None
     updatedBy: str
 
@@ -133,6 +135,14 @@ class LabelListResponse(BaseModel):
     labels: list[LabelView]
 
 
+class DepartmentScopeView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    department: Department
+    globalScopeEnabled: bool
+    userMapScopeEnabled: bool
+
+
 class ManagementMetadataResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -140,4 +150,5 @@ class ManagementMetadataResponse(BaseModel):
     workplaces: list[str]
     roles: list[str]
     departments: list[Department]
+    departmentScopes: list[DepartmentScopeView]
     labelColors: list[str]

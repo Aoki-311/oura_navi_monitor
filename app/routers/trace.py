@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.contracts.analytics import ConversationsResponse
 from app.contracts.trace import TraceMessagesResponse
 from app.dependencies import get_conversation_history_repository, get_user_directory_repository
-from app.domain.analysis_scopes import AnalysisScope, Department, department_in_scope
+from app.domain.analysis_scopes import AnalysisScope, Department, membership_for
 from app.repositories.conversation_history import ConversationHistoryRepository
 from app.repositories.user_directory import UserDirectoryRepository
 from app.security.auth import AdminIdentity, require_admin
@@ -15,9 +15,10 @@ router = APIRouter(prefix="/api/trace", tags=["conversation"])
 
 def _trace_user(directory: UserDirectoryRepository, roster_id: str) -> dict:
     user = directory.get_user(roster_id)
-    if user is None or not department_in_scope(
-        Department(str(user["department"])), AnalysisScope.USER_MAP
-    ):
+    if user is None or not membership_for(
+        Department(str(user["department"])),
+        is_active=bool(user["is_active"]),
+    ).includes(AnalysisScope.USER_MAP):
         raise HTTPException(status_code=404, detail="user not found")
     return user
 

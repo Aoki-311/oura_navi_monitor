@@ -1,5 +1,5 @@
 const { test, expect } = require("@playwright/test");
-const { installApiMocks, managedLabels, managedUsers } = require("./fixtures");
+const { installApiMocks, makeManagedUsers, managedLabels, managedUsers } = require("./fixtures");
 
 test("user management edits roster fields, labels and active state without scope controls", async ({ page }) => {
   const requests = []; await installApiMocks(page, { requests }); await page.goto("/dashboard?page=management&roster=roster_1");
@@ -43,4 +43,17 @@ test("an inactive label already assigned to a user remains visible and retained"
   await expect(retained).toBeChecked();
   await expect(retained).toBeDisabled();
   await expect(page.locator("#userForm")).toContainText("旧分類（停用・保持）");
+});
+
+test("the 83-person management table keeps search focus and paginates", async ({ page }) => {
+  await installApiMocks(page, { managedUsersOverride: { users: makeManagedUsers(83) } });
+  await page.goto("/dashboard?page=management");
+  await expect(page.locator("#managementPanel tbody tr")).toHaveCount(20);
+  const search = page.locator("#userSearch");
+  await search.focus();
+  await search.pressSequentially("利用者 83");
+  await expect(search).toBeFocused();
+  await expect(search).toHaveValue("利用者 83");
+  await expect(page.locator("#managementPanel tbody tr")).toHaveCount(1);
+  await expect(page.locator("#managementPanel tbody")).toContainText("利用者 83");
 });

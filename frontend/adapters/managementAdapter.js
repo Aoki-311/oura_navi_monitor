@@ -21,7 +21,7 @@ function rowsModel(payload, key, parse, sourceLabel) {
 }
 
 function parseUser(row) {
-  if (!Array.isArray(row?.labelIds) || typeof row.isActive !== "boolean" || typeof row.identityBound !== "boolean") {
+  if (!Array.isArray(row?.labelIds) || typeof row.isActive !== "boolean" || typeof row.identityBound !== "boolean" || typeof row.globalScopeEnabled !== "boolean" || typeof row.userMapScopeEnabled !== "boolean") {
     throw new Error("管理ユーザーの行形式が不正です");
   }
   return {
@@ -37,6 +37,8 @@ function parseUser(row) {
     labelIds: row.labelIds.map((value) => requiredText(value, "labelId")),
     isActive: row.isActive,
     identityBound: row.identityBound,
+    globalScopeEnabled: row.globalScopeEnabled,
+    userMapScopeEnabled: row.userMapScopeEnabled,
     updatedAt: optionalText(row.updatedAt, "updatedAt"),
     updatedBy: optionalText(row.updatedBy, "updatedBy"),
   };
@@ -77,9 +79,19 @@ export function managementMetadataModel(payload) {
     workplaces: textList(payload.workplaces, "workplaces"),
     roles: textList(payload.roles, "roles"),
     departments: textList(payload.departments, "departments"),
+    departmentScopes: Array.isArray(payload.departmentScopes) ? payload.departmentScopes.map((row) => {
+      if (typeof row?.globalScopeEnabled !== "boolean" || typeof row?.userMapScopeEnabled !== "boolean") {
+        throw new Error("管理選択肢の分析範囲が不正です");
+      }
+      return {
+        department: requiredText(row.department, "department scope"),
+        globalScopeEnabled: row.globalScopeEnabled,
+        userMapScopeEnabled: row.userMapScopeEnabled,
+      };
+    }) : [],
     labelColors: textList(payload.labelColors, "labelColors"),
   };
-  if (!model.areas.length || !model.departments.length || !model.labelColors.length) {
+  if (!model.areas.length || !model.departments.length || model.departmentScopes.length !== model.departments.length || !model.labelColors.length) {
     throw new Error("管理選択肢に必須項目がありません");
   }
   return model;

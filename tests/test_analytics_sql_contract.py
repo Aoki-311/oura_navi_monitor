@@ -170,6 +170,18 @@ def test_historical_unmeasured_classification_is_explicit_and_cannot_be_claimed_
     assert "and classification_status = 'not_measured'" in normalized
 
 
+def test_history_never_invents_request_tasks_and_quality_allows_only_history_to_omit_them() -> None:
+    history_sql = " ".join(_sql("merge_history.sql").lower().split())
+    quality_sql = " ".join(_sql("check_data_quality.sql").lower().split())
+
+    assert "analytics_tasks = array<string>[]" in history_sql
+    assert "false, array<string>[]" in history_sql
+    assert (
+        "ifnull(record_origin, '') not in ('firestore_history', 'legacy_audit_history') "
+        "and ifnull(array_length(analytics_tasks), 0) = 0"
+    ) in quality_sql
+
+
 def test_history_merge_has_explicit_target_partition_filter_for_every_fact() -> None:
     history_sql = _sql("merge_history.sql").lower()
     assert history_sql.count("target.question_date = @history_partition_date") == 1

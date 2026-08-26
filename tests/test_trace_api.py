@@ -9,14 +9,15 @@ from app.settings import get_settings
 
 
 class _Directory:
-    def __init__(self, department: str) -> None:
+    def __init__(self, department: str, *, is_active: bool = True) -> None:
         self.department = department
+        self.is_active = is_active
 
     def get_user(self, _roster_id: str):
         return {
             "roster_id": "roster_1",
             "department": self.department,
-            "is_active": True,
+            "is_active": self.is_active,
             "chat_user_id": "chat_1",
         }
 
@@ -62,6 +63,27 @@ def test_trace_scope_is_derived_from_department_not_stored_flags() -> None:
         assert response.json()["messages"][0]["messageId"] == "m1"
 
         app.dependency_overrides[get_user_directory_repository] = lambda: _Directory("管理者")
+        assert client.get(
+            "/api/trace/messages?roster_id=roster_1&conversation_id=conv_1",
+            headers=headers,
+        ).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_inactive_user_cannot_open_conversations_or_messages_by_direct_url() -> None:
+    app.dependency_overrides[get_settings] = _local_settings
+    app.dependency_overrides[get_user_directory_repository] = lambda: _Directory(
+        "DM専任", is_active=False
+    )
+    app.dependency_overrides[get_conversation_history_repository] = _Conversations
+    client = TestClient(app)
+    headers = {"x-monitor-admin-email": "admin@example.com"}
+    try:
+        assert client.get(
+            "/api/trace/conversations?roster_id=roster_1",
+            headers=headers,
+        ).status_code == 404
         assert client.get(
             "/api/trace/messages?roster_id=roster_1&conversation_id=conv_1",
             headers=headers,

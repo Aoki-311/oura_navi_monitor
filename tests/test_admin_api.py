@@ -47,6 +47,12 @@ class _AdminService:
             "workplaces": ["大阪"],
             "roles": ["本社MR"],
             "departments": ["DM専任", "ヘルスケア本社", "DM本社", "管理者"],
+            "departmentScopes": [
+                {"department": "DM専任", "globalScopeEnabled": True, "userMapScopeEnabled": True},
+                {"department": "ヘルスケア本社", "globalScopeEnabled": True, "userMapScopeEnabled": True},
+                {"department": "DM本社", "globalScopeEnabled": False, "userMapScopeEnabled": True},
+                {"department": "管理者", "globalScopeEnabled": False, "userMapScopeEnabled": False},
+            ],
         }
 
     def delete_label(self, label_id, *, actor, expected_updated_at):
@@ -85,11 +91,18 @@ def test_admin_contract_rejects_scope_flags_and_translates_label_conflict() -> N
         assert response.status_code == 200
         assert "scope" not in response.json()["users"][0]
         assert response.json()["users"][0]["identityBound"] is False
+        assert response.json()["users"][0]["globalScopeEnabled"] is True
+        assert response.json()["users"][0]["userMapScopeEnabled"] is True
 
         metadata = client.get("/api/admin/metadata", headers=headers)
         assert metadata.status_code == 200
         assert metadata.json()["areas"] == ["関西"]
         assert metadata.json()["departments"] == ["DM専任", "ヘルスケア本社", "DM本社", "管理者"]
+        assert metadata.json()["departmentScopes"][2] == {
+            "department": "DM本社",
+            "globalScopeEnabled": False,
+            "userMapScopeEnabled": True,
+        }
 
         rejected = client.post(
             "/api/admin/users",

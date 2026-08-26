@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+MeasurementState = Literal["measured", "partial", "not_measured", "no_usage"]
+
 
 class AnalyticsModel(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -18,12 +20,20 @@ class RateMeasurement(AnalyticsModel):
     value: float | None
     measuredCount: int
     totalCount: int
+    measurementState: MeasurementState
 
 
 class LatencyMeasurement(AnalyticsModel):
     valueMs: int | None
     measuredCount: int
     totalCount: int
+    measurementState: MeasurementState
+
+
+class MeasurementCoverage(AnalyticsModel):
+    measuredCount: int
+    totalCount: int
+    measurementState: MeasurementState
 
 
 class Kpis(AnalyticsModel):
@@ -71,10 +81,10 @@ class CountRow(AnalyticsModel):
     count: int
 
 
-class ProductCategoryCell(AnalyticsModel):
+class ProductTaskCell(AnalyticsModel):
     product: str
-    category: str
-    categoryLabel: str
+    task: str
+    taskLabel: str
     count: int
 
 
@@ -83,6 +93,9 @@ class ProductResolution(AnalyticsModel):
     resolvedCount: int
     unresolvedQuestions: int
     resolutionRate: float | None
+    measuredCount: int
+    totalCount: int
+    measurementState: MeasurementState
 
 
 class AnalyticsLabel(AnalyticsModel):
@@ -170,14 +183,17 @@ class OverviewResponse(AnalyticsModel):
     kpis: Kpis
     hourlyQuestions: list[HourlyQuestion]
     deviceDistribution: list[DistributionRow]
+    deviceMeasurement: MeasurementCoverage
     modeDistribution: list[DistributionRow]
+    modeMeasurement: MeasurementCoverage
     usageTrend: list[UsageTrendRow]
-    questionCategories: list[DistributionRow]
+    requestTasks: list[DistributionRow]
+    taskMeasurement: MeasurementCoverage
     activityDistribution: list[ActivitySegment]
     activityByArea: list[ActivityStack]
     activityByRole: list[ActivityStack]
     topProducts: list[CountRow]
-    productQuestionMatrix: list[ProductCategoryCell]
+    productTaskMatrix: list[ProductTaskCell]
     productResolution: ProductResolution
 
 
@@ -202,9 +218,13 @@ class UserDetailResponse(AnalyticsModel):
     products: list[CountRow]
     productResolution: ProductResolution
     tasks: list[DistributionRow]
+    taskMeasurement: MeasurementCoverage
     questionCategories: list[DistributionRow]
+    questionCategoryMeasurement: MeasurementCoverage
     modes: list[DistributionRow]
+    modeMeasurement: MeasurementCoverage
     devices: list[DistributionRow]
+    deviceMeasurement: MeasurementCoverage
 
 
 class ConversationsResponse(AnalyticsModel):

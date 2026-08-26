@@ -10,7 +10,6 @@ from app.domain.analytics_tasks import analytics_task, analytics_task_label
 from app.domain.analysis_scopes import (
     AnalysisScope,
     Department,
-    department_in_scope,
     display_area,
     membership_for,
 )
@@ -28,6 +27,14 @@ _ACTIVITY_LABELS = {
     "middle": "中アクティブ",
     "low": "低アクティブ",
     "dormant": "休眠ユーザー",
+}
+_REPRESENTATIVE_DELIVERY_PROFILES = {
+    "complete_delivery_full",
+    "runtime_truth_full",
+}
+_HISTORICAL_RECORD_ORIGINS = {
+    "firestore_history",
+    "legacy_audit_history",
 }
 
 
@@ -56,12 +63,36 @@ def _p95(values: list[int]) -> int | None:
     return int(ordered[index])
 
 
+def _measurement_state(measured_count: int, total_count: int) -> str:
+    if total_count == 0:
+        return "no_usage"
+    if measured_count == 0:
+        return "not_measured"
+    if measured_count < total_count:
+        return "partial"
+    return "measured"
+
+
+def _measurement_coverage(measured_count: int, total_count: int) -> dict[str, Any]:
+    return {
+        "measuredCount": measured_count,
+        "totalCount": total_count,
+        "measurementState": _measurement_state(measured_count, total_count),
+    }
+
+
 def _complete_delivery_measurement(rows: list[dict[str, Any]]) -> dict[str, Any]:
     measured = [
         item
         for item in rows
         if item.get("measurement_available") is True
         and isinstance(item.get("complete_delivery"), bool)
+        and str(
+            item.get("answer_measurement_profile")
+            or item.get("measurement_profile")
+            or ""
+        )
+        in _REPRESENTATIVE_DELIVERY_PROFILES
     ]
     return {
         "value": _rate(
@@ -70,6 +101,7 @@ def _complete_delivery_measurement(rows: list[dict[str, Any]]) -> dict[str, Any]
         ),
         "measuredCount": len(measured),
         "totalCount": len(rows),
+        "measurementState": _measurement_state(len(measured), len(rows)),
     }
 
 
@@ -89,6 +121,7 @@ def _complete_latency_measurement(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "valueMs": _p95(values),
         "measuredCount": len(values),
         "totalCount": len(rows),
+        "measurementState": _measurement_state(len(values), len(rows)),
     }
 
 
@@ -149,17 +182,45 @@ def _activity_level(
 ) -> str:
     timezone_value = ZoneInfo(timezone_name)
     end_date = (end - timedelta(microseconds=1)).astimezone(timezone_value).date()
-    dates = [value.astimezone(timezone_value).date() for value in question_times]
-    count_3d = sum(0 <= (end_date - value).days <= 2 for value in dates)
-    count_7d = sum(0 <= (end_date - value).days <= 6 for value in dates)
-    count_14d = sum(0 <= (end_date - value).days <= 13 for value in dates)
-    if count_3d >= 3:
+    active_dates = {
+        value.astimezone(timezone_value).date()
+        for value in question_times
+        if 0 <= (end_date - value.astimezone(timezone_value).date()).days <= 13
+    }
+    active_days = len(active_dates)
+    if active_days >= 6:
         return "high"
-    if 1 <= count_7d <= 2:
+    if active_days >= 3:
         return "middle"
-    if count_14d >= 1:
+    if active_days >= 1:
         return "low"
     return "dormant"
+
+
+def _classification_is_measured(item: dict[str, Any]) -> bool:
+    return str(item.get("classification_status") or "").strip() != "not_measured"
+
+
+def _tasks_for_measured_item(item: dict[str, Any]) -> list[str]:
+    if str(item.get("record_origin") or "") in _HISTORICAL_RECORD_ORIGINS:
+        return []
+    source = item.get("analytics_tasks")
+    if not isinstance(source, list) or not source:
+        return []
+    return [analytics_task(task).value for task in source]
+
+
+def _product_is_measured(item: dict[str, Any]) -> bool:
+    if str(item.get("record_origin") or "") in _HISTORICAL_RECORD_ORIGINS:
+        return False
+    return item.get("product_candidate_count") is not None and item.get(
+        "product_resolved_count"
+    ) is not None
+
+
+def _measured_dimension(item: dict[str, Any], field: str) -> str | None:
+    value = str(item.get(field) or "").strip().lower()
+    return value if value and value != "unknown" else None
 
 
 class AnalyticsService:
@@ -226,11 +287,15 @@ class AnalyticsService:
         hourly = Counter()
         date_users: dict[str, set[str]] = defaultdict(set)
         date_questions = Counter()
-        categories = Counter()
+        tasks = Counter()
         devices = Counter()
         modes = Counter()
         products = Counter()
         matrix = Counter()
+        task_measured_count = 0
+        device_measured_count = 0
+        mode_measured_count = 0
+        product_measured_count = 0
         product_candidate_count = 0
         product_resolved_count = 0
         product_unresolved_questions = 0
@@ -243,21 +308,29 @@ class AnalyticsService:
             day = str(item.get("question_date") or "")
             date_users[day].add(str(item.get("roster_id") or ""))
             date_questions[day] += 1
-            category = analytics_question_category(
-                item.get("primary_question_category")
-            ).value
-            categories[category] += 1
-            devices[str(item.get("device_class") or "unknown")] += 1
-            modes[str(item.get("mode") or "unknown")] += 1
-            candidate_count = int(item.get("product_candidate_count") or 0)
-            resolved_count = int(item.get("product_resolved_count") or 0)
-            product_candidate_count += candidate_count
-            product_resolved_count += resolved_count
-            product_unresolved_questions += resolved_count < candidate_count
-            product = str(item.get("primary_product_name") or "").strip()
-            if product:
-                products[product] += 1
-                matrix[(product, category)] += 1
+            item_tasks = _tasks_for_measured_item(item)
+            if item_tasks:
+                task_measured_count += 1
+                for task in item_tasks:
+                    tasks[task] += 1
+            if device := _measured_dimension(item, "device_class"):
+                devices[device] += 1
+                device_measured_count += 1
+            if mode := _measured_dimension(item, "mode"):
+                modes[mode] += 1
+                mode_measured_count += 1
+            if _product_is_measured(item):
+                product_measured_count += 1
+                candidate_count = int(item.get("product_candidate_count") or 0)
+                resolved_count = int(item.get("product_resolved_count") or 0)
+                product_candidate_count += candidate_count
+                product_resolved_count += resolved_count
+                product_unresolved_questions += resolved_count < candidate_count
+                product = str(item.get("primary_product_name") or "").strip()
+                if product:
+                    products[product] += 1
+                    for task in item_tasks:
+                        matrix[(product, task)] += 1
 
         levels = {
             str(user["roster_id"]): _activity_level(
@@ -291,8 +364,14 @@ class AnalyticsService:
                 "p95Latency": _complete_latency_measurement(events),
             },
             "hourlyQuestions": [{"hour": key, "count": hourly.get(key, 0)} for key in (f"{hour:02d}:00" for hour in range(24))],
-            "deviceDistribution": _distribution(devices, {"desktop": "PC", "mobile": "モバイル", "unknown": "不明"}),
+            "deviceDistribution": _distribution(devices, {"desktop": "PC", "mobile": "モバイル"}),
+            "deviceMeasurement": _measurement_coverage(
+                device_measured_count, len(events)
+            ),
             "modeDistribution": _distribution(modes, {"internal": "社内モード", "websearch": "Web検索モード"}),
+            "modeMeasurement": _measurement_coverage(
+                mode_measured_count, len(events)
+            ),
             "usageTrend": [
                 {
                     "date": day,
@@ -301,13 +380,11 @@ class AnalyticsService:
                 }
                 for day in _local_date_axis(window)
             ],
-            "questionCategories": _distribution(
-                categories,
-                {
-                    key: question_category_label(key)
-                    for key in categories
-                },
+            "requestTasks": _distribution(
+                tasks,
+                {key: analytics_task_label(key) for key in tasks},
             ),
+            "taskMeasurement": _measurement_coverage(task_measured_count, len(events)),
             "activityDistribution": [
                 {"key": key, "label": _ACTIVITY_LABELS[key], "count": activity_counter.get(key, 0), "rate": _rate(activity_counter.get(key, 0), len(roster))}
                 for key in _ACTIVITY_ORDER
@@ -315,14 +392,14 @@ class AnalyticsService:
             "activityByArea": [self._stacked_activity(label, values) for label, values in sorted(by_area.items())],
             "activityByRole": [self._stacked_activity(label, values) for label, values in sorted(by_role.items())],
             "topProducts": [{"label": key, "count": value} for key, value in products.most_common(10)],
-            "productQuestionMatrix": [
+            "productTaskMatrix": [
                 {
                     "product": product,
-                    "category": category,
-                    "categoryLabel": question_category_label(category),
+                    "task": task,
+                    "taskLabel": analytics_task_label(task),
                     "count": count,
                 }
-                for (product, category), count in matrix.items()
+                for (product, task), count in matrix.items()
                 if product in {name for name, _count in products.most_common(10)}
             ],
             "productResolution": {
@@ -333,6 +410,7 @@ class AnalyticsService:
                     product_resolved_count,
                     product_candidate_count,
                 ),
+                **_measurement_coverage(product_measured_count, len(events)),
             },
         }
 
@@ -378,7 +456,14 @@ class AnalyticsService:
                 "adoptionRate": _rate(len(active), len(users)),
                 "returnRate": _return_rate(days, window=window),
             })
-        regions.sort(key=lambda item: (item["activeUsers"], item["questions"]), reverse=True)
+        regions.sort(
+            key=lambda item: (
+                item["adoptionRate"] if item["adoptionRate"] is not None else -1,
+                item["activeUsers"],
+                item["questions"],
+            ),
+            reverse=True,
+        )
         return {
             "scopeUserCount": len(roster),
             "freshness": freshness,
@@ -453,9 +538,10 @@ class AnalyticsService:
     def user_detail(self, roster_id: str, *, window: MetricsTimeWindow) -> dict[str, Any]:
         freshness = self._freshness()
         user = self._directory.get_user(roster_id)
-        if user is None or not department_in_scope(
-            Department(user["department"]), AnalysisScope.USER_MAP
-        ):
+        if user is None or not membership_for(
+            Department(user["department"]),
+            is_active=bool(user["is_active"]),
+        ).includes(AnalysisScope.USER_MAP):
             raise KeyError("user not found")
         events = self._analytics.user_detail_events(roster_id=roster_id, window=window)
         labels = {str(item.get("label_id") or ""): item for item in self._directory.list_labels(include_inactive=True)}
@@ -472,18 +558,31 @@ class AnalyticsService:
             for item in events
         )
         tasks = Counter()
+        task_measured_count = 0
         for item in events:
-            source_tasks = list(item.get("analytics_tasks") or [])
-            if not source_tasks:
-                source_tasks = ["unclassified"]
+            source_tasks = _tasks_for_measured_item(item)
+            if source_tasks:
+                task_measured_count += 1
             for task in source_tasks:
-                tasks[analytics_task(task).value] += 1
+                tasks[task] += 1
+        measured_category_rows = [item for item in events if _classification_is_measured(item)]
         categories = Counter(
             analytics_question_category(item.get("primary_question_category")).value
-            for item in events
+            for item in measured_category_rows
         )
-        modes = Counter(str(item.get("mode") or "unknown") for item in events)
-        devices = Counter(str(item.get("device_class") or "unknown") for item in events)
+        product_measured_count = sum(_product_is_measured(item) for item in events)
+        measured_modes = [
+            value
+            for item in events
+            if (value := _measured_dimension(item, "mode")) is not None
+        ]
+        measured_devices = [
+            value
+            for item in events
+            if (value := _measured_dimension(item, "device_class")) is not None
+        ]
+        modes = Counter(measured_modes)
+        devices = Counter(measured_devices)
         user_metric = next(
             (
                 item
@@ -544,17 +643,28 @@ class AnalyticsService:
                     product_resolved_count,
                     product_candidate_count,
                 ),
+                **_measurement_coverage(product_measured_count, len(events)),
             },
             "tasks": _distribution(
                 tasks,
                 {key: analytics_task_label(key) for key in tasks},
             ),
+            "taskMeasurement": _measurement_coverage(task_measured_count, len(events)),
             "questionCategories": _distribution(
                 categories,
                 {key: question_category_label(key) for key in categories},
             ),
+            "questionCategoryMeasurement": _measurement_coverage(
+                len(measured_category_rows), len(events)
+            ),
             "modes": _distribution(modes, {"internal": "社内モード", "websearch": "Web検索モード"}),
-            "devices": _distribution(devices, {"desktop": "PC", "mobile": "モバイル", "unknown": "不明"}),
+            "modeMeasurement": _measurement_coverage(
+                len(measured_modes), len(events)
+            ),
+            "devices": _distribution(devices, {"desktop": "PC", "mobile": "モバイル"}),
+            "deviceMeasurement": _measurement_coverage(
+                len(measured_devices), len(events)
+            ),
         }
 
     @staticmethod
@@ -566,7 +676,13 @@ class AnalyticsService:
         field: str,
     ) -> dict[str, Any]:
         label = str(user.get(field) or "-")
-        peers = [item for item in roster if str(item.get(field) or "-") == label]
+        selected_roster_id = str(user.get("roster_id") or "")
+        peers = [
+            item
+            for item in roster
+            if str(item.get("roster_id") or "") != selected_roster_id
+            and str(item.get(field) or "-") == label
+        ]
         questions = [len(events.get(str(item["roster_id"]), [])) for item in peers]
         active_days = [
             len({str(event.get("question_date") or "") for event in events.get(str(item["roster_id"]), [])})
@@ -593,5 +709,8 @@ class AnalyticsService:
                 ),
                 "measuredCount": len(complete_rates),
                 "totalCount": len(peers),
+                "measurementState": _measurement_state(
+                    len(complete_rates), len(peers)
+                ),
             },
         }

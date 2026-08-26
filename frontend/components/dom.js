@@ -8,9 +8,20 @@ export function moduleMessage(message = "データ取得不可", type = "info") 
   return `<div class="moduleMessage" role="${type === "error" ? "alert" : "status"}" data-state="${escapeHtml(type)}">${escapeHtml(message)}</div>`;
 }
 
+export function measurementContent(measurement, {
+  content,
+  noUsageMessage = "この期間に利用記録はありません。",
+  notMeasuredMessage,
+  partialMessage = "",
+} = {}) {
+  if (measurement?.measurementState === "no_usage") return moduleMessage(noUsageMessage, "empty");
+  if (measurement?.measurementState === "not_measured") return moduleMessage(notMeasuredMessage, "not_measured");
+  return `${content || ""}${measurement?.measurementState === "partial" && partialMessage ? `<p class="measurementNote">${escapeHtml(partialMessage)}</p>` : ""}`;
+}
+
 export function chips(values) {
-  if (!Array.isArray(values)) return '<span class="muted">-</span>';
-  return values.length ? values.map((item) => `<span class="chip" style="--chip:${escapeHtml(item.color)}">${escapeHtml(item.name)}</span>`).join("") : '<span class="muted">-</span>';
+  if (!Array.isArray(values) || !values.length) return "";
+  return values.map((item) => `<span class="chip" style="--chip:${escapeHtml(item.color)}">${escapeHtml(item.name)}</span>`).join("");
 }
 
 export function setBusy(root, busy) {

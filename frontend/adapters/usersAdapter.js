@@ -1,4 +1,4 @@
-import { measurementModel } from "./overviewAdapter.js";
+import { coverageModel, measurementModel } from "./overviewAdapter.js";
 
 const ACTIVITY_KEYS = new Set(["high", "middle", "low", "dormant"]);
 
@@ -39,15 +39,6 @@ function labels(value) {
   });
 }
 
-function safeMeasurement(value, issues, label) {
-  try {
-    return measurementModel(value);
-  } catch (_error) {
-    issues.push(`${label}は未計測として表示しました。`);
-    return { value: null, measuredCount: 0, totalCount: 0 };
-  }
-}
-
 export function usersModel(payload) {
   if (!payload || !Array.isArray(payload.users) || !Number.isInteger(payload.scopeUserCount) || payload.scopeUserCount < 0) throw new Error("ユーザーデータの形式が不正です。");
   const issues = [];
@@ -69,9 +60,9 @@ export function usersModel(payload) {
         lastActiveAt: optionalText(row?.lastActiveAt),
         activeDays7,
         userMessageCount7,
-        completeDelivery: safeMeasurement(row?.completeDelivery, rowIssues, "回答成功率"),
+        completeDelivery: measurementModel(row?.completeDelivery),
         activity,
-        activityLabel: activity ? (optionalText(row?.activityLabel) || "未測定") : "未測定",
+        activityLabel: activity ? requiredText(row?.activityLabel, "活性度ラベル") : "未測定",
         issues: rowIssues,
       };
       issues.push(...rowIssues.map((message) => `${item.name}: ${message}`));
@@ -141,7 +132,7 @@ export function userTrendModel(payload) {
 function distributionRows(rows) {
   return rows.map((row) => ({
     key: optionalText(row?.key),
-    label: optionalText(row?.label) || "判定不能",
+    label: requiredText(row?.label, "分析ラベル"),
     count: requiredNumber(row?.count, "件数", { integer: true }),
     rate: requiredNumber(row?.rate, "割合", { nullable: true }),
   }));
@@ -153,11 +144,18 @@ export function userNeedsModel(payload) {
       label: requiredText(row?.label, "製品名"),
       count: requiredNumber(row?.count, "製品質問数", { integer: true }),
     })),
-    productResolution: requiredObject(payload, "productResolution", "製品判定範囲"),
+    productResolution: {
+      ...requiredObject(payload, "productResolution", "製品判定範囲"),
+      ...coverageModel(payload.productResolution, "製品判定範囲"),
+    },
     tasks: distributionRows(requiredArray(payload, "tasks", "タスク分析")),
-    questionCategories: distributionRows(requiredArray(payload, "questionCategories", "質問タイプ")),
+    taskMeasurement: coverageModel(payload.taskMeasurement, "タスク分析の計測範囲"),
+    questionCategories: distributionRows(requiredArray(payload, "questionCategories", "質問テーマ")),
+    questionCategoryMeasurement: coverageModel(payload.questionCategoryMeasurement, "質問テーマの計測範囲"),
     modes: distributionRows(requiredArray(payload, "modes", "モード分析")),
+    modeMeasurement: coverageModel(payload.modeMeasurement, "モード分析の計測範囲"),
     devices: distributionRows(requiredArray(payload, "devices", "デバイス分析")),
+    deviceMeasurement: coverageModel(payload.deviceMeasurement, "デバイス分析の計測範囲"),
   };
 }
 

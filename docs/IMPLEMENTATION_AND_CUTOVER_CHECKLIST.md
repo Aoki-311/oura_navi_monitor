@@ -42,6 +42,17 @@
 - [x] 旧问题类型只做封闭一次性枚举转换；旧默认 `topic_ideation` 进入 unclassified。
 - [x] 历史 apply 前检查编译 event ID 重复，apply 后按全部 expected event ID 验证。
 - [x] 真实 Excel 只读核对 83=61+8+11+3、global=69、user/map=80；无地点字典。
+- [x] 首页保持七模块；用户详细保持会话双栏；用户管理只在 Monitor 内管理名簿和标签。
+- [x] 首页与用户管理长表改成稳定搜索、筛选、排序和分页，状态写入同一 URL owner。
+- [x] 桌面首页每页 15 人、管理 20 人；手机分别为 6、8、8 人，避免列表淹没后续模块。
+- [x] 方块伪地图删除；真实日本都道府县 SVG 按名单 `エリア` 投影，并单独标记本社・虎ノ門。
+- [x] 首页使用依頼任务，个人页明确区分问题主题与依頼任务；未测量历史不伪装成 0。
+- [x] 历史合并不再制造 `analytics_tasks=unclassified`；历史任务为空且明确显示履历未计测，
+  新 producer 缺少任务则由质量门拒绝。
+- [x] 模式和设备排除空值/`unknown`，分别显示无使用、履历未计测、一部计测和已计测。
+- [x] 停用用户的分析与会话直达 URL 统一由分析范围 owner 拒绝，并返回用户选择页说明原因。
+- [x] 同地区/同角色完整交付覆盖数量使用“名”，回答与事件覆盖数量继续使用“件”。
+- [x] 三页统一商务 BI 视觉层级、图表色板、空值/部分计量状态和键盘/ARIA 行为。
 - [x] 真实云端只读 inventory 和历史 plan；没有云写。
 - [x] 最后一次业务代码修改后的 Python 全量回归通过。
 - [x] 最后一次业务代码修改后的 JS syntax、脚本/YAML/SQL 合同和 E2E 通过。
@@ -67,7 +78,7 @@ scripts/refresh_aggregate_tables.sh
 ```
 
 `app/routers/trace.py` 被保留并改写，因为用户明确要求会话列表 + 消息列表；它不再
-读取旧 BQ raw payload。旧 BQ 对象尚未删除，因为历史 apply/验收未执行。
+读取旧 BQ raw payload。旧 BQ 对象尚未删除，因为新旧连续性与线上业务验收未完成。
 
 ## 4. 用户已有文件保护
 
@@ -87,45 +98,40 @@ monitor_field_split_8_1.xlsx
 
 ### 5.1 当前 BigQuery
 
-2026-08-25 metadata/read-only：raw request/stdout/stderr 均仍在；
-`monitor_answer_events=4,176`；新 `question_events=0`、`answer_events=0`、
-`pipeline_state=0`、`pipeline_runs=0`；旧 `user_daily` 与旧 dashboard view 仍在。
+2026-08-26 metadata/read-only：raw request/stdout/stderr 均仍在；旧
+`monitor_answer_events=4,176`、`monitor_user_daily=1,184`、snapshot=9 仍未删除。
+canonical 已有 `question_events=3,331`、`answer_events=3,215`、
+`conversation_events=2,009`、`citation_events=23,281`、`user_scope=83`，两个正式
+table function 均存在；`pipeline_state=2`、`pipeline_runs=226`。
 
-这说明过去数据没有物理删除。空页面的直接原因是新页面已读取 canonical chain，
-但 canonical facts 尚未发布和回填。
+这说明过去数据已经回填且没有物理丢失；旧派生对象仍在，但当前代码不再读取它们。
+线上旧 Monitor 页面问题不能再归因于“canonical 全空”，必须区分旧 SHA 的前端实现、
+最新 Firestore 与 canonical 的 15 条差额，以及尚未切换的 LCS 统一事件 revision。
 
 ### 5.2 历史 plan
 
-首次旧实现运行 8 分钟卡在逐会话 `messages` RPC，手动中止，无写入。最终实现于
-2026-08-26 只读重跑，62.1 秒完成：
+首次旧实现运行 8 分钟卡在逐会话 `messages` RPC，手动中止，无写入。当前实现于
+2026-08-26 只读重跑，58.6 秒完成：
 
-- Firestore：83 roots、2,195 conversations、7,265 messages；
+- Firestore：83 roots、2,205 conversations、7,291 messages；
 - retired audit：4,176 materialized rows → 3,441 unique request/trace；
-- canonical plan：3,331 questions、3,215 answers、1,546 conversations、18,357 citations；
-- questions：2,923 Firestore + 408 legacy-only；
-- complete-delivery measured：111 / 3,215；
+- canonical plan：3,346 questions、3,230 answers、1,557 conversations、18,418 citations；
+- questions：2,937 Firestore + 409 legacy-only；
+- 111 条明确失败保留为失败事实，但不再作为代表性完整交付率分母；
 - 37 empty conversations、375 out-of-scope events、312 identities outside roster 被明确排除；
 - 6 名 80 人范围用户尚无可绑定聊天历史；
 - `issueCount=0`；最终只读确认串：
-  `lcs-developer-483404.oura_navi_monitor:2026-03-16:2026-08-25:3331:3215:0`。
+  `lcs-developer-483404.oura_navi_monitor:2026-03-16:2026-08-26:3346:3230:0`。
 
-该确认串只证明本次 plan 内容，尚未写入 `pipeline_state`，不能解锁旧对象删除。
-未来 apply 会先重跑同一 plan；只要数据变化，脚本就拒绝旧确认串并要求重新人工核对。
+线上 `pipeline_state` 仍记录上一次已验证 apply 的 8/25 确认串（3,331/3,215）。新 plan
+比线上多 15/15；本轮未 apply。未来 apply 会先重跑，数据变化时拒绝旧确认串。
 
 ### 5.3 SQL dry-run
 
 最后一次只读 dry-run：完整计划顺序
 `fact/state → source → history → projection → incremental → quality → API`
-通过，预计处理字节为 0。单独运行时，dataset、source/fact/state/API DDL 与
-Firestore projection 通过。
-
-当前线上前置状态导致的预期失败：
-
-- `merge_incremental.sql`：`http_request_source` 尚未发布；
-- `merge_history.sql`：线上事实表尚无新 lineage 字段；
-- `check_data_quality.sql`：source view 尚未发布。
-
-这些不是允许忽略的“测试通过”；必须按第 7 节顺序创建 owner 后重新 dry-run/apply。
+通过，预计处理字节为 0。9 个单文件也全部通过；其中 projection/history dry-run 约
+22–34 KB，incremental/quality 约 1.0–1.3 MB。旧文档记载的三个前置失败已经过时。
 
 ## 6. 未来精确删除清单
 
@@ -165,14 +171,13 @@ policy ID。脚本无 glob、无 dataset delete、无 raw delete；`--apply` 需
 `--history-confirm`。该确认串必须已由成功的逐 event ID 验证写入
 `pipeline_state(source=history_rebuild)`；只跑 plan 不能解锁删除。
 
-## 7. 唯一云端执行顺序（均未授权/未执行）
+## 7. 从当前状态继续的唯一云端顺序
 
-- [ ] 重新只读 inventory 并保存对象类型、DTS ID、生产 revision/image/SHA。
+- [x] 重新只读 inventory 并保存对象类型、生产 revision/image/SHA。
 - [x] 运行最终 history plan，人工核对数量并固定只读确认串。
 - [ ] 获得 BigQuery/Logging/Firestore 写入授权。
-- [ ] 原地创建/扩充 canonical facts、state 和两个参数化语义函数。
-- [ ] 发布 `monitor_event_source`、`http_request_source`；不切页面到第二套 API。
-- [ ] history apply，逐 event ID 验证 questions/answers/conversations/citations 全部落表。
+- [x] canonical facts、state、source view 和两个参数化语义函数在线存在。
+- [ ] 用最新确认串追平 8/26 的 15/15 差额并逐 event ID 验证。
 - [ ] bounded incremental `--until-current`，验证质量门和 dataThrough。
 - [ ] 构建 Monitor 无流量候选；IAP 登录并验收三页历史数据、空值和局部失败。
 - [ ] 之后才创建/选择 LCS 候选 revision，跑 internal/Web 真实问答和写回成功/失败链。
@@ -195,15 +200,20 @@ for script_file in scripts/*.sh; do bash -n "$script_file"; done
 git diff --check
 ```
 
-2026-08-26 最终本地证据：
+2026-08-26 最后一次完整本地证据：
 
-- `pytest`：106 passed；
+- `pytest`：133 passed；历史任务、停用用户、模式/设备计测、单日回访率、活性度边界
+  等新增 RED 先失败，修复后定向与全量均通过；
 - `compileall`：通过；`pip check`：无破损依赖；YAML：可解析；
 - JavaScript `node --check`、全部 Shell `bash -n`、`git diff --check`：通过；
-- Playwright：17 passed，覆盖三页、局部失败、未知历史分类、请求竞态、地图联动、
-  并发编辑、停用标签与 PC/iPad/mobile；
-- BigQuery 只读 dry-run：完整计划顺序通过；线上未发布前的三个单文件前置失败保留为
-  明确证据，不被伪装成通过。
+- Playwright：27 passed，覆盖三页、局部失败、历史未计测环境、停用用户直达链接、
+  请求竞态、地图键盘联动、URL 刷新/返回、并发编辑、停用标签、分页状态与
+  PC/iPad/mobile；
+- Chromium 快照：1440px 三页及 390px 首页/用户/管理已人工检查；页面无全局横向溢出，
+  产品矩阵仅在自身卡片内横向滚动；
+- BigQuery 只读 dry-run：计划序列与 9 个单文件全部通过；
+- 真实只读 Chromium：三页实际 BigQuery/Firestore 链路 0 个模块错误，管理范围
+  83/69/80/3；这不替代 IAP。
 
 本仓库没有独立的 TypeScript/mypy/ruff/eslint 配置；没有擅自安装第二套工具。
 Cloud Build/Docker build 属于用户明确禁止的未授权构建动作，本轮没有执行。
@@ -212,16 +222,16 @@ Cloud Build/Docker build 属于用户明确禁止的未授权构建动作，本�
 
 | 层次 | 当前状态 |
 | --- | --- |
-| 本地代码 | 最终业务代码已完成并通过本地全量门禁；尚未发布到云端 |
-| Git commit | 未执行；无本轮 commit |
-| Git push | 未执行；origin/main 未改变 |
+| 本地代码 | 本地最终 diff 已通过完整门禁与真实历史只读产品链路 |
+| Git commit | 以当前仓库 `HEAD` 为准；只证明源码版本，不证明构建或运行状态 |
+| Git push | 以 `origin/main` 为准；只证明远端源码版本，不证明部署状态 |
 | Build | 未执行 |
-| Cloud Run candidate | 本轮未创建、未部署；当前线上候选状态未重新核验 |
+| Cloud Run candidate | 本轮未创建；现有 `oura-navi-monitor-00042-jum` Ready，镜像是旧提交 `66da5e4`，candidate tag 与 100% 流量同指该 revision |
 | Monitor 登录验收 | 未执行 |
 | Monitor 业务验收 | 未执行 |
-| BigQuery/Firestore/Logging apply | 未执行；只读检查而已 |
-| 历史 backfill | 未执行；只有 plan |
-| LCS revision | 本轮未构建、未部署、未切换；既有候选不算本轮验收 |
-| Monitor/LCS production traffic | 本轮未改变；当前实际分流需在发布阶段重新只读核验 |
+| BigQuery/Firestore/Logging apply | 本轮未执行；线上已有此前 backfill 与刷新结果 |
+| 历史 backfill | 8/25 已验证 3,331/3,215；8/26 只读 plan 多出 15/15，未 apply |
+| LCS revision | 生产 `00243-sas` 为 100%；`00247-jug` 仅 candidate tag、0% 生产流量；本轮未改 |
+| Monitor/LCS production traffic | 本轮未改变；Monitor 00042=100%，LCS 00243=100% |
 
 整体结论：**尚未完成**。

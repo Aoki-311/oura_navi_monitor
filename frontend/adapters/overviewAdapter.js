@@ -20,16 +20,34 @@ function nullableNumber(value, label) {
   return value;
 }
 
+function requiredText(value, label) {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${label}を確認できません。`);
+  return value;
+}
+
 export function measurementModel(value, { latency = false } = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("計測範囲を確認できません。");
   const measuredCount = requiredCount(value.measuredCount, "計測済み");
   const totalCount = requiredCount(value.totalCount, "対象");
   if (measuredCount > totalCount) throw new Error("計測範囲が不正です。");
+  const expectedState = totalCount === 0 ? "no_usage" : measuredCount === 0 ? "not_measured" : measuredCount < totalCount ? "partial" : "measured";
+  if (value.measurementState !== expectedState) throw new Error("計測状態が件数と一致しません。");
   return {
     [latency ? "valueMs" : "value"]: nullableNumber(value[latency ? "valueMs" : "value"], latency ? "応答時間" : "割合"),
     measuredCount,
     totalCount,
+    measurementState: expectedState,
   };
+}
+
+export function coverageModel(value, label = "計測範囲") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label}を確認できません。`);
+  const measuredCount = requiredCount(value.measuredCount, `${label}の計測済み`);
+  const totalCount = requiredCount(value.totalCount, `${label}の対象`);
+  if (measuredCount > totalCount) throw new Error(`${label}が不正です。`);
+  const expectedState = totalCount === 0 ? "no_usage" : measuredCount === 0 ? "not_measured" : measuredCount < totalCount ? "partial" : "measured";
+  if (value.measurementState !== expectedState) throw new Error(`${label}の状態が件数と一致しません。`);
+  return { measuredCount, totalCount, measurementState: expectedState };
 }
 
 function envelope(payload, scope) {
@@ -63,7 +81,7 @@ export function kpisModel(payload) {
 function distributionRows(rows, label) {
   return rows.map((row) => ({
     key: typeof row?.key === "string" ? row.key : "",
-    label: typeof row?.label === "string" && row.label.trim() ? row.label : "判定不能",
+    label: requiredText(row?.label, `${label}の名称`),
     count: requiredCount(row?.count, label),
     rate: nullableNumber(row?.rate, label),
   }));
@@ -75,7 +93,9 @@ export function environmentModel(payload) {
       label: String(row?.hour || ""), count: requiredCount(row?.count, "時間帯別質問"),
     })),
     deviceDistribution: distributionRows(requiredArray(payload, "deviceDistribution", "デバイス分析"), "デバイス分析"),
+    deviceMeasurement: coverageModel(payload.deviceMeasurement, "デバイス分析の計測範囲"),
     modeDistribution: distributionRows(requiredArray(payload, "modeDistribution", "モード分析"), "モード分析"),
+    modeMeasurement: coverageModel(payload.modeMeasurement, "モード分析の計測範囲"),
   };
 }
 
@@ -87,8 +107,11 @@ export function usageTrendModel(payload) {
   }));
 }
 
-export function categoryModel(payload) {
-  return distributionRows(requiredArray(payload, "questionCategories", "質問タイプ"), "質問タイプ");
+export function taskModel(payload) {
+  return {
+    rows: distributionRows(requiredArray(payload, "requestTasks", "依頼タイプ"), "依頼タイプ"),
+    measurement: coverageModel(payload.taskMeasurement, "依頼タイプの計測範囲"),
+  };
 }
 
 export function activityModel(payload) {
@@ -102,13 +125,16 @@ export function activityModel(payload) {
 export function productsModel(payload) {
   return {
     topProducts: requiredArray(payload, "topProducts", "製品ランキング").map((row) => ({ label: String(row?.label || ""), count: requiredCount(row?.count, "製品ランキング") })),
-    matrix: requiredArray(payload, "productQuestionMatrix", "製品マトリクス").map((row) => ({
-      product: String(row?.product || ""),
-      category: String(row?.category || ""),
-      categoryLabel: typeof row?.categoryLabel === "string" && row.categoryLabel ? row.categoryLabel : String(row?.category || "判定不能"),
+    matrix: requiredArray(payload, "productTaskMatrix", "製品マトリクス").map((row) => ({
+      product: requiredText(row?.product, "製品名"),
+      task: requiredText(row?.task, "依頼タスク"),
+      taskLabel: requiredText(row?.taskLabel, "依頼タスク名"),
       count: requiredCount(row?.count, "製品マトリクス"),
     })),
-    resolution: requiredObject(payload, "productResolution", "製品判定範囲"),
+    resolution: {
+      ...requiredObject(payload, "productResolution", "製品判定範囲"),
+      ...coverageModel(payload.productResolution, "製品判定範囲"),
+    },
   };
 }
 

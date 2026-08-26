@@ -32,12 +32,33 @@ export function displayDuration(value) {
   return remainder ? `${minutes}分${remainder}秒` : `${minutes}分`;
 }
 
-export function measurementCoverage(value) {
+export function measurementCoverage(value, unit = "件") {
   const measured = countOrNull(value?.measuredCount);
   const total = countOrNull(value?.totalCount);
   if (measured === null || total === null) return "計測範囲不明";
   if (total === 0) return "対象回答なし";
-  return measured === total ? `全${total.toLocaleString("ja-JP")}件を計測` : `${measured.toLocaleString("ja-JP")} / ${total.toLocaleString("ja-JP")}件を計測`;
+  return measured === total ? `全${total.toLocaleString("ja-JP")}${unit}を計測` : `${measured.toLocaleString("ja-JP")} / ${total.toLocaleString("ja-JP")}${unit}を計測`;
+}
+
+export function measurementStateLabel(value) {
+  const state = value?.measurementState;
+  if (state === "measured") return "計測済み";
+  if (state === "partial") return "一部計測";
+  if (state === "not_measured") return "履歴未計測";
+  if (state === "no_usage") return "対象データなし";
+  return "計測状態不明";
+}
+
+export function displayMeasuredRate(value) {
+  if (value?.measurementState === "not_measured") return "履歴未計測";
+  if (value?.measurementState === "no_usage") return "-";
+  return displayRate(value?.value);
+}
+
+export function displayMeasuredDuration(value) {
+  if (value?.measurementState === "not_measured") return "履歴未計測";
+  if (value?.measurementState === "no_usage") return "-";
+  return displayDuration(value?.valueMs);
 }
 
 export function displayNullable(value) {

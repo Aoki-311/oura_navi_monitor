@@ -77,7 +77,10 @@ WITH source_questions AS (
   UNION ALL
   SELECT 'missing_analytics_axes', COUNTIF(
     IFNULL(ARRAY_LENGTH(question_categories), 0) = 0
-    OR IFNULL(ARRAY_LENGTH(analytics_tasks), 0) = 0
+    OR (
+      IFNULL(record_origin, '') NOT IN ('firestore_history', 'legacy_audit_history')
+      AND IFNULL(ARRAY_LENGTH(analytics_tasks), 0) = 0
+    )
   ) FROM questions
   UNION ALL
   SELECT 'invalid_classification_producer', COUNTIF(classification_status = 'producer_invalid') FROM questions

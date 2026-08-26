@@ -18,24 +18,30 @@ class FakeAnalyticsService:
                 "adoptionRate": 20 / 69,
                 "returnRate": 0.5,
                 "questionsPerActiveUser": 3.2,
-                "completeDelivery": {"value": 0.91, "measuredCount": 20, "totalCount": 20},
-                "p95Latency": {"valueMs": 72000, "measuredCount": 20, "totalCount": 20},
+                "completeDelivery": {"value": 0.91, "measuredCount": 20, "totalCount": 20, "measurementState": "measured"},
+                "p95Latency": {"valueMs": 72000, "measuredCount": 20, "totalCount": 20, "measurementState": "measured"},
             },
             "hourlyQuestions": [],
             "deviceDistribution": [],
+            "deviceMeasurement": {"measuredCount": 0, "totalCount": 64, "measurementState": "not_measured"},
             "modeDistribution": [],
+            "modeMeasurement": {"measuredCount": 0, "totalCount": 64, "measurementState": "not_measured"},
             "usageTrend": [],
-            "questionCategories": [],
+            "requestTasks": [],
+            "taskMeasurement": {"measuredCount": 0, "totalCount": 64, "measurementState": "not_measured"},
             "activityDistribution": [],
             "activityByArea": [],
             "activityByRole": [],
             "topProducts": [],
-            "productQuestionMatrix": [],
+            "productTaskMatrix": [],
             "productResolution": {
                 "candidateCount": 0,
                 "resolvedCount": 0,
                 "unresolvedQuestions": 0,
                 "resolutionRate": None,
+                "measuredCount": 0,
+                "totalCount": 64,
+                "measurementState": "not_measured",
             },
         }
 
@@ -64,7 +70,7 @@ class FakeAnalyticsService:
                 "activeDays": 0,
                 "questions": 0,
                 "questionsPerActiveDay": None,
-                "completeDelivery": {"value": None, "measuredCount": 0, "totalCount": 0},
+                "completeDelivery": {"value": None, "measuredCount": 0, "totalCount": 0, "measurementState": "no_usage"},
             },
             "comparisons": {
                 "area": {
@@ -72,14 +78,14 @@ class FakeAnalyticsService:
                     "peerCount": 1,
                     "averageQuestions": 0.0,
                     "averageActiveDays": 0.0,
-                    "averageCompleteDelivery": {"value": None, "measuredCount": 0, "totalCount": 1},
+                    "averageCompleteDelivery": {"value": None, "measuredCount": 0, "totalCount": 1, "measurementState": "not_measured"},
                 },
                 "role": {
                     "label": "本社MR",
                     "peerCount": 1,
                     "averageQuestions": 0.0,
                     "averageActiveDays": 0.0,
-                    "averageCompleteDelivery": {"value": None, "measuredCount": 0, "totalCount": 1},
+                    "averageCompleteDelivery": {"value": None, "measuredCount": 0, "totalCount": 1, "measurementState": "not_measured"},
                 },
             },
             "trend": [],
@@ -89,11 +95,18 @@ class FakeAnalyticsService:
                 "resolvedCount": 0,
                 "unresolvedQuestions": 0,
                 "resolutionRate": None,
+                "measuredCount": 0,
+                "totalCount": 0,
+                "measurementState": "no_usage",
             },
             "tasks": [],
+            "taskMeasurement": {"measuredCount": 0, "totalCount": 0, "measurementState": "no_usage"},
             "questionCategories": [],
+            "questionCategoryMeasurement": {"measuredCount": 0, "totalCount": 0, "measurementState": "no_usage"},
             "modes": [],
+            "modeMeasurement": {"measuredCount": 0, "totalCount": 0, "measurementState": "no_usage"},
             "devices": [],
+            "deviceMeasurement": {"measuredCount": 0, "totalCount": 0, "measurementState": "no_usage"},
         }
 
 
@@ -115,6 +128,7 @@ def test_only_unversioned_analytics_contract_is_exposed() -> None:
         response = client.get("/api/analytics/overview", headers=headers)
         assert response.status_code == 200
         assert response.json()["kpis"]["completeDelivery"]["value"] == 0.91
+        assert response.json()["deviceMeasurement"]["measurementState"] == "not_measured"
         assert client.get("/api/metrics/dashboard", headers=headers).status_code == 404
         assert client.get("/ops", headers=headers).status_code == 404
         assert client.get("/ops-legacy", headers=headers).status_code == 404
@@ -133,5 +147,6 @@ def test_user_url_uses_roster_id_and_never_email() -> None:
         )
         assert response.status_code == 200
         assert response.json()["profile"]["rosterId"] == "roster_123"
+        assert response.json()["modeMeasurement"]["measurementState"] == "no_usage"
     finally:
         app.dependency_overrides.clear()

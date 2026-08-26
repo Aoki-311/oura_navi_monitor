@@ -15,12 +15,14 @@ import {
   managementUsersModel,
 } from "../adapters/managementAdapter.js";
 import { chips, escapeHtml, installDialogLifecycle, moduleMessage, setBusy } from "../components/dom.js";
+import { bindPagination, bindResponsiveCollection, compareNullable, paginate, paginationMarkup } from "../components/collection.js";
 import { displayDateTime } from "../viewModels/formatters.js";
 
 export class UserManagementPage {
-  constructor(root, { rosterId = "", toast, signal, isCurrent, clearManagementRoster }) {
+  constructor(root, { rosterId = "", navigate, toast, state, signal, isCurrent, clearManagementRoster }) {
     this.root = root;
     this.rosterId = rosterId;
+    this.navigate = navigate;
     this.toast = toast;
     this.signal = signal;
     this.isCurrent = isCurrent;
@@ -30,10 +32,15 @@ export class UserManagementPage {
     this.metadata = null;
     this.errors = { users: "", labels: "", metadata: "" };
     this.issues = { users: [], labels: [] };
-    this.subtab = "users";
-    this.userSearch = "";
-    this.userStatus = "all";
+    this.subtab = state.managementSubtab;
+    this.userSearch = state.managementQuery;
+    this.userStatus = state.managementStatus;
+    this.userDepartment = state.managementDepartment;
+    this.userLabel = state.managementLabel;
+    this.userSort = state.managementSort;
+    this.userPage = state.managementPage;
     this.dialogCleanup = null;
+    this.compactCollection = bindResponsiveCollection(this.signal, () => this.renderUserRows());
   }
 
   async load() {
@@ -79,6 +86,7 @@ export class UserManagementPage {
     const body = this.root.querySelector("#managementBody");
     if (!body) return;
     body.innerHTML = `
+      <div class="managementScopeSummary" aria-label="名簿の分析範囲"><span>名簿 ${this.users.length}名</span><span>主要分析 ${this.users.filter((row) => row.globalScopeEnabled).length}名</span><span>ユーザー・地域 ${this.users.filter((row) => row.userMapScopeEnabled).length}名</span><span>管理者 ${this.users.filter((row) => row.department === "管理者").length}名</span></div>
       <div class="subtabs" role="tablist" aria-label="管理対象">
         <button role="tab" aria-selected="${this.subtab === "users"}" data-subtab="users" class="${this.subtab === "users" ? "isActive" : ""}">ユーザー管理 <span>${this.users.length}</span></button>
         <button role="tab" aria-selected="${this.subtab === "labels"}" data-subtab="labels" class="${this.subtab === "labels" ? "isActive" : ""}">ラベル管理 <span>${this.labels.length}</span></button>
@@ -86,6 +94,7 @@ export class UserManagementPage {
       <section class="panel" id="managementPanel"></section>`;
     body.querySelectorAll("[data-subtab]").forEach((button) => button.addEventListener("click", () => {
       this.subtab = button.dataset.subtab;
+      this.navigate("management", { managementSubtab: this.subtab }, { replace: true, render: false });
       this.render();
     }));
     if (this.subtab === "users") this.renderUsers(); else this.renderLabels();
@@ -95,8 +104,10 @@ export class UserManagementPage {
     const query = this.userSearch.trim().toLocaleLowerCase("ja-JP");
     return this.users.filter((row) => {
       const matchesStatus = this.userStatus === "all" || (this.userStatus === "active" ? row.isActive : !row.isActive);
+      const matchesDepartment = !this.userDepartment || row.department === this.userDepartment;
+      const matchesLabel = !this.userLabel || row.labelIds.includes(this.userLabel);
       const haystack = [row.name, row.email, row.area, row.workplace, row.role, row.department].join(" ").toLocaleLowerCase("ja-JP");
-      return matchesStatus && (!query || haystack.includes(query));
+      return matchesStatus && matchesDepartment && matchesLabel && (!query || haystack.includes(query));
     });
   }
 
@@ -106,19 +117,52 @@ export class UserManagementPage {
       panel.innerHTML = `<div class="panelHead"><h3>登録ユーザー</h3></div>${moduleMessage(this.errors.users, "error")}`;
       return;
     }
-    const labelMap = new Map(this.labels.map((row) => [row.labelId, row]));
-    const rows = this.filteredUsers();
     panel.innerHTML = `
       <div class="panelHead"><div><h3>登録ユーザー</h3><small>現在の名簿と停用済みユーザーを同じ履歴として管理します。</small></div><button id="newUser" class="primaryButton" ${this.metadata ? "" : "disabled"}>ユーザーを追加</button></div>
       ${this.errors.metadata ? moduleMessage(`編集用の選択肢を読み込めません: ${this.errors.metadata}`, "error") : ""}
       ${this.errors.labels ? moduleMessage(`ラベル情報を読み込めません: ${this.errors.labels}`, "error") : ""}
       ${this.issues.users.length ? moduleMessage(`${this.issues.users.length}件の不正な名簿行を表示対象から外しました。`, "error") : ""}
-      <div class="managementFilters"><label>ユーザー検索<input id="userSearch" type="search" value="${escapeHtml(this.userSearch)}" placeholder="氏名・メール・地域"></label><label>状態<select id="userStatus"><option value="all">すべて</option><option value="active" ${this.userStatus === "active" ? "selected" : ""}>有効</option><option value="inactive" ${this.userStatus === "inactive" ? "selected" : ""}>停用</option></select></label></div>
-      <div class="tableScroll" tabindex="0" aria-label="管理ユーザー一覧"><table><thead><tr><th>社員名 / メール</th><th>地域・勤務地</th><th>役割・部門</th><th>ラベル</th><th>状態</th><th>最終更新</th><th></th></tr></thead><tbody>${rows.map((row) => `<tr class="${row.isActive ? "" : "isInactive"}"><td><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.email)}</small></td><td>${escapeHtml(row.area)}<small>${escapeHtml(row.workplace)}</small></td><td>${escapeHtml(row.role)}<small>${escapeHtml(row.department)}</small></td><td><div class="chips">${chips(row.labelIds.map((id) => labelMap.get(id)).filter(Boolean))}</div></td><td><span class="statusBadge ${row.isActive ? "active" : "inactive"}">${row.isActive ? "有効" : "停用"}</span></td><td>${displayDateTime(row.updatedAt)}<small>${escapeHtml(row.updatedBy || "-")}</small></td><td><button class="linkButton" data-edit-user="${escapeHtml(row.rosterId)}">編集</button></td></tr>`).join("") || `<tr><td colspan="7">該当するユーザーはいません。</td></tr>`}</tbody></table></div>`;
+      <div class="managementFilters collectionToolbar"><label>ユーザー検索<input id="userSearch" type="search" value="${escapeHtml(this.userSearch)}" placeholder="氏名・メール・地域"></label><label>状態<select id="userStatus"><option value="all">すべて</option><option value="active" ${this.userStatus === "active" ? "selected" : ""}>有効</option><option value="inactive" ${this.userStatus === "inactive" ? "selected" : ""}>停用</option></select></label><label>部門<select id="userDepartment"><option value="">すべて</option>${(this.metadata?.departments || []).map((value) => `<option value="${escapeHtml(value)}" ${this.userDepartment === value ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><label>ラベル<select id="userLabel"><option value="">すべて</option>${this.labels.map((row) => `<option value="${escapeHtml(row.labelId)}" ${this.userLabel === row.labelId ? "selected" : ""}>${escapeHtml(row.name)}</option>`).join("")}</select></label><label>並び順<select id="userSort"><option value="name_asc" ${this.userSort === "name_asc" ? "selected" : ""}>社員名順</option><option value="updated_desc" ${this.userSort === "updated_desc" ? "selected" : ""}>更新が新しい順</option><option value="area_asc" ${this.userSort === "area_asc" ? "selected" : ""}>地域順</option></select></label></div>
+      <div id="managementUserResults"></div>`;
     panel.querySelector("#newUser")?.addEventListener("click", () => this.openUser(null));
-    panel.querySelector("#userSearch").addEventListener("input", (event) => { this.userSearch = event.target.value; this.renderUsers(); });
-    panel.querySelector("#userStatus").addEventListener("change", (event) => { this.userStatus = event.target.value; this.renderUsers(); });
-    panel.querySelectorAll("[data-edit-user]").forEach((button) => button.addEventListener("click", () => this.openUser(this.users.find((row) => row.rosterId === button.dataset.editUser))));
+    panel.querySelector("#userSearch").addEventListener("input", (event) => this.updateUserCollection({ search: event.target.value, page: 1 }));
+    panel.querySelector("#userStatus").addEventListener("change", (event) => this.updateUserCollection({ status: event.target.value, page: 1 }));
+    panel.querySelector("#userDepartment").addEventListener("change", (event) => this.updateUserCollection({ department: event.target.value, page: 1 }));
+    panel.querySelector("#userLabel").addEventListener("change", (event) => this.updateUserCollection({ label: event.target.value, page: 1 }));
+    panel.querySelector("#userSort").addEventListener("change", (event) => this.updateUserCollection({ sort: event.target.value, page: 1 }));
+    this.renderUserRows();
+  }
+
+  updateUserCollection({ search = this.userSearch, status = this.userStatus, department = this.userDepartment, label = this.userLabel, sort = this.userSort, page = this.userPage }) {
+    this.userSearch = search;
+    this.userStatus = status;
+    this.userDepartment = department;
+    this.userLabel = label;
+    this.userSort = sort;
+    this.userPage = page;
+    this.navigate("management", { managementQuery: search, managementStatus: status, managementDepartment: department, managementLabel: label, managementSort: sort, managementPage: page }, { replace: true, render: false });
+    this.renderUserRows();
+  }
+
+  renderUserRows() {
+    const target = this.root.querySelector("#managementUserResults");
+    if (!target) return;
+    const labelMap = new Map(this.labels.map((row) => [row.labelId, row]));
+    const rows = this.filteredUsers();
+    const sorters = {
+      name_asc: (a, b) => compareNullable(a.name, b.name, "asc"),
+      updated_desc: (a, b) => compareNullable(a.updatedAt, b.updatedAt),
+      area_asc: (a, b) => compareNullable(`${a.area} ${a.name}`, `${b.area} ${b.name}`, "asc"),
+    };
+    rows.sort(sorters[this.userSort] || sorters.name_asc);
+    const page = paginate(rows, this.userPage, this.compactCollection.matches ? 8 : 20);
+    this.userPage = page.page;
+    const scopeText = (row) => row.globalScopeEnabled ? "主要・地域" : row.userMapScopeEnabled ? "地域のみ" : "管理のみ";
+    const tableRows = page.items.map((row) => `<tr class="${row.isActive ? "" : "isInactive"}"><td><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.email)}</small></td><td>${escapeHtml(row.area)}<small>${escapeHtml(row.workplace)}</small></td><td>${escapeHtml(row.role)}<small>${escapeHtml(row.department)}</small></td><td>${row.labelIds.length ? `<div class="chips">${chips(row.labelIds.map((id) => labelMap.get(id)).filter(Boolean))}</div>` : ""}</td><td><span class="scopeBadge">${scopeText(row)}</span></td><td><span class="statusBadge ${row.isActive ? "active" : "inactive"}">${row.isActive ? "有効" : "停用"}</span></td><td>${displayDateTime(row.updatedAt)}</td><td><button class="linkButton" data-edit-user="${escapeHtml(row.rosterId)}">編集</button></td></tr>`).join("");
+    const cards = page.items.map((row) => `<article class="userCard managementCard"><header><div><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.email)}</small></div><span class="statusBadge ${row.isActive ? "active" : "inactive"}">${row.isActive ? "有効" : "停用"}</span></header><dl><div><dt>地域</dt><dd>${escapeHtml(row.area)}・${escapeHtml(row.workplace)}</dd></div><div><dt>部門</dt><dd>${escapeHtml(row.department)}</dd></div><div><dt>分析範囲</dt><dd>${scopeText(row)}</dd></div></dl><button class="linkButton" data-edit-user="${escapeHtml(row.rosterId)}">編集</button></article>`).join("");
+    target.innerHTML = page.total ? `<div class="desktopTable"><div class="tableScroll" tabindex="0" aria-label="管理ユーザー一覧"><table><caption>Monitorに登録されたユーザー</caption><thead><tr><th>社員名 / メール</th><th>地域・勤務地</th><th>役割・部門</th><th>ラベル</th><th>分析範囲</th><th>状態</th><th>最終更新</th><th></th></tr></thead><tbody>${tableRows}</tbody></table></div></div><div class="mobileCards">${cards}</div>${paginationMarkup(page)}` : moduleMessage("条件に一致するユーザーはいません。", "empty");
+    target.querySelectorAll("[data-edit-user]").forEach((button) => button.addEventListener("click", () => this.openUser(this.users.find((row) => row.rosterId === button.dataset.editUser))));
+    bindPagination(target, page, (next) => this.updateUserCollection({ page: next }));
   }
 
   closeDrawer() {
@@ -154,12 +198,12 @@ export class UserManagementPage {
       ${user?.identityBound ? '<p id="boundEmailNote" class="fieldNote">LCS利用履歴と連携済みのため、メールは変更できません。</p>' : ""}
       <label>エリア<select name="area" required>${this.metadata.areas.map((value) => `<option value="${escapeHtml(value)}" ${user?.area === value ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label>
       <label>勤務地<input name="workplace" list="workplaceOptions" required maxlength="80" value="${escapeHtml(user?.workplace || "")}"><datalist id="workplaceOptions">${this.metadata.workplaces.map((value) => `<option value="${escapeHtml(value)}"></option>`).join("")}</datalist></label>
-      <label>役割<input name="role" list="roleOptions" required maxlength="80" value="${escapeHtml(user?.role || "")}"><datalist id="roleOptions">${this.metadata.roles.map((value) => `<option value="${escapeHtml(value)}"></option>`).join("")}</datalist></label>
+      <label>役割<select name="role" required>${this.metadata.roles.map((value) => `<option value="${escapeHtml(value)}" ${user?.role === value ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label>
       <label>部門<select name="department">${this.metadata.departments.map((value) => `<option value="${escapeHtml(value)}" ${user?.department === value ? "selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label>
       <label>MR経験<input name="mr_experience" maxlength="80" value="${escapeHtml(user?.mrExperience || "-")}"></label>
       <fieldset><legend>ラベル</legend><div class="labelChoices">${labelChoices.map((row) => `<label><input type="checkbox" name="label" value="${escapeHtml(row.labelId)}" ${selectedLabels.has(row.labelId) ? "checked" : ""} ${row.isActive ? "" : "disabled"}><span style="--chip:${escapeHtml(row.color)}">${escapeHtml(row.name)}${row.isActive ? "" : "（停用・保持）"}</span></label>`).join("") || '<span class="muted">利用可能なラベルはありません</span>'}</div></fieldset>
       ${isNew ? '<label class="switchRow"><input name="is_active" type="checkbox" checked>登録時から有効</label>' : `<label class="switchRow"><input name="is_active" type="checkbox" ${user.isActive ? "checked" : ""}>このユーザーを有効にする</label>`}
-      <p class="formError" id="userFormError" role="alert" hidden></p>
+      <p class="scopeImpact" id="scopeImpact" role="status"></p><p class="formError" id="userFormError" role="alert" hidden></p>
       <div class="formActions"><button type="button" class="ghostButton" id="cancelUser">キャンセル</button><button type="submit" class="primaryButton">保存</button></div>
     </form><p class="drawerNote">分析対象は部門から自動決定されます。ラベルはMonitor内の表示・分析だけに使用します。</p></aside></div>`;
     const form = host.querySelector("#userForm");
@@ -169,13 +213,26 @@ export class UserManagementPage {
       form.elements.mr_experience.disabled = !isMr;
       if (!isMr) form.elements.mr_experience.value = "-";
     };
+    const updateScopeImpact = () => {
+      const active = form.elements.is_active.checked;
+      const scope = this.metadata.departmentScopes.find((row) => row.department === form.elements.department.value);
+      const globalEnabled = active && Boolean(scope?.globalScopeEnabled);
+      const userMapEnabled = active && Boolean(scope?.userMapScopeEnabled);
+      form.querySelector("#scopeImpact").textContent = globalEnabled
+        ? "保存後: 主要分析とユーザー・地域分析の両方に含まれます。"
+        : userMapEnabled
+          ? "保存後: ユーザー・地域分析に含まれ、主要分析には含まれません。"
+          : "保存後: ユーザー管理だけに表示され、分析対象には含まれません。";
+    };
     const updateHeadquarters = () => {
       if (form.elements.area.value === "本社") form.elements.workplace.value = "虎ノ門";
     };
     updateDepartmentFields();
     updateHeadquarters();
-    form.elements.department.addEventListener("change", updateDepartmentFields);
+    updateScopeImpact();
+    form.elements.department.addEventListener("change", () => { updateDepartmentFields(); updateScopeImpact(); });
     form.elements.area.addEventListener("change", updateHeadquarters);
+    form.elements.is_active.addEventListener("change", updateScopeImpact);
     host.querySelector("#closeDrawer").addEventListener("click", lifecycle.close);
     host.querySelector("#cancelUser").addEventListener("click", lifecycle.close);
     form.addEventListener("submit", async (event) => {

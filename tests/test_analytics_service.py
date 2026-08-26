@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.services.analytics_service import AnalyticsService, _activity_level
 from app.settings import Settings
 from app.time_window import MetricsTimeWindow
@@ -91,7 +93,19 @@ def _window(now: datetime) -> MetricsTimeWindow:
     )
 
 
-def test_overview_does_not_publish_completion_rate_from_partial_measurement() -> None:
+def _single_day_window() -> MetricsTimeWindow:
+    return MetricsTimeWindow(
+        start_utc=datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc),
+        end_utc=datetime(2026, 8, 24, 15, 0, tzinfo=timezone.utc),
+        timezone="Asia/Tokyo",
+        source="preset",
+        preset="today",
+        requested_days=1,
+        bucket_minutes=1440,
+    )
+
+
+def test_overview_publishes_representative_partial_measurement_with_coverage() -> None:
     now = datetime.now(timezone.utc)
     rows = [
         {
@@ -102,6 +116,7 @@ def test_overview_does_not_publish_completion_rate_from_partial_measurement() ->
             "valid_question": True,
             "measurement_available": True,
             "complete_delivery": True,
+            "answer_measurement_profile": "runtime_truth_full",
             "total_latency_ms": 1000,
             "mode": "internal",
             "device_class": "desktop",
@@ -134,12 +149,81 @@ def test_overview_does_not_publish_completion_rate_from_partial_measurement() ->
         "value": 1.0,
         "measuredCount": 1,
         "totalCount": 2,
+        "measurementState": "partial",
     }
     assert payload["kpis"]["p95Latency"] == {
         "valueMs": 2000,
         "measuredCount": 2,
         "totalCount": 2,
+        "measurementState": "measured",
     }
+
+
+def test_failure_only_historical_outcomes_do_not_publish_a_biased_success_rate() -> None:
+    now = datetime.now(timezone.utc)
+    service = AnalyticsService(
+        analytics=_Analytics([{
+            "question_ts": now - timedelta(hours=1),
+            "question_date": (now - timedelta(hours=1)).date().isoformat(),
+            "roster_id": "field_1",
+            "area_key": "関西",
+            "valid_question": True,
+            "measurement_available": True,
+            "complete_delivery": False,
+            "answer_measurement_profile": "terminal_outcome",
+            "total_latency_ms": 1000,
+            "mode": "internal",
+            "device_class": "desktop",
+            "classification_status": "not_measured",
+        }]),
+        pipeline=_Pipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    measurement = service.overview(window=_window(now))["kpis"]["completeDelivery"]
+    assert measurement == {
+        "value": None,
+        "measuredCount": 0,
+        "totalCount": 1,
+        "measurementState": "not_measured",
+    }
+
+
+def test_measurement_state_distinguishes_no_usage_from_unmeasured_history() -> None:
+    now = datetime.now(timezone.utc)
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_Pipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    no_usage = service.overview(window=_window(now))
+    assert no_usage["kpis"]["completeDelivery"]["measurementState"] == "no_usage"
+
+    service = AnalyticsService(
+        analytics=_Analytics([{
+            "question_ts": now - timedelta(hours=1),
+            "question_date": (now - timedelta(hours=1)).date().isoformat(),
+            "roster_id": "field_1",
+            "area_key": "関西",
+            "valid_question": True,
+            "measurement_available": False,
+            "complete_delivery": None,
+            "total_latency_ms": None,
+            "mode": "internal",
+            "device_class": "desktop",
+            "primary_question_category": "unclassified",
+            "classification_status": "not_measured",
+        }]),
+        pipeline=_Pipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+    historical = service.overview(window=_window(now))
+    assert historical["kpis"]["completeDelivery"]["measurementState"] == "not_measured"
+    assert historical["kpis"]["p95Latency"]["measurementState"] == "not_measured"
 
 
 def test_stale_pipeline_is_metadata_and_does_not_disable_available_analytics() -> None:
@@ -158,7 +242,7 @@ def test_stale_pipeline_is_metadata_and_does_not_disable_available_analytics() -
     assert payload["kpis"]["activeUsers"] == 0
 
 
-def test_unknown_historical_categories_are_explicitly_unclassified_without_hiding_other_metrics() -> None:
+def test_missing_request_tasks_are_explicitly_unmeasured_without_hiding_other_metrics() -> None:
     now = datetime.now(timezone.utc)
     rows = [
         {
@@ -186,9 +270,150 @@ def test_unknown_historical_categories_are_explicitly_unclassified_without_hidin
     payload = service.overview(window=_window(now))
 
     assert payload["kpis"]["activeUsers"] == 1
-    assert payload["questionCategories"] == [
-        {"key": "unclassified", "label": "判定不能", "count": 1, "rate": 1.0}
+    assert payload["requestTasks"] == []
+    assert payload["taskMeasurement"] == {
+        "measuredCount": 0,
+        "totalCount": 1,
+        "measurementState": "not_measured",
+    }
+
+
+def test_historical_question_category_never_claims_request_task_measurement() -> None:
+    now = datetime.now(timezone.utc)
+    service = AnalyticsService(
+        analytics=_Analytics([{
+            "question_ts": now - timedelta(hours=1),
+            "question_date": (now - timedelta(hours=1)).date().isoformat(),
+            "roster_id": "field_1",
+            "area_key": "関西",
+            "valid_question": True,
+            "primary_question_category": "product_information",
+            "classification_status": "classified",
+            "analytics_tasks": ["unclassified"],
+            "record_origin": "legacy_audit_history",
+        }]),
+        pipeline=_Pipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    payload = service.overview(window=_window(now))
+
+    assert payload["requestTasks"] == []
+    assert payload["taskMeasurement"] == {
+        "measuredCount": 0,
+        "totalCount": 1,
+        "measurementState": "not_measured",
+    }
+
+
+def test_current_multi_task_event_drives_distribution_and_product_matrix() -> None:
+    now = datetime.now(timezone.utc)
+    service = AnalyticsService(
+        analytics=_Analytics([{
+            "question_ts": now - timedelta(hours=1),
+            "question_date": (now - timedelta(hours=1)).date().isoformat(),
+            "roster_id": "field_1",
+            "area_key": "関西",
+            "valid_question": True,
+            "analytics_tasks": ["fact_lookup", "comparison_selection"],
+            "record_origin": "canonical_event",
+            "primary_product_name": "テルフュージョン",
+            "product_candidate_count": 1,
+            "product_resolved_count": 1,
+        }]),
+        pipeline=_Pipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    payload = service.overview(window=_window(now))
+
+    assert payload["taskMeasurement"] == {
+        "measuredCount": 1,
+        "totalCount": 1,
+        "measurementState": "measured",
+    }
+    assert {row["key"] for row in payload["requestTasks"]} == {
+        "fact_lookup",
+        "comparison_selection",
+    }
+    assert {
+        (row["product"], row["task"], row["count"])
+        for row in payload["productTaskMatrix"]
+    } == {
+        ("テルフュージョン", "fact_lookup", 1),
+        ("テルフュージョン", "comparison_selection", 1),
+    }
+
+
+def test_environment_dimensions_distinguish_partial_measurement_from_unknown_history() -> None:
+    now = datetime.now(timezone.utc)
+    rows = [
+        {
+            "question_ts": now - timedelta(hours=2),
+            "question_date": (now - timedelta(hours=2)).date().isoformat(),
+            "roster_id": "field_1",
+            "area_key": "関西",
+            "valid_question": True,
+            "mode": "internal",
+            "device_class": "desktop",
+        },
+        {
+            "question_ts": now - timedelta(hours=1),
+            "question_date": (now - timedelta(hours=1)).date().isoformat(),
+            "roster_id": "field_1",
+            "area_key": "関西",
+            "valid_question": True,
+            "mode": "unknown",
+            "device_class": "unknown",
+            "record_origin": "firestore_history",
+        },
     ]
+    service = AnalyticsService(
+        analytics=_Analytics(rows),
+        pipeline=_Pipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    payload = service.overview(window=_window(now))
+
+    assert payload["modeDistribution"] == [
+        {"key": "internal", "label": "社内モード", "count": 1, "rate": 1.0}
+    ]
+    assert payload["deviceDistribution"] == [
+        {"key": "desktop", "label": "PC", "count": 1, "rate": 1.0}
+    ]
+    assert payload["modeMeasurement"] == {
+        "measuredCount": 1,
+        "totalCount": 2,
+        "measurementState": "partial",
+    }
+    assert payload["deviceMeasurement"] == {
+        "measuredCount": 1,
+        "totalCount": 2,
+        "measurementState": "partial",
+    }
+
+
+def test_single_day_overview_does_not_define_return_rate() -> None:
+    window = _single_day_window()
+    question_ts = datetime(2026, 8, 24, 1, 0, tzinfo=timezone.utc)
+    service = AnalyticsService(
+        analytics=_Analytics([{
+            "question_ts": question_ts,
+            "question_date": "2026-08-24",
+            "roster_id": "field_1",
+            "area_key": "関西",
+            "valid_question": True,
+        }]),
+        pipeline=_Pipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    assert service.overview(window=window)["kpis"]["returnRate"] is None
 
 
 def test_regions_display_toranomon_separately_without_a_location_dictionary() -> None:
@@ -243,6 +468,9 @@ def test_product_ranking_discloses_unresolved_governed_product_candidates() -> N
         "resolvedCount": 1,
         "unresolvedQuestions": 1,
         "resolutionRate": 0.5,
+        "measuredCount": 1,
+        "totalCount": 1,
+        "measurementState": "measured",
     }
 
 
@@ -262,7 +490,22 @@ def test_user_detail_uses_actual_last_seen_even_when_outside_selected_window() -
     assert payload["summary"]["questions"] == 0
 
 
-def test_peer_completion_average_discloses_partial_peer_coverage() -> None:
+def test_inactive_user_cannot_be_opened_through_direct_detail_route() -> None:
+    now = datetime.now(timezone.utc)
+    directory = _Directory()
+    directory.users[0]["is_active"] = False
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_Pipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+
+    with pytest.raises(KeyError, match="user not found"):
+        service.user_detail("field_1", window=_window(now))
+
+
+def test_peer_comparison_excludes_the_selected_user_and_discloses_coverage() -> None:
     roster = [
         {"roster_id": "one", "area": "関西"},
         {"roster_id": "two", "area": "関西"},
@@ -277,23 +520,66 @@ def test_peer_completion_average_discloses_partial_peer_coverage() -> None:
         },
     )
 
+    assert comparison["peerCount"] == 1
+    assert comparison["averageQuestions"] == 1.0
     assert comparison["averageCompleteDelivery"] == {
-        "value": 1.0,
-        "measuredCount": 1,
-        "totalCount": 2,
+        "value": None,
+        "measuredCount": 0,
+        "totalCount": 1,
+        "measurementState": "not_measured",
     }
 
 
-def test_activity_level_uses_one_japan_calendar_day_boundary() -> None:
+def test_activity_level_uses_distinct_japan_active_days_not_question_volume() -> None:
+    period_end = datetime(2026, 8, 24, 15, 0, tzinfo=timezone.utc)
+    same_day_questions = [
+        datetime(2026, 8, 24, 1, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 2, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 24, 3, 0, tzinfo=timezone.utc),
+    ]
+
+    assert _activity_level(
+        same_day_questions,
+        end=period_end,
+        timezone_name="Asia/Tokyo",
+    ) == "low"
+
+    six_active_days = [
+        period_end - timedelta(days=offset, hours=1)
+        for offset in range(6)
+    ]
+    assert _activity_level(
+        six_active_days,
+        end=period_end,
+        timezone_name="Asia/Tokyo",
+    ) == "high"
+
+
+@pytest.mark.parametrize(
+    ("active_day_offsets", "expected"),
+    [
+        ([], "dormant"),
+        ([0], "low"),
+        ([0, 1], "low"),
+        ([0, 1, 2], "middle"),
+        ([0, 1, 2, 3, 4], "middle"),
+        ([0, 1, 2, 3, 4, 5], "high"),
+        ([13], "low"),
+        ([14], "dormant"),
+    ],
+)
+def test_activity_level_covers_all_four_segments_and_the_fourteen_day_boundary(
+    active_day_offsets: list[int],
+    expected: str,
+) -> None:
     period_end = datetime(2026, 8, 24, 15, 0, tzinfo=timezone.utc)
     questions = [
-        datetime(2026, 8, 22, 15, 1, tzinfo=timezone.utc),
-        datetime(2026, 8, 23, 2, 0, tzinfo=timezone.utc),
-        datetime(2026, 8, 24, 14, 59, tzinfo=timezone.utc),
+        period_end - timedelta(days=offset, hours=1)
+        for offset in active_day_offsets
     ]
 
     assert _activity_level(
         questions,
         end=period_end,
         timezone_name="Asia/Tokyo",
-    ) == "high"
+    ) == expected

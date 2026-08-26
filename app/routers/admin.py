@@ -20,6 +20,7 @@ from app.contracts.admin import (
 )
 from app.dependencies import get_user_management_service
 from app.domain.management_errors import ManagementError
+from app.domain.analysis_scopes import Department, membership_for
 from app.security.auth import AdminIdentity, require_admin
 from app.services.user_management import UserManagementService
 
@@ -31,6 +32,9 @@ def _iso(value: Any) -> Any:
 
 
 def _user_payload(value: dict[str, Any]) -> dict[str, Any]:
+    membership = membership_for(
+        Department(value.get("department")), is_active=bool(value.get("is_active"))
+    )
     return {
         "rosterId": value.get("roster_id"),
         "name": value.get("name"),
@@ -47,6 +51,8 @@ def _user_payload(value: dict[str, Any]) -> dict[str, Any]:
             str(value.get("chat_user_id") or "").strip()
             or str(value.get("user_id") or "").strip()
         ),
+        "globalScopeEnabled": membership.global_enabled,
+        "userMapScopeEnabled": membership.user_map_enabled,
         "updatedAt": _iso(value.get("updated_at")),
         "updatedBy": value.get("updated_by") or "",
     }

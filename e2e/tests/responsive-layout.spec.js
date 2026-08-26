@@ -1,8 +1,11 @@
 const { test, expect } = require("@playwright/test");
-const { installApiMocks } = require("./fixtures");
+const { installApiMocks, makeAnalyticsUsers, makeManagedUsers } = require("./fixtures");
 
 test("overview and conversation journey stay usable on PC, iPad and mobile widths", async ({ page }) => {
-  await installApiMocks(page);
+  await installApiMocks(page, {
+    usersOverride: { users: makeAnalyticsUsers(80) },
+    managedUsersOverride: { users: makeManagedUsers(83) },
+  });
   for (const viewport of [
     { width: 1440, height: 960 },
     { width: 1024, height: 1366 },
@@ -12,6 +15,7 @@ test("overview and conversation journey stay usable on PC, iPad and mobile width
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { name: "全体サマリー" })).toBeVisible();
     await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
+    await expect(page.locator(".userCard")).toHaveCount(viewport.width <= 820 ? 6 : 15);
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
     ).toBeTruthy();
@@ -22,6 +26,18 @@ test("overview and conversation journey stay usable on PC, iPad and mobile width
   await expect(journey.locator(".conversationList")).toBeVisible();
   await journey.locator(".conversationItem").first().click();
   await expect(journey.locator(".messageList")).toContainText("製品の仕様を教えてください");
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+  ).toBeTruthy();
+
+  await page.goto("/dashboard?page=user");
+  await expect(page.locator(".userChoice")).toHaveCount(8);
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
+  ).toBeTruthy();
+
+  await page.goto("/dashboard?page=management");
+  await expect(page.locator(".managementCard")).toHaveCount(8);
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1),
   ).toBeTruthy();

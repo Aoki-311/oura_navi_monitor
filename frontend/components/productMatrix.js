@@ -9,10 +9,10 @@ export function renderProductMatrix(container, rows) {
     return;
   }
   const products = [...new Set(rows.map((row) => row.product))];
-  const categories = [...new Set(rows.map((row) => row.categoryLabel))];
+  const tasks = [...new Set(rows.map((row) => row.taskLabel))];
   const lookup = new Map();
   for (const row of rows) {
-    const key = `${row.product}\u0000${row.categoryLabel}`;
+    const key = `${row.product}\u0000${row.taskLabel}`;
     if (lookup.has(key)) {
       container.innerHTML = moduleMessage("製品マトリクスの重複データを確認してください。");
       return;
@@ -20,16 +20,16 @@ export function renderProductMatrix(container, rows) {
     lookup.set(key, Number(row.count));
   }
   const max = Math.max(1, ...lookup.values());
-  container.style.gridTemplateColumns = `minmax(130px,1.25fr) repeat(${categories.length},minmax(74px,1fr))`;
+  container.style.gridTemplateColumns = `minmax(130px,1.25fr) repeat(${tasks.length},minmax(74px,1fr))`;
   container.setAttribute("role", "table");
-  container.setAttribute("aria-label", "製品と質問タイプの件数マトリクス");
+  container.setAttribute("aria-label", "製品と依頼タスクの件数マトリクス");
   container.innerHTML = [
-    '<div class="matrixRow" role="row"><div class="matrixCorner" role="columnheader">製品 × 質問タイプ</div>',
-    ...categories.map((label) => `<div class="matrixHeader" role="columnheader">${escapeHtml(label)}</div>`),
+    '<div class="matrixRow" role="row"><div class="matrixCorner" role="columnheader">製品 × 依頼タスク</div>',
+    ...tasks.map((label) => `<div class="matrixHeader" role="columnheader">${escapeHtml(label)}</div>`),
     '</div>',
     ...products.map((product) => [
       `<div class="matrixRow" role="row"><div class="matrixProduct" role="rowheader">${escapeHtml(product)}</div>`,
-      ...categories.map((category) => {
+      ...tasks.map((category) => {
         const value = lookup.get(`${product}\u0000${category}`) ?? 0;
         const alpha = value ? .14 + .76 * value / max : .035;
         return `<div class="matrixCell" role="cell" style="--heat:${alpha}" title="${escapeHtml(product)} / ${escapeHtml(category)}: ${displayCount(value)}" aria-label="${escapeHtml(product)}、${escapeHtml(category)}、${displayCount(value)}件">${value || "-"}</div>`;

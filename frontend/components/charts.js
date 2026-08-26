@@ -3,10 +3,31 @@ import { escapeHtml, moduleMessage } from "./dom.js";
 const instances = new Map();
 
 const palette = Object.freeze({
-  blue: "#5b7cff", cyan: "#27d9d2", green: "#23d28f", amber: "#ffb340",
-  red: "#ff5b74", violet: "#8f72ff", slate: "#667596",
-  grid: "rgba(143, 165, 210, .15)", text: "#dce8ff",
+  blue: "#4f7cff", cyan: "#24b8ae", green: "#2db77c", amber: "#d99b3d",
+  red: "#d96b7a", violet: "#8b7be8", slate: "#64748b",
+  grid: "rgba(148, 163, 184, .14)", text: "#cbd5e1", muted: "#7f8da8",
 });
+
+const centerTotalPlugin = {
+  id: "ouraCenterTotal",
+  afterDraw(chartInstance) {
+    const { ctx, chartArea } = chartInstance;
+    if (!chartArea) return;
+    const total = chartInstance.data.datasets[0]?.data.reduce((sum, value) => sum + Number(value || 0), 0) || 0;
+    const x = (chartArea.left + chartArea.right) / 2;
+    const y = (chartArea.top + chartArea.bottom) / 2;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = palette.text;
+    ctx.font = "700 21px system-ui, sans-serif";
+    ctx.fillText(new Intl.NumberFormat("ja-JP").format(total), x, y - 7);
+    ctx.fillStyle = palette.muted;
+    ctx.font = "500 11px system-ui, sans-serif";
+    ctx.fillText("合計", x, y + 14);
+    ctx.restore();
+  },
+};
 
 function showChartMessage(canvas, message) {
   if (!canvas?.parentElement) return null;
@@ -74,7 +95,8 @@ export function doughnutChart(canvas, rows, { summary = "構成比の円グラ�
       labels: rows.map((row) => row.label),
       datasets: [{ data: rows.map((row) => row.count), backgroundColor: [palette.green, palette.blue, palette.amber, palette.slate, palette.violet, palette.cyan], borderWidth: 0 }],
     },
-    options: { responsive: true, maintainAspectRatio: false, cutout: "68%", plugins: baseOptions.plugins, animation: baseOptions.animation },
+    options: { responsive: true, maintainAspectRatio: false, cutout: "70%", plugins: baseOptions.plugins, animation: baseOptions.animation },
+    plugins: [centerTotalPlugin],
   }, { summary, headers: ["項目", "件数"], rows: rows.map((row) => [row.label, row.count]) });
 }
 
@@ -84,7 +106,7 @@ export function trendChart(canvas, rows) {
     data: {
       labels: rows.map((row) => row.date),
       datasets: [
-        { type: "bar", label: "質問数", data: rows.map((row) => row.questions), backgroundColor: "rgba(91,124,255,.78)", borderRadius: 6, yAxisID: "y" },
+        { type: "bar", label: "質問数", data: rows.map((row) => row.questions), backgroundColor: "rgba(79,124,255,.76)", borderRadius: 6, borderSkipped: false, yAxisID: "y" },
         { type: "line", label: "完全交付率", data: rows.map((row) => row.completeDelivery?.value == null ? null : row.completeDelivery.value * 100), borderColor: palette.cyan, backgroundColor: "rgba(39,217,210,.12)", tension: .34, pointRadius: 3, yAxisID: "y1" },
       ],
     },
@@ -106,7 +128,7 @@ export function usageTrendChart(canvas, rows) {
     data: {
       labels: rows.map((row) => row.date),
       datasets: [
-        { type: "bar", label: "質問数", data: rows.map((row) => row.questions), backgroundColor: "rgba(91,124,255,.75)", borderRadius: 6, yAxisID: "y" },
+        { type: "bar", label: "質問数", data: rows.map((row) => row.questions), backgroundColor: "rgba(79,124,255,.72)", borderRadius: 6, borderSkipped: false, yAxisID: "y" },
         { type: "line", label: "利用人数", data: rows.map((row) => row.activeUsers), borderColor: palette.cyan, tension: .3, pointRadius: 3, yAxisID: "y1" },
       ],
     },
