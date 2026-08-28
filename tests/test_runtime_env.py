@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,9 @@ def test_cloud_build_gates_the_candidate_with_browser_contract_and_immutable_dig
     assert "candidate-browser-contract" in cloudbuild
     assert "mcr.microsoft.com/playwright:v1.58.2-noble" in cloudbuild
     assert "npm ci --no-audit --no-fund && npm test" in cloudbuild
-    assert "image_summary.digest" in cloudbuild
+    assert "scripts/extract_docker_push_digest.sh" in cloudbuild
+    assert "image_summary.digest" not in cloudbuild
+    assert "gcloud artifacts docker images describe" not in cloudbuild
     assert "@$$\u007bdigest}" in cloudbuild
     assert "--no-traffic" in cloudbuild
     assert "--revision-suffix" in cloudbuild
@@ -40,6 +43,51 @@ def test_cloud_build_gates_the_candidate_with_browser_contract_and_immutable_dig
         assert allowed in dockerignore
     assert "**/credentials/**" in gcloudignore
     assert "**/*service-account*.json" in gcloudignore
+
+
+def test_docker_push_receipt_extracts_one_exact_commit_digest(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "extract_docker_push_digest.sh"
+    commit_sha = "a" * 40
+    digest = "sha256:" + "b" * 64
+    push_log = tmp_path / "push.log"
+    push_log.write_text(
+        f"layer: pushed\n{commit_sha}: digest: {digest} size: 2414\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["bash", str(script), commit_sha, str(push_log)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == digest
+
+
+def test_docker_push_receipt_rejects_missing_or_duplicate_digest(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "extract_docker_push_digest.sh"
+    commit_sha = "a" * 40
+    digest = "sha256:" + "b" * 64
+    push_log = tmp_path / "push.log"
+
+    for text in (
+        "push completed without a digest\n",
+        f"{commit_sha}: digest: {digest} size: 1\n"
+        f"{commit_sha}: digest: {digest} size: 1\n",
+    ):
+        push_log.write_text(text, encoding="utf-8")
+        result = subprocess.run(
+            ["bash", str(script), commit_sha, str(push_log)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2
 
 
 def test_trigger_preserves_the_existing_monitor_runtime_contract() -> None:

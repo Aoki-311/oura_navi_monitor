@@ -85,9 +85,17 @@ steps:
 
   - id: docker-push
     name: gcr.io/cloud-builders/docker
+    entrypoint: bash
     args:
-      - push
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA
+      - -lc
+      - |
+        set -euo pipefail
+        tagged_image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA"
+        push_log="/workspace/monitor-docker-push.log"
+        docker push "$${tagged_image}" 2>&1 | tee "$${push_log}"
+        digest="$$(./scripts/extract_docker_push_digest.sh "$COMMIT_SHA" "$${push_log}")"
+        immutable_image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}@$${digest}"
+        printf '%s\n' "$${immutable_image}" > /workspace/monitor-image-digest.txt
 
   - id: cloud-run-deploy
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
@@ -100,14 +108,11 @@ steps:
           echo 'A Git-backed SHORT_SHA is required for candidate provenance' >&2
           exit 2
         }
-        tagged_image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA"
-        digest="$(gcloud artifacts docker images describe "$${tagged_image}" --format='value(image_summary.digest)')"
-        [[ "$${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
-          echo 'Artifact Registry did not return one immutable sha256 digest' >&2
+        immutable_image="$$(cat /workspace/monitor-image-digest.txt)"
+        [[ "$${immutable_image}" =~ ^${_REGION}-docker\.pkg\.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}@sha256:[0-9a-f]{64}$ ]] || {
+          echo 'docker push receipt did not produce the expected immutable image URI' >&2
           exit 2
         }
-        immutable_image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}@$${digest}"
-        printf '%s\n' "$${immutable_image}" > /workspace/monitor-image-digest.txt
         gcloud run deploy "${_SERVICE_NAME}" \
           --image "$${immutable_image}" \
           --region "${_REGION}" \
