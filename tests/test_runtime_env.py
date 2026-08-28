@@ -42,16 +42,29 @@ def test_cloud_build_gates_the_candidate_with_browser_contract_and_immutable_dig
     assert "**/*service-account*.json" in gcloudignore
 
 
-def test_trigger_requires_distinct_build_and_web_runtime_identities() -> None:
+def test_trigger_preserves_the_existing_monitor_runtime_contract() -> None:
     root = Path(__file__).resolve().parents[1]
+    cloudbuild = (root / "cloudbuild.yaml").read_text(encoding="utf-8")
     trigger = (root / "scripts" / "create_github_trigger.sh").read_text(
         encoding="utf-8"
     )
 
     assert 'BUILD_SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT##*/}"' in trigger
-    assert "build/deploy and web runtime identities must be distinct" in trigger
     assert '--service-account="${SERVICE_ACCOUNT}"' in trigger
-    assert "_WEB_RUNTIME_SERVICE_ACCOUNT=${WEB_RUNTIME_SERVICE_ACCOUNT}" in trigger
+    assert "_WEB_RUNTIME_SERVICE_ACCOUNT" not in trigger
+    assert "required-web-reader@invalid.invalid" not in cloudbuild
+    assert (
+        "_RUNTIME_SERVICE_ACCOUNT: "
+        "lcs-agent@lcs-developer-483404.iam.gserviceaccount.com"
+    ) in cloudbuild
+
+
+def test_refresh_activation_separates_writer_from_scheduler_invoker() -> None:
+    root = Path(__file__).resolve().parents[1]
+    bootstrap = (root / "scripts" / "bootstrap_gcp.sh").read_text(encoding="utf-8")
+
+    assert "--web-runtime-service-account" not in bootstrap
+    assert "refresh writer and scheduler invoker identities must be distinct" in bootstrap
 
 
 def test_refresh_env_replaces_the_single_analytics_start_owner(tmp_path: Path) -> None:

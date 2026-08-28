@@ -52,8 +52,10 @@ parent 外保持不变，并在远端保存后重新读取验证。
   永久硬停止。
 - Refresh Job 单任务、单 writer、固定命令、30 分钟 timeout、一次 Job retry；Scheduler
   60 秒 attempt deadline、0 次 Scheduler retry，避免同一次时点被控制面重复触发。
-- Web runtime、Refresh writer、Scheduler invoker 必须为三个不同 service account；
-  Cloud Build 使用第四个构建/部署身份。
+- Monitor Web candidate 沿用并回读当前线上 runtime service account；代码 push 和自动
+  生成待审批 build 不以新建 Web IAM 或修改 trigger 为前置条件。
+- Refresh writer 与 Scheduler invoker 是后续数据切换的两个精确身份，激活前必须不同；
+  Cloud Build 使用 trigger 已配置的构建/部署身份。
 - Monitor Web candidate 与 Refresh Job 必须使用同一个完整 `@sha256` 镜像；Job、两个
   Scheduler、补数、激活和 DTS 暂停收据都绑定这个 digest 与精确身份。
 - 冻结不仅看应用 lease，还等待 Cloud Run Job execution 终态，并检查没有运行中的
@@ -72,7 +74,7 @@ parent 外保持不变，并在远端保存后重新读取验证。
 1. 本地代码验证；
 2. commit；
 3. push；
-4. IAM 身份创建和最小权限；
+4. 后续 Refresh writer / Scheduler invoker 如需新建或改权时的 IAM 变更；
 5. Cloud Build；
 6. additive BigQuery schema/函数；
 7. Monitor 无流量 candidate；
@@ -100,24 +102,26 @@ GOOGLE_APPLICATION_CREDENTIALS="<ABSOLUTE_APPROVED_KEY_JSON>" \
 所有脚本先不带 `--apply` 运行 plan，核对精确目标和确认串，再对同一参数单独授权
 apply。下列 `<...>` 必须来自本次只读 inventory，不允许猜。
 
-### A. 建立独立身份
+### A. 冻结现有发布身份与后续数据切换身份
 
-至少准备并分别授权：
+先从本次只读 inventory 固定：
 
-- `<WEB_RUNTIME_SA>`：Monitor Web 的 BigQuery 读取和受控 Firestore 管理权限；
+- `<MONITOR_RUNTIME_SA>`：当前 Monitor Web revision 实际使用的 runtime identity；候选
+  继续使用它，不能凭空换成新账号；
 - `<REFRESH_WRITER_SA>`：仅 Refresh Job 的 canonical BigQuery 写权限；
 - `<SCHEDULER_INVOKER_SA>`：只能调用精确 Refresh Job；
-- `<BUILD_DEPLOY_SA>`：Cloud Build 构建与部署；
+- `<BUILD_DEPLOY_SA>`：从现有 GitHub trigger 读回的 Cloud Build 构建与部署身份；
 - `<OLD_SCHEDULER_SA>`、`<DTS_WRITER_SA>`：从旧资源只读 inventory 得到，不改名猜测。
 
-三个运行身份必须不同。任一身份不存在、角色过宽、Job 不能被精确调用或 Web 无法读取时
-停止。创建账号和 IAM binding 是云端写操作，必须单独批准。
+commit/push 和由 trigger 自动生成待审批 build 不要求先创建 IAM，也不修改 trigger。
+只有进入 Refresh Job / Scheduler 激活时，才要求 writer 与 invoker 不同且权限精确；若
+现有身份不能满足，创建账号和 IAM binding 是另一项云写操作，必须单独批准。
 
 ### B. 提交并构建 Monitor 无流量候选
 
 正式构建必须来自 clean Git commit，使用完整 40 位 SHA。`cloudbuild.yaml` 会运行 Python
 全量、Shell、JS、Docker 内浏览器 E2E，推送完整 SHA tag，解析 digest，以
-`<WEB_RUNTIME_SA>` 创建 `candidate` tag 且 `--no-traffic`，随后回读 revision、digest、
+`<MONITOR_RUNTIME_SA>` 创建 `candidate` tag 且 `--no-traffic`，随后回读 revision、digest、
 Git SHA、Ready、身份和 0% 流量。
 
 先只发布 additive base/source/fact/schema 和两个正式 table function。不要运行
@@ -173,7 +177,6 @@ apply 时再加入 plan 输出的 `--confirm-cutover` 和 `--apply`。脚本暂�
   --stage activate \
   --project "<PROJECT_ID>" \
   --region "<REGION>" \
-  --web-runtime-service-account "<WEB_RUNTIME_SA>" \
   --runtime-service-account "<REFRESH_WRITER_SA>" \
   --scheduler-invoker-service-account "<SCHEDULER_INVOKER_SA>" \
   --image "<EXACT_MONITOR_IMAGE_AT_SHA256>" \
@@ -233,7 +236,7 @@ Monitor 流量只能通过精确候选门执行：
   --revision "<EXACT_CANDIDATE_REVISION>" \
   --expected-image "<EXACT_MONITOR_IMAGE_AT_SHA256>" \
   --expected-git-sha "<FULL_40_CHARACTER_GIT_SHA>" \
-  --expected-service-account "<WEB_RUNTIME_SA>" \
+  --expected-service-account "<MONITOR_RUNTIME_SA>" \
   --acceptance-receipt "<ABSOLUTE_ACCEPTANCE_RECEIPT_JSON>" \
   --snapshot-output "<ABSOLUTE_PROMOTION_SNAPSHOT_JSON>"
 ```
@@ -346,7 +349,9 @@ Job/Scheduler/digest/身份没变且水位继续新鲜。
 
 ## 6. STOP 条件
 
-- 当前 live IAM 仍只有共享 `lcs-agent`，三个独立运行身份未建好：停止部署。
+- candidate 的 runtime identity 与冻结的当前 Monitor runtime 不一致：停止候选部署。
+- Refresh writer 与 Scheduler invoker 缺失、相同或权限不精确：停止 Job/Scheduler 激活，
+  但这不阻止 main push 自动生成待审批 source build。
 - 真实 Job、Scheduler、DTS、image digest、SHA、service account 与计划不一致：停止并
   重新 inventory。
 - 任一 Scheduler 未暂停、任一 Job execution/BQ DML 仍在运行：不部署 Job、不补数。

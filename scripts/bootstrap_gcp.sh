@@ -19,7 +19,6 @@ SCHEDULER_ATTEMPT_DEADLINE_SECONDS="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from 
 SCHEDULER_MAX_RETRY_ATTEMPTS="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_max_retry_attempts)')"
 JOB_TIMEOUT_MINUTES="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_timeout_minutes)')"
 RUNTIME_SERVICE_ACCOUNT=""
-WEB_RUNTIME_SERVICE_ACCOUNT=""
 SCHEDULER_INVOKER_SERVICE_ACCOUNT=""
 IMAGE=""
 ANALYTICS_START_AT=""
@@ -37,7 +36,6 @@ while [[ $# -gt 0 ]]; do
     --location) LOCATION="$2"; shift 2 ;;
     --source-service) SOURCE_SERVICE="$2"; shift 2 ;;
     --runtime-service-account) RUNTIME_SERVICE_ACCOUNT="$2"; shift 2 ;;
-    --web-runtime-service-account) WEB_RUNTIME_SERVICE_ACCOUNT="$2"; shift 2 ;;
     --scheduler-invoker-service-account) SCHEDULER_INVOKER_SERVICE_ACCOUNT="$2"; shift 2 ;;
     --image) IMAGE="$2"; shift 2 ;;
     --analytics-start-at) ANALYTICS_START_AT="$2"; shift 2 ;;
@@ -52,18 +50,16 @@ done
 [[ -n "${PROJECT_ID}" ]] || { echo "--project is required" >&2; exit 2; }
 [[ "${STAGE}" == "prepare" || "${STAGE}" == "activate" ]] || { echo "--stage must be prepare or activate" >&2; exit 2; }
 if [[ "${STAGE}" == "activate" ]]; then
-  [[ -n "${RUNTIME_SERVICE_ACCOUNT}" && -n "${WEB_RUNTIME_SERVICE_ACCOUNT}" && -n "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" && -n "${IMAGE}" && -n "${ANALYTICS_START_AT}" ]] || {
-    echo "activate requires distinct web, refresh-writer and scheduler-invoker service accounts, plus --image and --analytics-start-at" >&2; exit 2;
+  [[ -n "${RUNTIME_SERVICE_ACCOUNT}" && -n "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" && -n "${IMAGE}" && -n "${ANALYTICS_START_AT}" ]] || {
+    echo "activate requires refresh-writer and scheduler-invoker service accounts, plus --image and --analytics-start-at" >&2; exit 2;
   }
-  for service_account in "${RUNTIME_SERVICE_ACCOUNT}" "${WEB_RUNTIME_SERVICE_ACCOUNT}" "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}"; do
+  for service_account in "${RUNTIME_SERVICE_ACCOUNT}" "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}"; do
     [[ "${service_account}" =~ ^[a-z0-9-]+@${PROJECT_ID}\.iam\.gserviceaccount\.com$ ]] || {
       echo "every runtime identity must be one exact service account in ${PROJECT_ID}" >&2; exit 2;
     }
   done
-  [[ "${RUNTIME_SERVICE_ACCOUNT}" != "${WEB_RUNTIME_SERVICE_ACCOUNT}" \
-    && "${RUNTIME_SERVICE_ACCOUNT}" != "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" \
-    && "${WEB_RUNTIME_SERVICE_ACCOUNT}" != "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" ]] || {
-    echo "web, refresh writer and scheduler invoker identities must be distinct" >&2; exit 2;
+  [[ "${RUNTIME_SERVICE_ACCOUNT}" != "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" ]] || {
+    echo "refresh writer and scheduler invoker identities must be distinct" >&2; exit 2;
   }
   [[ "${IMAGE}" =~ ^${REGION}-docker\.pkg\.dev/${PROJECT_ID}/[^/@]+/[^/@]+@sha256:[0-9a-f]{64}$ ]] || {
     echo "activate --image must be an immutable Artifact Registry digest in the selected project and region" >&2

@@ -10,8 +10,8 @@ steps:
           echo 'A full Git COMMIT_SHA is required for candidate provenance' >&2
           exit 2
         }
-        [[ "${_WEB_RUNTIME_SERVICE_ACCOUNT}" =~ ^[a-z0-9-]+@${PROJECT_ID}\.iam\.gserviceaccount\.com$ ]] || {
-          echo 'A dedicated web-reader runtime service account is required' >&2
+        [[ "${_RUNTIME_SERVICE_ACCOUNT}" =~ ^[a-z0-9-]+@${PROJECT_ID}\.iam\.gserviceaccount\.com$ ]] || {
+          echo 'A configured Monitor runtime service account is required' >&2
           exit 2
         }
         test -f deploy/cloudrun.env.yaml
@@ -112,7 +112,7 @@ steps:
           --image "$${immutable_image}" \
           --region "${_REGION}" \
           --platform managed \
-          --service-account "${_WEB_RUNTIME_SERVICE_ACCOUNT}" \
+          --service-account "${_RUNTIME_SERVICE_ACCOUNT}" \
           --no-allow-unauthenticated \
           --no-traffic \
           --tag candidate \
@@ -139,7 +139,7 @@ steps:
         revision_json="$$(gcloud run revisions describe "$${revision}" --region "${_REGION}" --format=json)"
         SERVICE_JSON="$${service_json}" REVISION_JSON="$${revision_json}" \
         IMMUTABLE_IMAGE="$${immutable_image}" EXPECTED_REVISION="$${revision}" \
-        EXPECTED_SERVICE_ACCOUNT="${_WEB_RUNTIME_SERVICE_ACCOUNT}" \
+        EXPECTED_SERVICE_ACCOUNT="${_RUNTIME_SERVICE_ACCOUNT}" \
         EXPECTED_GIT_SHA="${COMMIT_SHA}" python3 - <<'PY'
         import json
         import os
@@ -174,7 +174,7 @@ steps:
 substitutions:
   _SERVICE_NAME: oura-navi-monitor
   _REGION: us-central1
-  _WEB_RUNTIME_SERVICE_ACCOUNT: required-web-reader@invalid.invalid
+  _RUNTIME_SERVICE_ACCOUNT: lcs-agent@lcs-developer-483404.iam.gserviceaccount.com
 
 timeout: 1800s
 

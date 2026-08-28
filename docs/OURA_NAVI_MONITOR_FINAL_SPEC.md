@@ -8,10 +8,11 @@
 `v3`、`legacy`、`shadow`、`backup` 或兼容 dashboard。LCS 已公开的
 `/v3/ask/stream` 是上游业务路由，不属于 Monitor 版本命名。
 
-当前结论是 **本地候选正在最终验证，生产尚未完成**。代码已经收敛到一个三小时刷新
+当前结论是 **代码已进入 main 修复闭环，生产尚未完成**。代码已经收敛到一个三小时刷新
 owner，并补齐晚到事件、逐事件去向、质量失败诊断、冻结/补数/激活/DTS 暂停收据和
-页面失败提示。当前工作树尚未 commit/push；IAM、Cloud Build、部署、补数、Scheduler、
-DTS、IAP、业务验收和流量均未在本轮执行。线上状态只能用对应云端 readback 证明。
+页面失败提示。main push 会由现有 GitHub trigger 自动生成待审批 build；不需要先创建
+Web IAM、修改 trigger 或手动重触发。部署、补数、Scheduler、DTS、IAP、业务验收和流量
+仍必须由对应云端 readback 单独证明。
 
 ## 1. 最终目标
 
@@ -54,7 +55,7 @@ OurA Navi Monitor 是 LCS RAG APP 的用户数据分析平台，不是工程告�
 | 质量失败把诊断和事实一起回滚 | 事实事务回滚后，独立持久化本次质量结果和 typed failed run；旧成功数据继续可读 |
 | 页面只看上次成功，最新失败被隐藏 | API 同时返回 published run 与 latest run，三页共享 banner 说明“最新失败、当前显示上次成功” |
 | 15 分钟 Scheduler、旧 DTS 和手工补数可同时写 | 冻结 execution/BigQuery DML、固定目标补数、不可变 receipt、三次 Scheduler provenance 后才暂停 DTS |
-| Web、Refresh、Scheduler 共用一个账号，无法证明唯一 writer | Web runtime、Refresh writer、Scheduler invoker 必须三个独立身份，构建身份另算 |
+| 发布身份被误当成 source build 前置条件 | Monitor candidate 保持当前 runtime identity；Refresh writer 与 Scheduler invoker 只在后续数据激活时分离并验证 |
 
 ## 3. 唯一责任模块
 
@@ -282,11 +283,12 @@ owner；这些旧对象在依赖、流量和观察期完成前仍物理保留，
 
 2026-08-29 再次只读核对：两个正式语义入口均已经是同名 table-valued function；当前
 只存在旧 `oura-navi-monitor-refresh-quarter-hour`，状态 ENABLED、日程 `*/15`、时区
-Asia/Tokyo、30 秒 deadline，调用身份仍为共享 `lcs-agent`。新的三小时 Scheduler 和三个
-独立运行身份尚不存在。当前 Monitor Web、Refresh Job 与 LCS Web 也仍使用共享
-`lcs-agent`；Monitor Web 与 Refresh Job 的镜像 digest 不一致。`pipeline_state` 线上结构
-仍未包含本次 additive lease 字段，published 水位为 2026-08-27 00:57:05 UTC。因此当前
-云端必须保持 STOP，不能把本地代码状态解释为已经切换。
+Asia/Tokyo、30 秒 deadline，调用身份仍为共享 `lcs-agent`。新的三小时 Scheduler 尚未
+创建；Refresh writer 与 Scheduler invoker 的最终身份合同也尚未激活。当前 Monitor Web、
+Refresh Job 与 LCS Web 仍使用共享 `lcs-agent`，且 Monitor Web 与 Refresh Job 的镜像
+digest 不一致。`pipeline_state` 线上结构仍未包含本次 additive lease 字段，published
+水位为 2026-08-27 00:57:05 UTC。因此数据切换必须保持 STOP；但 main push 和由现有
+trigger 自动生成待审批 source build 不受这个后续激活门阻塞。
 
 ## 10. 正式 API
 

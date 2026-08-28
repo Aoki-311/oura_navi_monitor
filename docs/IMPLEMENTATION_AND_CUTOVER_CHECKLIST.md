@@ -65,7 +65,8 @@
 - [x] 3 小时 timing 只有 `app/refresh_policy.py` 一个 owner，Scheduler retry 为 0。
 - [x] freeze 等待 Cloud Run execution 与 BigQuery DML；补数绑定固定目标和逐项对账。
 - [x] activation、backfill、DTS pause/45 分钟/72 小时验证均产生不可覆盖 receipt。
-- [x] Web、Refresh writer、Scheduler invoker 三身份硬分离；镜像必须是同一 digest。
+- [x] Monitor candidate 保持当前 runtime identity；Refresh writer 与 Scheduler invoker
+  在数据切换时分离；Monitor 与 Job 镜像必须是同一 digest。
 - [x] additive table functions 与 destructive cleanup 分开；旧对象删除 apply 永久硬停止。
 - [x] Monitor 与 LCS 均有精确 candidate promotion 门、验收收据、切流前快照和 100% 读回。
 
@@ -184,7 +185,10 @@ log metrics 和 policy。未来删除必须另做保留期、依赖、回滚和�
 
 - [x] 重新只读 inventory 并保存对象类型、生产 revision/image/SHA。
 - [x] 运行最终 history plan，人工核对数量并固定只读确认串。
-- [ ] 建立 Web runtime、Refresh writer、Scheduler invoker 三个独立身份并完成最小 IAM。
+- [x] 冻结当前 Monitor runtime 与 GitHub trigger build identity；push 自动生成待审批 build，
+  不以新建 IAM 或修改 trigger 为前置条件。
+- [ ] 激活数据链前确认不同的 Refresh writer 与 Scheduler invoker；如需新建或改权，另行
+  完成最小 IAM 授权。
 - [ ] 获得 BigQuery/Logging/Firestore 写入授权。
 - [x] canonical facts、state、source view 和两个参数化语义函数在线存在。
 - [ ] 用最新确认串追平 8/26 的 15/15 差额并逐 event ID 验证。
@@ -229,7 +233,8 @@ git diff --check
   正确性，但应作为后续性能维护项。
 
 本仓库没有独立的 TypeScript/mypy/ruff/eslint 配置；没有擅自安装第二套工具。
-Cloud Build/Docker build 未获本次授权，本轮没有执行。
+本轮不手工创建、重触发或批准 Cloud Build。获准的 main push 会由现有 GitHub trigger
+自动生成新的待审批 build；build 执行和后续 candidate/traffic 仍分别以云端状态为准。
 
 ## 9. 发布状态矩阵
 
@@ -238,8 +243,8 @@ Cloud Build/Docker build 未获本次授权，本轮没有执行。
 | 本地代码 | `local validated`：当前两个 repair worktree 已通过本轮完整本地门禁 |
 | Git commit | 已获授权；精确 SHA 以仓库历史和本次交付记录为准 |
 | Git push | 已获授权；远端状态以 `origin/main` 回读为准 |
-| Build | 未执行 |
-| IAM | 新的三个独立运行身份尚不存在；当前 live 仍依赖共享 `lcs-agent`，因此 STOP |
+| Build | `31a8abb` 自动 build 因无效 runtime 占位值在 precheck 失败；修复 push 后由现有 trigger 自动生成新待审批 build |
+| IAM | source build 不需要新 IAM；Job/Scheduler 身份与权限仍是后续激活门，未执行 |
 | Cloud Run candidate | 本轮未创建 |
 | Monitor 登录验收 | 未执行 |
 | Monitor 业务验收 | 未执行 |
