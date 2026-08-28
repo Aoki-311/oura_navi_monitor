@@ -1,4 +1,4 @@
-import { coverageModel, measurementModel } from "./overviewAdapter.js";
+import { analyticsQualityModel, coverageModel, freshnessModel, measurementModel } from "./overviewAdapter.js";
 
 const ACTIVITY_KEYS = new Set(["high", "middle", "low", "dormant"]);
 
@@ -28,6 +28,11 @@ function requiredNumber(value, key, { nullable = false, integer = false } = {}) 
   return value;
 }
 
+function requiredBoolean(value, key) {
+  if (typeof value !== "boolean") throw new Error(`${key}を確認できません。`);
+  return value;
+}
+
 function labels(value) {
   if (!Array.isArray(value)) return [];
   return value.flatMap((row) => {
@@ -41,6 +46,7 @@ function labels(value) {
 
 export function usersModel(payload) {
   if (!payload || !Array.isArray(payload.users) || !Number.isInteger(payload.scopeUserCount) || payload.scopeUserCount < 0) throw new Error("ユーザーデータの形式が不正です。");
+  const freshness = freshnessModel(payload.freshness);
   const issues = [];
   const users = payload.users.flatMap((row, index) => {
     try {
@@ -72,12 +78,12 @@ export function usersModel(payload) {
       return [];
     }
   });
-  return { scopeUserCount: payload.scopeUserCount, freshness: payload.freshness, users, issues };
+  return { scopeUserCount: payload.scopeUserCount, freshness, users, issues };
 }
 
 export function userDetailEnvelope(payload) {
-  if (!payload || !payload.freshness || !["fresh", "stale", "unknown"].includes(payload.freshness.state)) throw new Error("ユーザー分析データの形式が不正です。");
-  return payload;
+  if (!payload) throw new Error("ユーザー分析データの形式が不正です。");
+  return { ...payload, freshness: freshnessModel(payload.freshness), analyticsQuality: analyticsQualityModel(payload.analyticsQuality) };
 }
 
 export function userProfileModel(payload) {
@@ -126,6 +132,7 @@ export function userTrendModel(payload) {
     date: requiredText(row?.date, "日付"),
     questions: requiredNumber(row?.questions, "質問数", { integer: true }),
     completeDelivery: measurementModel(row?.completeDelivery),
+    isPartial: requiredBoolean(row?.isPartial, "個人利用推移の途中集計状態"),
   }));
 }
 

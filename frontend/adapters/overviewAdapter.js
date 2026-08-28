@@ -14,6 +14,11 @@ function requiredCount(value, label) {
   return value;
 }
 
+function requiredBoolean(value, label) {
+  if (typeof value !== "boolean") throw new Error(`${label}を確認できません。`);
+  return value;
+}
+
 function nullableNumber(value, label) {
   if (value == null) return null;
   if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${label}の数値を確認できません。`);
@@ -50,19 +55,77 @@ export function coverageModel(value, label = "計測範囲") {
   return { measuredCount, totalCount, measurementState: expectedState };
 }
 
+export function freshnessModel(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("データ更新情報を確認できません。");
+  if (!["fresh", "stale", "unknown"].includes(value.state) || typeof value.dataThrough !== "string") throw new Error("データ更新情報を確認できません。");
+  const refreshCadenceMinutes = requiredCount(value.refreshCadenceMinutes, "更新間隔");
+  const expectedDelayMinutes = requiredCount(value.expectedDelayMinutes, "処理待ち時間");
+  const staleAfterMinutes = requiredCount(value.staleAfterMinutes, "更新遅延判定");
+  if (!refreshCadenceMinutes || staleAfterMinutes < refreshCadenceMinutes || typeof value.nextPlannedRefreshAt !== "string" || !value.nextPlannedRefreshAt.trim()) throw new Error("データ更新方針を確認できません。");
+  return { state: value.state, dataThrough: value.dataThrough, refreshCadenceMinutes, expectedDelayMinutes, staleAfterMinutes, nextPlannedRefreshAt: value.nextPlannedRefreshAt };
+}
+
+export function analyticsQualityModel(value) {
+  if (!value || value.contractVersion !== "dashboard_events_v2") throw new Error("分析品質情報を確認できません。");
+  const isolatedEventCount = requiredCount(value.isolatedEventCount, "隔離イベント");
+  const totalEventCount = requiredCount(value.totalEventCount, "分析対象イベント");
+  if (isolatedEventCount > totalEventCount) throw new Error("分析品質の件数が一致しません。");
+  const axis = (key, label) => {
+    const coverage = coverageModel(value[key], label);
+    const isolatedCount = requiredCount(value[key]?.isolatedCount, `${label}の隔離`);
+    if (isolatedCount !== coverage.totalCount - coverage.measuredCount) throw new Error(`${label}の隔離件数が一致しません。`);
+    return { ...coverage, isolatedCount };
+  };
+  const source = requiredObject(value, "sourcePipeline", "取込品質");
+  if (!["clean", "degraded", "blocked", "unknown"].includes(source.state) || typeof source.publishedRunId !== "string") throw new Error("取込品質の状態を確認できません。");
+  for (const key of ["latestRunId", "latestRunStatus", "latestRunErrorCode", "latestRunFinishedAt"]) {
+    if (typeof source[key] !== "string") throw new Error("最新更新の状態を確認できません。");
+  }
+  if (source.latestRunStatus && !["running", "succeeded", "failed"].includes(source.latestRunStatus)) throw new Error("最新更新の状態を確認できません。");
+  const sourcePipeline = {
+    publishedRunId: source.publishedRunId,
+    latestRunId: source.latestRunId,
+    latestRunStatus: source.latestRunStatus,
+    latestRunErrorCode: source.latestRunErrorCode,
+    latestRunFinishedAt: source.latestRunFinishedAt,
+    state: source.state,
+    quarantinedEventCount: requiredCount(source.quarantinedEventCount, "取込隔離イベント"),
+    deduplicatedDeliveryCount: requiredCount(source.deduplicatedDeliveryCount, "重複配信"),
+    repairedDuplicateFactCount: requiredCount(source.repairedDuplicateFactCount, "重複ファクト修復"),
+    axisUnmeasuredFindingCount: requiredCount(source.axisUnmeasuredFindingCount, "分析軸未計測"),
+    batchBlockingFailureCount: requiredCount(source.batchBlockingFailureCount, "公開停止エラー"),
+  };
+  const expectedSourceState = sourcePipeline.latestRunStatus === "failed"
+    ? "blocked"
+    : !sourcePipeline.publishedRunId
+      ? "unknown"
+      : sourcePipeline.quarantinedEventCount > 0 || sourcePipeline.axisUnmeasuredFindingCount > 0
+        ? "degraded"
+        : "clean";
+  if (sourcePipeline.state !== expectedSourceState) throw new Error("取込品質の状態と件数が一致しません。");
+  return {
+    contractVersion: value.contractVersion,
+    isolatedEventCount,
+    totalEventCount,
+    classification: axis("classification", "分類品質"),
+    task: axis("task", "質問種類品質"),
+    product: axis("product", "製品品質"),
+    sourcePipeline,
+  };
+}
+
 function envelope(payload, scope) {
   if (!payload || (scope && payload.scope !== scope)) throw new Error("分析データの形式が不正です。");
-  const freshness = requiredObject(payload, "freshness", "データ更新情報");
-  if (!["fresh", "stale", "unknown"].includes(freshness.state) || typeof freshness.dataThrough !== "string") throw new Error("データ更新情報を確認できません。");
-  return payload;
+  return { ...payload, freshness: freshnessModel(requiredObject(payload, "freshness", "データ更新情報")) };
 }
 
 export function overviewEnvelope(payload) {
-  envelope(payload, "global");
+  const normalized = envelope(payload, "global");
   return {
     payload,
     scopeUserCount: requiredCount(payload.scopeUserCount, "全体対象者"),
-    freshness: payload.freshness,
+    freshness: normalized.freshness,
+    analyticsQuality: analyticsQualityModel(payload.analyticsQuality),
   };
 }
 
@@ -104,6 +167,7 @@ export function usageTrendModel(payload) {
     date: String(row?.date || ""),
     activeUsers: requiredCount(row?.activeUsers, "利用推移"),
     questions: requiredCount(row?.questions, "利用推移"),
+    isPartial: requiredBoolean(row?.isPartial, "利用推移の途中集計状態"),
   }));
 }
 
@@ -139,7 +203,7 @@ export function productsModel(payload) {
 }
 
 export function regionsModel(payload) {
-  envelope(payload);
+  const normalized = envelope(payload);
   if (!Number.isInteger(payload.scopeUserCount) || payload.scopeUserCount < 0 || !Array.isArray(payload.regions)) throw new Error("地域データの形式が不正です。");
   const issues = [];
   const regions = payload.regions.flatMap((row, index) => {
@@ -160,5 +224,5 @@ export function regionsModel(payload) {
       return [];
     }
   });
-  return { scopeUserCount: payload.scopeUserCount, freshness: payload.freshness, regions, issues };
+  return { scopeUserCount: payload.scopeUserCount, freshness: normalized.freshness, regions, issues };
 }

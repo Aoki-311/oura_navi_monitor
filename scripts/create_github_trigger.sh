@@ -8,6 +8,7 @@ REPO_OWNER="Aoki-311"
 REPO_NAME="oura_navi_monitor"
 BRANCH_PATTERN="^main$"
 SERVICE_ACCOUNT=""
+WEB_RUNTIME_SERVICE_ACCOUNT=""
 APPLY="false"
 
 while [[ $# -gt 0 ]]; do
@@ -19,21 +20,36 @@ while [[ $# -gt 0 ]]; do
     --repo-name) REPO_NAME="$2"; shift 2 ;;
     --branch-pattern) BRANCH_PATTERN="$2"; shift 2 ;;
     --service-account) SERVICE_ACCOUNT="$2"; shift 2 ;;
+    --web-runtime-service-account) WEB_RUNTIME_SERVICE_ACCOUNT="$2"; shift 2 ;;
     --apply) APPLY="true"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
-[[ -n "${PROJECT_ID}" && -n "${SERVICE_ACCOUNT}" ]] || {
-  echo "--project and exact --service-account are required" >&2
+[[ -n "${PROJECT_ID}" && -n "${SERVICE_ACCOUNT}" && -n "${WEB_RUNTIME_SERVICE_ACCOUNT}" ]] || {
+  echo "--project, exact build --service-account and --web-runtime-service-account are required" >&2
+  exit 2
+}
+BUILD_SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT##*/}"
+[[ "${BUILD_SERVICE_ACCOUNT_EMAIL}" =~ ^[a-z0-9-]+@${PROJECT_ID}\.iam\.gserviceaccount\.com$ ]] || {
+  echo "--service-account must identify one exact build identity in the selected project" >&2
+  exit 2
+}
+[[ "${WEB_RUNTIME_SERVICE_ACCOUNT}" =~ ^[a-z0-9-]+@${PROJECT_ID}\.iam\.gserviceaccount\.com$ ]] || {
+  echo "--web-runtime-service-account must be an exact identity in the selected project" >&2
+  exit 2
+}
+[[ "${BUILD_SERVICE_ACCOUNT_EMAIL}" != "${WEB_RUNTIME_SERVICE_ACCOUNT}" ]] || {
+  echo "build/deploy and web runtime identities must be distinct" >&2
   exit 2
 }
 
-INCLUDED_FILES="app/**,frontend/**,deploy/**,scripts/**,sql/**,tests/**,e2e/**,Dockerfile,requirements.txt,requirements-dev.txt,cloudbuild.yaml,.env.example"
+INCLUDED_FILES="app/**,frontend/**,deploy/**,scripts/**,sql/**,tests/**,e2e/**,Dockerfile,.dockerignore,.gcloudignore,requirements.txt,requirements-dev.txt,cloudbuild.yaml,.env.example"
 IGNORED_FILES="**/.venv/**,**/__pycache__/**,**/*.pyc,**/.DS_Store,docs/**,**/*.md"
 echo "mode=$([[ "${APPLY}" == "true" ]] && echo apply || echo plan)"
 echo "project=${PROJECT_ID} region=${TRIGGER_REGION} trigger=${TRIGGER_NAME}"
 echo "repo=${REPO_OWNER}/${REPO_NAME} branch=${BRANCH_PATTERN} service_account=${SERVICE_ACCOUNT}"
+echo "web_runtime_service_account=${WEB_RUNTIME_SERVICE_ACCOUNT}"
 if [[ "${APPLY}" != "true" ]]; then
   exit 0
 fi
@@ -63,6 +79,7 @@ common_args=(
   --included-files="${INCLUDED_FILES}"
   --ignored-files="${IGNORED_FILES}"
   --service-account="${SERVICE_ACCOUNT}"
+  --substitutions="_WEB_RUNTIME_SERVICE_ACCOUNT=${WEB_RUNTIME_SERVICE_ACCOUNT}"
   --include-logs-with-status
   --require-approval
 )

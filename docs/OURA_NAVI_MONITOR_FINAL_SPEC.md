@@ -1,6 +1,6 @@
 # OurA Navi Monitor 最终产品与数据规范
 
-更新日：2026-08-26
+更新日：2026-08-29
 
 ## 0. 文档地位与当前结论
 
@@ -8,10 +8,10 @@
 `v3`、`legacy`、`shadow`、`backup` 或兼容 dashboard。LCS 已公开的
 `/v3/ask/stream` 是上游业务路由，不属于 Monitor 版本命名。
 
-当前结论是 **尚未完成**：本地三页、业务合同、响应式、全量门禁与真实数据只读链路
-已经通过。Git commit/push 只发布源码，不代表 Cloud Build、部署、IAP 登录验收、
-业务验收、BigQuery/Firestore/Logging 写入或流量切换已经完成；线上运行状态必须使用
-对应 revision 和真实页面另行验收。
+当前结论是 **本地候选正在最终验证，生产尚未完成**。代码已经收敛到一个三小时刷新
+owner，并补齐晚到事件、逐事件去向、质量失败诊断、冻结/补数/激活/DTS 暂停收据和
+页面失败提示。当前工作树尚未 commit/push；IAM、Cloud Build、部署、补数、Scheduler、
+DTS、IAP、业务验收和流量均未在本轮执行。线上状态只能用对应云端 readback 证明。
 
 ## 1. 最终目标
 
@@ -49,6 +49,12 @@ OurA Navi Monitor 是 LCS RAG APP 的用户数据分析平台，不是工程告�
 | 坏会话没有时间时用当前时间补齐 | `ProjectionDataError` 明确排除并计数，绝不制造使用日期 |
 | 旧成功率语义错误，且历史只明确记录失败会制造偏置 0% | 旧 `answer_success_flag` 不迁移；只有完整、可比较测量 profile 进入成功率分母 |
 | `user_daily`、snapshot 和 mega view 会互相漂移 | 事实表 + 一个 `dashboard_events(start,end)` + 一个 `dashboard_user_list(start,today)` |
+| 晚到事件按到达时间取源、按业务时间写分区，去重/补充/质量范围互相错开 | 每个 run 以实际事件 ID 和有效业务分区为唯一处理集合，重跑仍只有一份事实 |
+| 坏记录只有总数，水位前进后无法知道去哪了 | `pipeline_run_event_manifest` + `pipeline_event_issues` 保存哈希化逐事件 disposition、原因和解决状态 |
+| 质量失败把诊断和事实一起回滚 | 事实事务回滚后，独立持久化本次质量结果和 typed failed run；旧成功数据继续可读 |
+| 页面只看上次成功，最新失败被隐藏 | API 同时返回 published run 与 latest run，三页共享 banner 说明“最新失败、当前显示上次成功” |
+| 15 分钟 Scheduler、旧 DTS 和手工补数可同时写 | 冻结 execution/BigQuery DML、固定目标补数、不可变 receipt、三次 Scheduler provenance 后才暂停 DTS |
+| Web、Refresh、Scheduler 共用一个账号，无法证明唯一 writer | Web runtime、Refresh writer、Scheduler invoker 必须三个独立身份，构建身份另算 |
 
 ## 3. 唯一责任模块
 
@@ -61,7 +67,10 @@ OurA Navi Monitor 是 LCS RAG APP 的用户数据分析平台，不是工程告�
 | 历史 Firestore 读取 | `FirestoreChatReader` | 每个会话再查询一次 messages |
 | 会话/引用投影 | `app/jobs/project_firestore.py` | 用当前时间、正文关键词或第二份地区表补值 |
 | 一次性历史合并 | `app/jobs/rebuild_history.py` + `sql/merge_history.sql` | 长期双读旧表 |
-| 增量发布与水位 | `app/jobs/refresh_analytics.py` | DTS 全量重建、第二个 scheduler |
+| 增量发布与水位 | `app/jobs/refresh_analytics.py` | DTS 全量重建、两个同时启用或永久并存的 scheduler |
+| 源事件逐项去向 | `pipeline_run_event_manifest` + `pipeline_event_issues` | 只有批次总数、丢弃后无重放线索 |
+| 质量账与最新运行状态 | `pipeline_quality_events` + `pipeline_runs` | 失败时回滚诊断、页面只读旧成功状态 |
+| 三小时控制面 | `app/refresh_policy.py` + cutover/backfill/receipt scripts | YAML、env、Scheduler、告警各写一套时间常量 |
 | 页面事实语义 | BigQuery `dashboard_events` table function | overview/detail 各自复制公式 |
 | 页面组装 | `app/services/analytics_service.py` | JavaScript 重算 KPI |
 | 完整交付率的可比较样本 | `AnalyticsService` 的封闭 measurement profile | 把仅记录失败的历史子集当作代表性分母 |
@@ -228,18 +237,20 @@ three dashboard pages with module-local state
 
 正式事实：`http_request_events`、`question_events`、`answer_events`、
 `answer_action_events`、`demand_events`、`citation_events`、`conversation_events`、
-`user_scope`、`pipeline_runs`、`pipeline_state`。
+`user_scope`。发布控制与证据：`pipeline_runs`、`pipeline_state`、
+`pipeline_quality_events`、`pipeline_run_event_manifest`、`pipeline_event_issues`。
 
 正式语义入口只有：
 
 - `dashboard_events(p_start_date, p_end_date)`
 - `dashboard_user_list(p_history_start, p_today)`
 
-不存在 `user_daily`、`dashboard_overview`、`dashboard_user_detail` 或 snapshot owner。
+运行代码不存在 `user_daily`、`dashboard_overview`、`dashboard_user_detail` 或 snapshot
+owner；这些旧对象在依赖、流量和观察期完成前仍物理保留，但不再自动发布或作为 fallback。
 `monitor_answer_events` 是一次性输入，不是页面 fallback；历史成功标志、raw payload、
 问题正文和邮箱均不迁移。历史 apply 和精确验证成功前不得删除它。
 
-## 9. 2026-08-26 只读真实数据证据
+## 9. 只读真实数据与控制面证据
 
 使用批准凭据只读核对，未在本轮写云端。当前线上 canonical 已存在：
 
@@ -269,6 +280,14 @@ three dashboard pages with module-local state
 15 行分页与地图无错误；用户详细能打开真实会话双栏；用户管理返回 83/69/80/3，
 20 行分页，无横向溢出。该证据不是 IAP 登录或线上业务验收。
 
+2026-08-29 再次只读核对：两个正式语义入口均已经是同名 table-valued function；当前
+只存在旧 `oura-navi-monitor-refresh-quarter-hour`，状态 ENABLED、日程 `*/15`、时区
+Asia/Tokyo、30 秒 deadline，调用身份仍为共享 `lcs-agent`。新的三小时 Scheduler 和三个
+独立运行身份尚不存在。当前 Monitor Web、Refresh Job 与 LCS Web 也仍使用共享
+`lcs-agent`；Monitor Web 与 Refresh Job 的镜像 digest 不一致。`pipeline_state` 线上结构
+仍未包含本次 additive lease 字段，published 水位为 2026-08-27 00:57:05 UTC。因此当前
+云端必须保持 STOP，不能把本地代码状态解释为已经切换。
+
 ## 10. 正式 API
 
 ```text
@@ -292,26 +311,29 @@ POST/GET /api/export/jobs...
 
 ## 11. 唯一切换顺序
 
-不建立 backup、shadow 或长期 fallback：
+不建立 backup、shadow 或长期 fallback。具体命令和 STOP 条件以
+`THREE_HOUR_RECOVERY_RUNBOOK.md` 为准：
 
 1. 最后一次本地修改后完成全量回归、JS 合同、脚本/YAML/SQL 检查和 E2E；
-2. 只读 inventory，固定实际旧对象、DTS、raw 最早日期和历史 plan 确认串；
-3. 另行获得云端写入授权后，创建/原地扩充事实表和 source views；
-4. 执行历史编译 apply，并按每个 expected event ID 验证全部落表；
-5. 用同一个增量 owner 以最长 24 小时窗口追到冻结当前水位；
-6. 构建 Monitor 无流量候选，完成 IAP 登录、三页、旧数据和局部失败验收；
-7. 此后才测试/切换 LCS 新 revision，制造 internal/Web、成功/失败/写回链的真实新事件；
-8. 刷新增窗口并确认新数据在同一页面连续出现、口径不跳变；
-9. 只有历史与新链均验收后，停止旧 DTS并精确删除旧派生对象；raw 三表保留；
-10. 分别显式切换已验收的 LCS/Monitor 流量。
+2. 只读 inventory，固定旧 15 分钟 Scheduler、旧 DTS、raw、水位、revision 和 image；
+3. 先准备能兼容 v1/v2 的 Monitor reader、additive schema 和候选镜像；
+4. 更新 Refresh Job 前先冻结旧 15 分钟 Scheduler；再部署 Job、创建暂停的新 Scheduler，并复核两者都暂停；
+5. 用同一个增量 owner 以最长 24 小时窗口把缺失两天追到冻结当前水位；
+6. 此后才验收 LCS stale-parent 修复与 v2 producer 候选，并验证真实新事件；
+7. 水位、两天趋势和独立分析轴通过后，只启用新 3 小时 Scheduler；
+8. 新 Scheduler 完成 3 次不同 execution ID、不同窗口且有 Scheduler Attempt 佐证的真实定时执行；
+9. 通过至少 30 天 jobs/Data Access/外部 owner 依赖门后只暂停旧 DTS 自动调度；
+10. 暂停后完成 45 分钟和 72 小时观察，保留 transfer config、旧表和 raw 表；
+11. 分别完成 IAP/业务验收并显式切换已验收的 LCS/Monitor 流量。
 
 任何一步失败都修复这一个 owner，不恢复旧 API、旧表页面读取或第二套状态。
 
 ## 12. 完成标准
 
-只有以下全部具备真实证据才算完成：本地最终代码验证；旧路径关闭；历史 apply
-数量与 event ID 验证；增量水位；Monitor 构建/候选；IAP 登录；三页旧数据业务验收；
-LCS 新 revision 真实事件；新旧连续性验收；明确流量；旧派生 owner 删除。
+只有以下全部具备真实证据才算完成：本地最终代码验证；旧路径关闭；历史/补数 manifest
+与 facts 对账；增量水位；Monitor 构建/候选；IAP 登录；三页业务验收；LCS 新 revision
+真实事件；新旧连续性；明确流量；三次正式调度；旧 DTS 暂停和 45 分钟/72 小时观察。
+旧派生对象删除不属于本次完成条件，当前删除入口已硬停止。
 
 Mock、HTTP 200、测试数量、构建成功或候选 revision 均不能替代登录、真实数据和
 业务验收。

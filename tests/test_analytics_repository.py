@@ -44,6 +44,7 @@ def test_partitioned_dashboard_queries_always_bind_partition_dates() -> None:
     assert len(client.calls) == 2
     for sql, config, location in client.calls:
         assert "question_date BETWEEN @start_date AND @end_date" in sql
+        assert "valid_question = TRUE" in sql
         parameters = {item.name: item.value for item in config.query_parameters}
         assert str(parameters["start_date"]) == "2026-08-23"
         assert str(parameters["end_date"]) == "2026-08-24"

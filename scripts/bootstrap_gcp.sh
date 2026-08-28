@@ -8,9 +8,19 @@ DATASET_ID="oura_navi_monitor"
 LOCATION="US"
 SOURCE_SERVICE="lcs-rag-app"
 SINK_NAME="oura_navi_monitor_sink"
-JOB_NAME="oura-navi-monitor-refresh"
-SCHEDULER_QUARTER="oura-navi-monitor-refresh-quarter-hour"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+JOB_NAME="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_name)')"
+SCHEDULER_REFRESH="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_name)')"
+SCHEDULER_LEGACY="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.legacy_scheduler_name)')"
+SCHEDULER_CRON="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_cron)')"
+SCHEDULER_BOOTSTRAP_CRON="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import safe_scheduler_bootstrap_cron; print(safe_scheduler_bootstrap_cron())')"
+SCHEDULER_TIMEZONE="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.timezone)')"
+SCHEDULER_ATTEMPT_DEADLINE_SECONDS="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_attempt_deadline_seconds)')"
+SCHEDULER_MAX_RETRY_ATTEMPTS="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_max_retry_attempts)')"
+JOB_TIMEOUT_MINUTES="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_timeout_minutes)')"
 RUNTIME_SERVICE_ACCOUNT=""
+WEB_RUNTIME_SERVICE_ACCOUNT=""
+SCHEDULER_INVOKER_SERVICE_ACCOUNT=""
 IMAGE=""
 ANALYTICS_START_AT=""
 FIRESTORE_DATABASE="lcs-user-data"
@@ -27,6 +37,8 @@ while [[ $# -gt 0 ]]; do
     --location) LOCATION="$2"; shift 2 ;;
     --source-service) SOURCE_SERVICE="$2"; shift 2 ;;
     --runtime-service-account) RUNTIME_SERVICE_ACCOUNT="$2"; shift 2 ;;
+    --web-runtime-service-account) WEB_RUNTIME_SERVICE_ACCOUNT="$2"; shift 2 ;;
+    --scheduler-invoker-service-account) SCHEDULER_INVOKER_SERVICE_ACCOUNT="$2"; shift 2 ;;
     --image) IMAGE="$2"; shift 2 ;;
     --analytics-start-at) ANALYTICS_START_AT="$2"; shift 2 ;;
     --firestore-database) FIRESTORE_DATABASE="$2"; shift 2 ;;
@@ -40,14 +52,27 @@ done
 [[ -n "${PROJECT_ID}" ]] || { echo "--project is required" >&2; exit 2; }
 [[ "${STAGE}" == "prepare" || "${STAGE}" == "activate" ]] || { echo "--stage must be prepare or activate" >&2; exit 2; }
 if [[ "${STAGE}" == "activate" ]]; then
-  [[ -n "${RUNTIME_SERVICE_ACCOUNT}" && -n "${IMAGE}" && -n "${ANALYTICS_START_AT}" ]] || {
-    echo "activate requires --runtime-service-account, --image and --analytics-start-at" >&2; exit 2;
+  [[ -n "${RUNTIME_SERVICE_ACCOUNT}" && -n "${WEB_RUNTIME_SERVICE_ACCOUNT}" && -n "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" && -n "${IMAGE}" && -n "${ANALYTICS_START_AT}" ]] || {
+    echo "activate requires distinct web, refresh-writer and scheduler-invoker service accounts, plus --image and --analytics-start-at" >&2; exit 2;
+  }
+  for service_account in "${RUNTIME_SERVICE_ACCOUNT}" "${WEB_RUNTIME_SERVICE_ACCOUNT}" "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}"; do
+    [[ "${service_account}" =~ ^[a-z0-9-]+@${PROJECT_ID}\.iam\.gserviceaccount\.com$ ]] || {
+      echo "every runtime identity must be one exact service account in ${PROJECT_ID}" >&2; exit 2;
+    }
+  done
+  [[ "${RUNTIME_SERVICE_ACCOUNT}" != "${WEB_RUNTIME_SERVICE_ACCOUNT}" \
+    && "${RUNTIME_SERVICE_ACCOUNT}" != "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" \
+    && "${WEB_RUNTIME_SERVICE_ACCOUNT}" != "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" ]] || {
+    echo "web, refresh writer and scheduler invoker identities must be distinct" >&2; exit 2;
+  }
+  [[ "${IMAGE}" =~ ^${REGION}-docker\.pkg\.dev/${PROJECT_ID}/[^/@]+/[^/@]+@sha256:[0-9a-f]{64}$ ]] || {
+    echo "activate --image must be an immutable Artifact Registry digest in the selected project and region" >&2
+    exit 2
   }
 fi
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "mode=$([[ "${APPLY}" == "true" ]] && echo apply || echo plan) stage=${STAGE}"
 echo "dataset=${PROJECT_ID}.${DATASET_ID} sink=${SINK_NAME} job=${JOB_NAME}"
-echo "scheduler=${SCHEDULER_QUARTER} ttl_collections=${ADMIN_CHANGE_COLLECTION},${EXPORT_COLLECTION}"
+echo "scheduler=${SCHEDULER_REFRESH} schedule=${SCHEDULER_CRON} ttl_collections=${ADMIN_CHANGE_COLLECTION},${EXPORT_COLLECTION}"
 if [[ "${APPLY}" != "true" ]]; then
   if [[ "${STAGE}" == "prepare" ]]; then
     echo "prepare=ttl,canonical_base_tables,logging_sink_writer"
@@ -112,21 +137,92 @@ trap 'rm -f "${RUNTIME_ENV}"' EXIT
 "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/render_runtime_env.py" \
   --source "${ROOT_DIR}/deploy/cloudrun.env.yaml" \
   --output "${RUNTIME_ENV}" \
-  --analytics-start-at "${ANALYTICS_START_AT}"
+  --analytics-start-at "${ANALYTICS_START_AT}" \
+  --project "${PROJECT_ID}" \
+  --dataset "${DATASET_ID}" \
+  --location "${LOCATION}" \
+  --source-service "${SOURCE_SERVICE}"
+
+require_paused_scheduler_if_present() {
+  local name="$1" state
+  if ! gcloud --project="${PROJECT_ID}" scheduler jobs describe "${name}" --location="${REGION}" >/dev/null 2>&1; then
+    return 0
+  fi
+  state="$(gcloud --project="${PROJECT_ID}" scheduler jobs describe "${name}" --location="${REGION}" --format='value(state)')"
+  [[ "${state}" == "PAUSED" ]] || {
+    echo "refusing to deploy refresh Job while scheduler ${name} is ${state}; freeze schedulers first" >&2
+    exit 2
+  }
+}
+require_paused_scheduler_if_present "${SCHEDULER_LEGACY}"
+require_paused_scheduler_if_present "${SCHEDULER_REFRESH}"
 
 gcloud --project="${PROJECT_ID}" run jobs deploy "${JOB_NAME}" \
   --region="${REGION}" --image="${IMAGE}" --service-account="${RUNTIME_SERVICE_ACCOUNT}" \
-  --command=python --args=-m,app.jobs.refresh_analytics,--apply \
+  --command=python --args=-m,app.jobs.refresh_analytics,--apply,--trigger-source,scheduler_three_hour \
   --env-vars-file="${RUNTIME_ENV}" \
-  --max-retries=1 --task-timeout=30m
+  --tasks=1 --parallelism=1 --max-retries=1 \
+  --task-timeout="${JOB_TIMEOUT_MINUTES}m"
+
+DEPLOYED_JOB_JSON="$(gcloud --project="${PROJECT_ID}" run jobs describe "${JOB_NAME}" --region="${REGION}" --format=json)"
+JOB_DESCRIPTION_JSON="${DEPLOYED_JOB_JSON}" \
+  python3 "${ROOT_DIR}/scripts/validate_refresh_job.py" \
+    --expected-image "${IMAGE}" \
+    --expected-service-account "${RUNTIME_SERVICE_ACCOUNT}" \
+    --project "${PROJECT_ID}" \
+    --dataset "${DATASET_ID}" \
+    --location "${LOCATION}" \
+    --source-service "${SOURCE_SERVICE}" \
+    --timeout-minutes "${JOB_TIMEOUT_MINUTES}" >/dev/null
 
 JOB_URI="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${JOB_NAME}:run"
 upsert_scheduler() {
   local name="$1" schedule="$2"
   if gcloud --project="${PROJECT_ID}" scheduler jobs describe "${name}" --location="${REGION}" >/dev/null 2>&1; then
-    gcloud --project="${PROJECT_ID}" scheduler jobs update http "${name}" --location="${REGION}" --schedule="${schedule}" --uri="${JOB_URI}" --http-method=POST --oauth-service-account-email="${RUNTIME_SERVICE_ACCOUNT}" --time-zone="Asia/Tokyo"
+    gcloud --project="${PROJECT_ID}" scheduler jobs update http "${name}" --location="${REGION}" --schedule="${schedule}" --uri="${JOB_URI}" --http-method=POST --oauth-service-account-email="${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" --time-zone="${SCHEDULER_TIMEZONE}" --attempt-deadline="${SCHEDULER_ATTEMPT_DEADLINE_SECONDS}s" --max-retry-attempts="${SCHEDULER_MAX_RETRY_ATTEMPTS}"
   else
-    gcloud --project="${PROJECT_ID}" scheduler jobs create http "${name}" --location="${REGION}" --schedule="${schedule}" --uri="${JOB_URI}" --http-method=POST --oauth-service-account-email="${RUNTIME_SERVICE_ACCOUNT}" --time-zone="Asia/Tokyo"
+    # Cloud Scheduler cannot create a job directly in PAUSED state. Create it
+    # on a valid calendar date whose next occurrence is over 24 hours away,
+    # pause it, then install the real schedule while it remains paused.
+    gcloud --project="${PROJECT_ID}" scheduler jobs create http "${name}" --location="${REGION}" --schedule="${SCHEDULER_BOOTSTRAP_CRON}" --uri="${JOB_URI}" --http-method=POST --oauth-service-account-email="${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" --time-zone="${SCHEDULER_TIMEZONE}" --attempt-deadline="${SCHEDULER_ATTEMPT_DEADLINE_SECONDS}s" --max-retry-attempts="${SCHEDULER_MAX_RETRY_ATTEMPTS}"
+    gcloud --project="${PROJECT_ID}" scheduler jobs pause "${name}" --location="${REGION}"
+    gcloud --project="${PROJECT_ID}" scheduler jobs update http "${name}" --location="${REGION}" --schedule="${schedule}" --uri="${JOB_URI}" --http-method=POST --oauth-service-account-email="${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" --time-zone="${SCHEDULER_TIMEZONE}" --attempt-deadline="${SCHEDULER_ATTEMPT_DEADLINE_SECONDS}s" --max-retry-attempts="${SCHEDULER_MAX_RETRY_ATTEMPTS}"
   fi
 }
-upsert_scheduler "${SCHEDULER_QUARTER}" "*/15 * * * *"
+upsert_scheduler "${SCHEDULER_REFRESH}" "${SCHEDULER_CRON}"
+
+SCHEDULER_READBACK="$(gcloud --project="${PROJECT_ID}" scheduler jobs describe "${SCHEDULER_REFRESH}" \
+  --location="${REGION}" --format=json)"
+SCHEDULER_JSON="${SCHEDULER_READBACK}" python3 - \
+  "${SCHEDULER_CRON}" "${SCHEDULER_TIMEZONE}" "${JOB_URI}" \
+  "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" "${SCHEDULER_ATTEMPT_DEADLINE_SECONDS}" \
+  "${SCHEDULER_MAX_RETRY_ATTEMPTS}" <<'PY'
+import json
+import os
+import sys
+
+payload = json.loads(os.environ["SCHEDULER_JSON"])
+cron, timezone, uri, service_account, deadline, retries = sys.argv[1:]
+actual = {
+    "state": payload.get("state"),
+    "schedule": payload.get("schedule"),
+    "timezone": payload.get("timeZone"),
+    "uri": (payload.get("httpTarget") or {}).get("uri"),
+    "service_account": ((payload.get("httpTarget") or {}).get("oauthToken") or {}).get("serviceAccountEmail"),
+    "deadline": str(payload.get("attemptDeadline") or ""),
+    "retries": int((payload.get("retryConfig") or {}).get("retryCount") or 0),
+}
+expected = {
+    "state": "PAUSED",
+    "schedule": cron,
+    "timezone": timezone,
+    "uri": uri,
+    "service_account": service_account,
+    "deadline": f"{int(deadline)}s",
+    "retries": int(retries),
+}
+if actual != expected:
+    raise SystemExit(f"three-hour scheduler readback does not match governed policy: {actual}")
+PY
+echo "refresh_job_candidate=ready image=${IMAGE}"
+echo "three_hour_scheduler=PAUSED schedule=${SCHEDULER_CRON} timezone=${SCHEDULER_TIMEZONE}"

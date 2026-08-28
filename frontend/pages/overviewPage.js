@@ -7,6 +7,7 @@ import { usersModel } from "../adapters/usersAdapter.js";
 import { barChart, doughnutChart, stackedChart, usageTrendChart } from "../components/charts.js";
 import { bindPagination, bindResponsiveCollection, compareNullable, paginate, paginationMarkup } from "../components/collection.js";
 import { chips, escapeHtml, measurementContent, moduleMessage, setBusy } from "../components/dom.js";
+import { renderFreshnessBanner } from "../components/freshnessBanner.js";
 import { renderJapanMap } from "../components/japanMap.js";
 import { renderProductMatrix } from "../components/productMatrix.js";
 import {
@@ -57,6 +58,7 @@ export class OverviewPage {
         <div><p class="eyebrow">利用状況・定着・ニーズ</p><h2>全体サマリー</h2><p>${escapeHtml(periodLabel(this.getPreset()))}の利用実態を、採用から個人まで順に確認できます。</p></div>
         <div class="scopeSummary"><span data-global-count>主要分析対象を読込中</span><span data-user-count>ユーザー・地域対象を読込中</span><div id="areaChip"></div></div>
       </div>
+      <div class="freshnessBanner" data-freshness-banner data-state="loading">更新状況を確認中です。</div>
       <section class="panel priorityPanel" data-module="kpis"><div class="panelHead"><div><p class="sectionIndex">01</p><h3>主要KPI</h3></div><small>MR・ヘルスケア本社</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
       <section class="panel" data-module="environment"><div class="panelHead"><div><p class="sectionIndex">02</p><h3>利用環境・モード</h3></div><small>補助的な利用状況</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
       <section class="twoGrid insightGrid"><article class="panel" data-module="usage"><div class="panelHead"><div><p class="sectionIndex">03</p><h3>利用推移</h3></div></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article><article class="panel" data-module="tasks"><div class="panelHead"><div><p class="sectionIndex">03</p><h3>質問種類</h3></div><small>ユーザーが何をしたいか</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article></section>
@@ -84,6 +86,7 @@ export class OverviewPage {
       if (!this.isCurrent()) return;
       const envelope = overviewEnvelope(raw);
       this.root.querySelector("[data-global-count]").textContent = `主要分析対象 ${envelope.scopeUserCount}名`;
+      renderFreshnessBanner(this.root.querySelector("[data-freshness-banner]"), envelope.freshness, envelope.analyticsQuality);
       this.renderPart("kpis", () => this.renderKpis(kpisModel(raw)));
       this.renderPart("environment", () => this.renderEnvironment(environmentModel(raw)));
       this.renderPart("usage", () => this.renderUsage(usageTrendModel(raw)));
@@ -124,7 +127,8 @@ export class OverviewPage {
 
   renderUsage(rows) {
     const body = this.body("usage");
-    body.innerHTML = '<div class="chartBox primaryChart"><canvas id="usageChart"></canvas></div>';
+    const partial = rows.find((row) => row.isPartial);
+    body.innerHTML = `<div class="chartBox primaryChart"><canvas id="usageChart"></canvas></div>${partial ? `<p class="measurementNote">${escapeHtml(partial.date)} は反映済み時刻までの途中集計です。</p>` : ""}`;
     usageTrendChart(body.querySelector("#usageChart"), rows);
   }
 

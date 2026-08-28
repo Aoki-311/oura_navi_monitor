@@ -4,11 +4,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from google.cloud import bigquery
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from app.jobs.project_firestore import (
     CITATION_SCHEMA,
@@ -17,7 +22,7 @@ from app.jobs.project_firestore import (
     struct_array_parameter,
 )
 from app.jobs.rebuild_history import ANSWER_SCHEMA, QUESTION_SCHEMA
-from app.jobs.refresh_analytics import render_sql
+from app.jobs.refresh_analytics import render_publish_sql, render_sql
 from app.settings import get_settings
 
 
@@ -48,17 +53,46 @@ def _credential_guard() -> None:
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = approved
 
 
-def _parameters(name: str) -> list[Any]:
+def _analytics_start(settings, fallback: datetime) -> datetime:
+    text = str(settings.monitor_analytics_start_at or "").strip()
+    if not text:
+        return fallback
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _publish_parameters(settings) -> list[Any]:
     window_start = datetime.now(timezone.utc) - timedelta(hours=1)
     window_end = datetime.now(timezone.utc)
     today = date.today()
-    if name in {"merge_incremental.sql", "check_data_quality.sql"}:
-        return [
-            bigquery.ScalarQueryParameter(
-                "window_start", "TIMESTAMP", window_start
-            ),
-            bigquery.ScalarQueryParameter("window_end", "TIMESTAMP", window_end),
-        ]
+    return [
+        bigquery.ScalarQueryParameter("run_id", "STRING", "dry-run"),
+        bigquery.ScalarQueryParameter("lease_id", "STRING", "dry-run-lease"),
+        bigquery.ScalarQueryParameter("expected_watermark", "TIMESTAMP", None),
+        struct_array_parameter("user_scope_rows", USER_SCOPE_SCHEMA, []),
+        struct_array_parameter("conversation_rows", CONVERSATION_SCHEMA, []),
+        struct_array_parameter("citation_rows", CITATION_SCHEMA, []),
+        bigquery.ScalarQueryParameter("conversation_partition_start", "DATE", today),
+        bigquery.ScalarQueryParameter("conversation_partition_end", "DATE", today),
+        bigquery.ScalarQueryParameter("citation_partition_start", "DATE", today),
+        bigquery.ScalarQueryParameter("citation_partition_end", "DATE", today),
+        bigquery.ScalarQueryParameter("window_start", "TIMESTAMP", window_start),
+        bigquery.ScalarQueryParameter("window_end", "TIMESTAMP", window_end),
+        bigquery.ScalarQueryParameter(
+            "analytics_start",
+            "TIMESTAMP",
+            _analytics_start(settings, window_start),
+        ),
+        bigquery.ScalarQueryParameter(
+            "event_future_tolerance_minutes",
+            "INT64",
+            int(settings.monitor_event_future_tolerance_minutes),
+        ),
+    ]
+
+
+def _parameters(name: str, settings) -> list[Any]:
+    today = date.today()
     if name == "merge_firestore_projection.sql":
         return [
             struct_array_parameter("user_scope_rows", USER_SCOPE_SCHEMA, []),
@@ -98,14 +132,8 @@ def _cutover_sequence(settings) -> tuple[str, list[Any]]:
         "create_aggregates.sql",
         "create_source_tables.sql",
         "merge_history.sql",
-        "merge_firestore_projection.sql",
-        "merge_incremental.sql",
-        "check_data_quality.sql",
-        "create_api_views.sql",
     )
     today = date.today()
-    window_end = datetime.now(timezone.utc)
-    window_start = window_end - timedelta(hours=1)
     parameters = [
         bigquery.ScalarQueryParameter(
             "history_partition_date", "DATE", today
@@ -116,27 +144,17 @@ def _cutover_sequence(settings) -> tuple[str, list[Any]]:
             "history_conversations", CONVERSATION_SCHEMA, []
         ),
         struct_array_parameter("history_citations", CITATION_SCHEMA, []),
-        struct_array_parameter("user_scope_rows", USER_SCOPE_SCHEMA, []),
-        struct_array_parameter("conversation_rows", CONVERSATION_SCHEMA, []),
-        struct_array_parameter("citation_rows", CITATION_SCHEMA, []),
-        bigquery.ScalarQueryParameter(
-            "conversation_partition_start", "DATE", today
-        ),
-        bigquery.ScalarQueryParameter(
-            "conversation_partition_end", "DATE", today
-        ),
-        bigquery.ScalarQueryParameter(
-            "citation_partition_start", "DATE", today
-        ),
-        bigquery.ScalarQueryParameter(
-            "citation_partition_end", "DATE", today
-        ),
-        bigquery.ScalarQueryParameter(
-            "window_start", "TIMESTAMP", window_start
-        ),
-        bigquery.ScalarQueryParameter("window_end", "TIMESTAMP", window_end),
     ]
-    return "\n".join(render_sql(name, settings) for name in names), parameters
+    parameters.extend(_publish_parameters(settings))
+    publish_sql = render_publish_sql(settings)
+    publish_declarations, publish_body = publish_sql.split(
+        "BEGIN TRANSACTION;", maxsplit=1
+    )
+    sql_parts = [publish_declarations]
+    sql_parts.extend(render_sql(name, settings) for name in names)
+    sql_parts.append("BEGIN TRANSACTION;" + publish_body)
+    sql_parts.append(render_sql("create_api_views.sql", settings))
+    return "\n".join(sql_parts), parameters
 
 
 def _dry_run(client, settings, *, label: str, sql: str, parameters: list[Any]):
@@ -177,14 +195,26 @@ def main() -> int:
     client = bigquery.Client(project=settings.monitor_project_id)
     selected = tuple(args.file or SQL_FILES)
     current_state_results = []
+    atomic_publish_added = False
     for name in selected:
+        if name in {"merge_incremental.sql", "check_data_quality.sql"}:
+            if atomic_publish_added:
+                continue
+            atomic_publish_added = True
+            label = "atomic_publish_contract"
+            sql = render_publish_sql(settings)
+            parameters = _publish_parameters(settings)
+        else:
+            label = name
+            sql = render_sql(name, settings)
+            parameters = _parameters(name, settings)
         current_state_results.append(
             _dry_run(
                 client,
                 settings,
-                label=name,
-                sql=render_sql(name, settings),
-                parameters=_parameters(name),
+                label=label,
+                sql=sql,
+                parameters=parameters,
             )
         )
     if args.file:

@@ -14,6 +14,10 @@ class AnalyticsModel(BaseModel):
 class DataFreshness(AnalyticsModel):
     state: Literal["fresh", "stale", "unknown"]
     dataThrough: str
+    refreshCadenceMinutes: int
+    expectedDelayMinutes: int
+    staleAfterMinutes: int
+    nextPlannedRefreshAt: str
 
 
 class RateMeasurement(AnalyticsModel):
@@ -34,6 +38,34 @@ class MeasurementCoverage(AnalyticsModel):
     measuredCount: int
     totalCount: int
     measurementState: MeasurementState
+
+
+class AnalyticsAxisQuality(MeasurementCoverage):
+    isolatedCount: int
+
+
+class SourcePipelineQuality(AnalyticsModel):
+    publishedRunId: str
+    latestRunId: str
+    latestRunStatus: str
+    latestRunErrorCode: str
+    latestRunFinishedAt: str
+    state: Literal["clean", "degraded", "blocked", "unknown"]
+    quarantinedEventCount: int
+    deduplicatedDeliveryCount: int
+    repairedDuplicateFactCount: int
+    axisUnmeasuredFindingCount: int
+    batchBlockingFailureCount: int
+
+
+class AnalyticsQuality(AnalyticsModel):
+    contractVersion: Literal["dashboard_events_v2"]
+    isolatedEventCount: int
+    totalEventCount: int
+    classification: AnalyticsAxisQuality
+    task: AnalyticsAxisQuality
+    product: AnalyticsAxisQuality
+    sourcePipeline: SourcePipelineQuality
 
 
 class Kpis(AnalyticsModel):
@@ -61,6 +93,7 @@ class UsageTrendRow(AnalyticsModel):
     date: str
     activeUsers: int
     questions: int
+    isPartial: bool
 
 
 class ActivitySegment(AnalyticsModel):
@@ -166,6 +199,7 @@ class UserTrendRow(AnalyticsModel):
     date: str
     questions: int
     completeDelivery: RateMeasurement
+    isPartial: bool
 
 
 class ConversationRow(AnalyticsModel):
@@ -180,6 +214,7 @@ class OverviewResponse(AnalyticsModel):
     scope: Literal["global"]
     scopeUserCount: int
     freshness: DataFreshness
+    analyticsQuality: AnalyticsQuality
     kpis: Kpis
     hourlyQuestions: list[HourlyQuestion]
     deviceDistribution: list[DistributionRow]
@@ -211,6 +246,7 @@ class UsersResponse(AnalyticsModel):
 
 class UserDetailResponse(AnalyticsModel):
     freshness: DataFreshness
+    analyticsQuality: AnalyticsQuality
     profile: UserProfile
     summary: UserSummary
     comparisons: UserComparisons

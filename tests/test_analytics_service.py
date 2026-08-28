@@ -4,7 +4,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.services.analytics_service import AnalyticsService, _activity_level
+from app.services.analytics_service import (
+    AnalyticsService,
+    _activity_level,
+    _published_hour_axis,
+)
 from app.settings import Settings
 from app.time_window import MetricsTimeWindow
 
@@ -19,6 +23,24 @@ class _StalePipeline:
     @staticmethod
     def data_through():
         return datetime.now(timezone.utc) - timedelta(days=2)
+
+
+class _QualityPipeline:
+    @staticmethod
+    def publication_snapshot():
+        return {
+            "data_through": datetime.now(timezone.utc),
+            "published_run_id": "run-1",
+            "latest_run_id": "run-1",
+            "latest_run_status": "succeeded",
+            "latest_run_error_code": "",
+            "latest_run_finished_at": datetime.now(timezone.utc),
+            "quarantined_event_count": 2,
+            "deduplicated_delivery_count": 3,
+            "repaired_duplicate_fact_count": 1,
+            "axis_unmeasured_finding_count": 4,
+            "batch_blocking_failure_count": 0,
+        }
 
 
 class _Directory:
@@ -103,6 +125,23 @@ def _single_day_window() -> MetricsTimeWindow:
         requested_days=1,
         bucket_minutes=1440,
     )
+
+
+def test_hour_axis_never_fills_hours_beyond_the_published_watermark() -> None:
+    window = MetricsTimeWindow(
+        start_utc=datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc),
+        end_utc=datetime(2026, 8, 25, 15, 0, tzinfo=timezone.utc),
+        timezone="Asia/Tokyo",
+        source="custom",
+        preset="",
+        requested_days=2,
+        bucket_minutes=30,
+    )
+
+    assert _published_hour_axis(
+        window,
+        data_through=datetime(2026, 8, 23, 18, 0, tzinfo=timezone.utc),
+    ) == ["00:00", "01:00", "02:00"]
 
 
 def test_overview_publishes_representative_partial_measurement_with_coverage() -> None:
@@ -242,6 +281,52 @@ def test_stale_pipeline_is_metadata_and_does_not_disable_available_analytics() -
     assert payload["kpis"]["activeUsers"] == 0
 
 
+def test_published_run_quality_is_exposed_separately_from_visible_axis_coverage() -> None:
+    now = datetime.now(timezone.utc)
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    quality = service.overview(window=_window(now))["analyticsQuality"]
+
+    assert quality["totalEventCount"] == 0
+    assert quality["isolatedEventCount"] == 0
+    assert quality["sourcePipeline"] == {
+        "publishedRunId": "run-1",
+        "latestRunId": "run-1",
+        "latestRunStatus": "succeeded",
+        "latestRunErrorCode": "",
+        "latestRunFinishedAt": quality["sourcePipeline"]["latestRunFinishedAt"],
+        "state": "degraded",
+        "quarantinedEventCount": 2,
+        "deduplicatedDeliveryCount": 3,
+        "repairedDuplicateFactCount": 1,
+        "axisUnmeasuredFindingCount": 4,
+        "batchBlockingFailureCount": 0,
+    }
+
+
+def test_latest_failed_run_is_visible_without_replacing_last_published_data() -> None:
+    quality = AnalyticsService._source_pipeline_quality(
+        {
+            "published_run_id": "run-success",
+            "latest_run_id": "run-failed",
+            "latest_run_status": "failed",
+            "latest_run_error_code": "DataQualityGateError",
+            "latest_run_finished_at": datetime(2026, 8, 29, 4, tzinfo=timezone.utc),
+            "batch_blocking_failure_count": 2,
+        }
+    )
+
+    assert quality["publishedRunId"] == "run-success"
+    assert quality["latestRunId"] == "run-failed"
+    assert quality["state"] == "blocked"
+    assert quality["batchBlockingFailureCount"] == 2
+
+
 def test_missing_request_tasks_are_explicitly_unmeasured_without_hiding_other_metrics() -> None:
     now = datetime.now(timezone.utc)
     rows = [
@@ -317,10 +402,12 @@ def test_current_multi_task_event_drives_distribution_and_product_matrix() -> No
             "area_key": "関西",
             "valid_question": True,
             "analytics_tasks": ["fact_lookup", "comparison_selection"],
+            "task_measurement_state": "measured",
             "record_origin": "canonical_event",
             "primary_product_name": "テルフュージョン",
             "product_candidate_count": 1,
             "product_resolved_count": 1,
+            "product_measurement_state": "measured",
         }]),
         pipeline=_Pipeline(),
         directory=_Directory(),
@@ -449,6 +536,7 @@ def test_product_ranking_discloses_unresolved_governed_product_candidates() -> N
             "primary_product_name": "テルフュージョン",
             "product_candidate_count": 2,
             "product_resolved_count": 1,
+            "product_measurement_state": "measured",
         }
     ]
     service = AnalyticsService(

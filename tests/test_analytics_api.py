@@ -7,12 +7,54 @@ from app.main import app
 from app.settings import get_settings
 
 
+def _freshness():
+    return {
+        "state": "fresh",
+        "dataThrough": "2026-08-23T01:00:00Z",
+        "refreshCadenceMinutes": 180,
+        "expectedDelayMinutes": 5,
+        "staleAfterMinutes": 240,
+        "nextPlannedRefreshAt": "2026-08-23T03:05:00Z",
+    }
+
+
+def _analytics_quality(total: int = 0):
+    axis = {
+        "measuredCount": 0,
+        "totalCount": total,
+        "measurementState": "no_usage" if total == 0 else "not_measured",
+        "isolatedCount": total,
+    }
+    return {
+        "contractVersion": "dashboard_events_v2",
+        "isolatedEventCount": total,
+        "totalEventCount": total,
+        "classification": dict(axis),
+        "task": dict(axis),
+        "product": dict(axis),
+        "sourcePipeline": {
+            "publishedRunId": "run-1",
+            "latestRunId": "run-1",
+            "latestRunStatus": "succeeded",
+            "latestRunErrorCode": "",
+            "latestRunFinishedAt": "2026-08-23T01:00:00Z",
+            "state": "clean",
+            "quarantinedEventCount": 0,
+            "deduplicatedDeliveryCount": 0,
+            "repairedDuplicateFactCount": 0,
+            "axisUnmeasuredFindingCount": 0,
+            "batchBlockingFailureCount": 0,
+        },
+    }
+
+
 class FakeAnalyticsService:
     def overview(self, **_kwargs):
         return {
             "scope": "global",
             "scopeUserCount": 69,
-            "freshness": {"state": "fresh", "dataThrough": "2026-08-23T01:00:00Z"},
+            "freshness": _freshness(),
+            "analyticsQuality": _analytics_quality(64),
             "kpis": {
                 "activeUsers": 20,
                 "adoptionRate": 20 / 69,
@@ -46,14 +88,15 @@ class FakeAnalyticsService:
         }
 
     def regions(self, **_kwargs):
-        return {"scopeUserCount": 80, "freshness": {"state": "fresh", "dataThrough": "2026-08-23T01:00:00Z"}, "regions": []}
+        return {"scopeUserCount": 80, "freshness": _freshness(), "regions": []}
 
     def users(self, **_kwargs):
-        return {"scopeUserCount": 80, "freshness": {"state": "fresh", "dataThrough": "2026-08-23T01:00:00Z"}, "users": []}
+        return {"scopeUserCount": 80, "freshness": _freshness(), "users": []}
 
     def user_detail(self, roster_id: str, **_kwargs):
         return {
-            "freshness": {"state": "fresh", "dataThrough": "2026-08-23T01:00:00Z"},
+            "freshness": _freshness(),
+            "analyticsQuality": _analytics_quality(),
             "profile": {
                 "rosterId": roster_id,
                 "name": "利用者",

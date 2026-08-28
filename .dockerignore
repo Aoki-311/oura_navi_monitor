@@ -1,0 +1,9 @@
+*
+!Dockerfile
+!requirements.txt
+!app/
+!app/**
+!frontend/
+!frontend/**
+!sql/
+!sql/**

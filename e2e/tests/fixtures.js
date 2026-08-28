@@ -1,4 +1,11 @@
-const freshness = { state: "fresh", dataThrough: "2026-08-23T01:00:00Z" };
+const freshness = {
+  state: "fresh",
+  dataThrough: "2026-08-23T01:00:00Z",
+  refreshCadenceMinutes: 180,
+  expectedDelayMinutes: 5,
+  staleAfterMinutes: 240,
+  nextPlannedRefreshAt: "2026-08-23T03:05:00Z",
+};
 const measurementState = (measuredCount, totalCount) => {
   if (totalCount === 0) return "no_usage";
   if (measuredCount === 0) return "not_measured";
@@ -9,11 +16,41 @@ const measurement = (value, measuredCount, totalCount) => ({
   value, measuredCount, totalCount,
   measurementState: measurementState(measuredCount, totalCount),
 });
+const analyticsQuality = (measuredCount, totalCount) => {
+  const axis = {
+    measuredCount,
+    totalCount,
+    measurementState: measurementState(measuredCount, totalCount),
+    isolatedCount: totalCount - measuredCount,
+  };
+  return {
+    contractVersion: "dashboard_events_v2",
+    isolatedEventCount: totalCount - measuredCount,
+    totalEventCount: totalCount,
+    classification: { ...axis },
+    task: { ...axis },
+    product: { ...axis },
+    sourcePipeline: {
+      publishedRunId: "run-20260823-01",
+      latestRunId: "run-20260823-01",
+      latestRunStatus: "succeeded",
+      latestRunErrorCode: "",
+      latestRunFinishedAt: "2026-08-23T01:00:00Z",
+      state: "degraded",
+      quarantinedEventCount: 2,
+      deduplicatedDeliveryCount: 3,
+      repairedDuplicateFactCount: 1,
+      axisUnmeasuredFindingCount: 7,
+      batchBlockingFailureCount: 0,
+    },
+  };
+};
 
 const overview = {
   scope: "global",
   scopeUserCount: 69,
   freshness,
+  analyticsQuality: analyticsQuality(70, 77),
   kpis: {
     activeUsers: 24,
     adoptionRate: 24 / 69,
@@ -27,7 +64,7 @@ const overview = {
   deviceMeasurement: { measuredCount: 62, totalCount: 77, measurementState: "partial" },
   modeDistribution: [{ key: "internal", label: "社内モード", count: 49, rate: .79 }, { key: "websearch", label: "Web検索モード", count: 13, rate: .21 }],
   modeMeasurement: { measuredCount: 62, totalCount: 77, measurementState: "partial" },
-  usageTrend: [{ date: "2026-08-22", activeUsers: 18, questions: 49 }, { date: "2026-08-23", activeUsers: 20, questions: 62 }],
+  usageTrend: [{ date: "2026-08-22", activeUsers: 18, questions: 49, isPartial: false }, { date: "2026-08-23", activeUsers: 20, questions: 62, isPartial: true }],
   requestTasks: [{ key: "fact_lookup", label: "情報確認", count: 32, rate: .52 }, { key: "comparison_selection", label: "比較・選定", count: 20, rate: .32 }, { key: "unclassified", label: "判定不能", count: 10, rate: .16 }],
   taskMeasurement: { measuredCount: 62, totalCount: 77, measurementState: "partial" },
   activityDistribution: [{ key: "high", label: "高アクティブ", count: 10, rate: 10 / 69 }, { key: "middle", label: "中アクティブ", count: 14, rate: 14 / 69 }, { key: "low", label: "低アクティブ", count: 20, rate: 20 / 69 }, { key: "dormant", label: "休眠ユーザー", count: 25, rate: 25 / 69 }],
@@ -50,13 +87,14 @@ const regions = { scopeUserCount: 80, freshness, regions: [
 
 const detail = {
   freshness,
+  analyticsQuality: analyticsQuality(18, 20),
   profile: { rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", area: "関西", workplace: "大阪", role: "本社MR", department: "DM専任", mrExperience: "10年", labels: users.users[0].labels },
   summary: { lastActiveAt: "2026-08-23T01:00:00Z", activeDays: 5, questions: 20, questionsPerActiveDay: 4, completeDelivery: measurement(.9, 18, 20) },
   comparisons: {
     area: { label: "関西", peerCount: 10, averageQuestions: 8.2, averageActiveDays: 3.1, averageCompleteDelivery: measurement(.84, 8, 10) },
     role: { label: "本社MR", peerCount: 39, averageQuestions: 7.3, averageActiveDays: 2.8, averageCompleteDelivery: measurement(.86, 30, 39) },
   },
-  trend: [{ date: "2026-08-22", questions: 7, completeDelivery: measurement(.86, 7, 7) }, { date: "2026-08-23", questions: 13, completeDelivery: measurement(.92, 11, 13) }],
+  trend: [{ date: "2026-08-22", questions: 7, completeDelivery: measurement(.86, 7, 7), isPartial: false }, { date: "2026-08-23", questions: 13, completeDelivery: measurement(.92, 11, 13), isPartial: true }],
   products: [{ label: "テルフュージョン", count: 12 }],
   tasks: [{ key: "fact_lookup", label: "情報確認", count: 4, rate: .2 }],
   productResolution: { candidateCount: 12, resolvedCount: 12, unresolvedQuestions: 0, resolutionRate: 1, measuredCount: 12, totalCount: 20, measurementState: "partial" },

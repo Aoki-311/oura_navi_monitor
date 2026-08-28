@@ -62,6 +62,7 @@ class AnalyticsRepository:
         WHERE question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts
           AND question_ts < @end_ts
+          AND valid_question = TRUE
           AND (@area_key = '' OR area_key = @area_key)
         ORDER BY question_ts
         """
@@ -82,6 +83,7 @@ class AnalyticsRepository:
         WHERE question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts
           AND question_ts < @end_ts
+          AND valid_question = TRUE
           AND (@area_key = '' OR area_key = @area_key)
         """
         window = MetricsTimeWindow(
@@ -125,6 +127,7 @@ class AnalyticsRepository:
           AND question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts
           AND question_ts < @end_ts
+          AND valid_question = TRUE
         ORDER BY question_ts
         """
         return self._run(

@@ -1,7 +1,7 @@
 # OurA Navi Monitor 字段白话辞典
 
 本辞典回答“这个字段对非技术人员到底意味着什么”。字段按业务用途分组，不按
-日志文件分组。所有“已实现”均指 2026-08-25 当前本地工作树；线上尚未部署，不能
+日志文件分组。所有“已实现”均指 2026-08-29 当前本地候选工作树；线上尚未部署，不能
 把它理解为生产已经有数据。
 
 状态说明：
@@ -259,6 +259,15 @@ Web Writer 的机器注释如果缺失、格式错误或 demand ID 不完整，�
 | `questionCount7` | 最近 7 日用户消息/问题数 |
 | `activity` | high、middle、low、dormant |
 | `dataThrough` | 最后一个完整发布批次处理到的时间 |
+| `nextPlannedRefreshAt` | 按三小时策略推算的下一计划时点；不是对 live Scheduler 启停状态的承诺 |
+| `usageTrend[].isPartial` | 该日只统计到 `dataThrough`，当天柱形不能当作完整日 |
+| `analyticsQuality.sourcePipeline.publishedRunId` | 页面当前数据所属的最后一次成功发布 |
+| `analyticsQuality.sourcePipeline.latestRunStatus` | 最新一次刷新实际是 running、succeeded 还是 failed |
+| `analyticsQuality.sourcePipeline.latestRunErrorCode` | 最新失败的有界原因；失败时页面继续显示上次成功数据 |
+| `quarantinedEventCount` | 本次来源中被逐事件隔离、没有进入事实的数量 |
+| `deduplicatedDeliveryCount` | 同一来源事件重复到达但只保留一份事实的数量 |
+| `axisUnmeasuredFindingCount` | 使用事实仍保留，但分类/任务/产品某一轴因语义不合法而不计测的数量 |
+| `batchBlockingFailureCount` | 会阻止新事实与水位发布的质量问题数量 |
 | `productResolution` | 产品候选数、解析成功数、未完全解析问题数和解析率；只解释产品图覆盖范围 |
 
 页面只读 `dashboard_events(start,end)` 和 `dashboard_user_list(start,today)` 两个
@@ -269,6 +278,11 @@ Web Writer 的机器注释如果缺失、格式错误或 demand ID 不完整，�
 迁移身份、时间、精确旧分类等可证明字段；旧 `answer_success_flag`、raw payload、
 问答正文和邮箱不会进入正式事实。缺少新完整交付字段时
 `measurement_available=false`、`complete_delivery=null`，不是 0% 或 100%。
+
+`pipeline_run_event_manifest` 不保存问题正文或邮箱，只保存 event ID 的不可逆哈希、事件
+family、本次 run 和 `canonical/deduplicated/row_quarantined` 去向；
+`pipeline_event_issues` 保存同一哈希的原因、首次/最后发现时间和解决状态。这样“被排除”
+不再等于“静默丢失”，但页面仍不会暴露原始标识。
 
 ---
 

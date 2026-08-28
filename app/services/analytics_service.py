@@ -17,6 +17,7 @@ from app.domain.question_categories import (
     analytics_question_category,
     question_category_label,
 )
+from app.refresh_policy import next_scheduled_refresh
 from app.settings import Settings
 from app.time_window import MetricsTimeWindow
 
@@ -32,12 +33,6 @@ _REPRESENTATIVE_DELIVERY_PROFILES = {
     "complete_delivery_full",
     "runtime_truth_full",
 }
-_HISTORICAL_RECORD_ORIGINS = {
-    "firestore_history",
-    "legacy_audit_history",
-}
-
-
 def _as_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -152,6 +147,85 @@ def _local_date_axis(window: MetricsTimeWindow) -> list[str]:
     return values
 
 
+def _published_date_axis(
+    window: MetricsTimeWindow,
+    *,
+    data_through: datetime | None,
+) -> list[str]:
+    if data_through is None:
+        return []
+    effective_end = min(window.end_utc, data_through.astimezone(timezone.utc))
+    if effective_end <= window.start_utc:
+        return []
+    bounded = MetricsTimeWindow(
+        start_utc=window.start_utc,
+        end_utc=effective_end,
+        timezone=window.timezone,
+        source=window.source,
+        preset=window.preset,
+        requested_days=window.requested_days,
+        bucket_minutes=window.bucket_minutes,
+    )
+    return _local_date_axis(bounded)
+
+
+def _published_hour_axis(
+    window: MetricsTimeWindow,
+    *,
+    data_through: datetime | None,
+) -> list[str]:
+    if data_through is None:
+        return []
+    effective_end = min(window.end_utc, data_through.astimezone(timezone.utc))
+    if effective_end <= window.start_utc:
+        return []
+    bounded = MetricsTimeWindow(
+        start_utc=window.start_utc,
+        end_utc=effective_end,
+        timezone=window.timezone,
+        source=window.source,
+        preset=window.preset,
+        requested_days=window.requested_days,
+        bucket_minutes=window.bucket_minutes,
+    )
+    if len(_local_date_axis(bounded)) > 1:
+        return [f"{hour:02d}:00" for hour in range(24)]
+    local_zone = ZoneInfo(window.timezone)
+    cursor = window.start_utc.astimezone(local_zone).replace(
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    if cursor.astimezone(timezone.utc) < window.start_utc:
+        cursor += timedelta(hours=1)
+    labels: list[str] = []
+    while cursor.astimezone(timezone.utc) < effective_end:
+        labels.append(f"{cursor.hour:02d}:00")
+        cursor += timedelta(hours=1)
+    return labels
+
+
+def _partial_published_date(
+    window: MetricsTimeWindow,
+    *,
+    data_through: datetime | None,
+) -> str:
+    if data_through is None:
+        return ""
+    published_end = data_through.astimezone(timezone.utc)
+    if published_end >= window.end_utc or published_end <= window.start_utc:
+        return ""
+    local_end = published_end.astimezone(ZoneInfo(window.timezone))
+    if (
+        local_end.hour == 0
+        and local_end.minute == 0
+        and local_end.second == 0
+        and local_end.microsecond == 0
+    ):
+        return ""
+    return local_end.date().isoformat()
+
+
 def _return_rate(days_by_user: dict[str, set[str]], *, window: MetricsTimeWindow) -> float | None:
     active_users = len(days_by_user)
     if active_users == 0 or len(_local_date_axis(window)) < 2:
@@ -198,11 +272,11 @@ def _activity_level(
 
 
 def _classification_is_measured(item: dict[str, Any]) -> bool:
-    return str(item.get("classification_status") or "").strip() != "not_measured"
+    return str(item.get("classification_measurement_state") or "").strip() == "measured"
 
 
 def _tasks_for_measured_item(item: dict[str, Any]) -> list[str]:
-    if str(item.get("record_origin") or "") in _HISTORICAL_RECORD_ORIGINS:
+    if str(item.get("task_measurement_state") or "").strip() != "measured":
         return []
     source = item.get("analytics_tasks")
     if not isinstance(source, list) or not source:
@@ -211,11 +285,43 @@ def _tasks_for_measured_item(item: dict[str, Any]) -> list[str]:
 
 
 def _product_is_measured(item: dict[str, Any]) -> bool:
-    if str(item.get("record_origin") or "") in _HISTORICAL_RECORD_ORIGINS:
-        return False
-    return item.get("product_candidate_count") is not None and item.get(
-        "product_resolved_count"
-    ) is not None
+    return str(item.get("product_measurement_state") or "").strip() == "measured"
+
+
+def _analytics_quality(
+    rows: list[dict[str, Any]],
+    *,
+    source_pipeline: dict[str, Any],
+) -> dict[str, Any]:
+    def axis(field: str) -> dict[str, Any]:
+        measured = sum(
+            str(item.get(field) or "").strip() == "measured" for item in rows
+        )
+        coverage = _measurement_coverage(measured, len(rows))
+        return {
+            **coverage,
+            "isolatedCount": len(rows) - measured,
+        }
+
+    return {
+        "contractVersion": "dashboard_events_v2",
+        "isolatedEventCount": sum(
+            any(
+                str(item.get(field) or "").strip() != "measured"
+                for field in (
+                    "classification_measurement_state",
+                    "task_measurement_state",
+                    "product_measurement_state",
+                )
+            )
+            for item in rows
+        ),
+        "totalEventCount": len(rows),
+        "classification": axis("classification_measurement_state"),
+        "task": axis("task_measurement_state"),
+        "product": axis("product_measurement_state"),
+        "sourcePipeline": source_pipeline,
+    }
 
 
 def _measured_dimension(item: dict[str, Any], field: str) -> str | None:
@@ -237,11 +343,81 @@ class AnalyticsService:
         self._directory = directory
         self._settings = settings
 
-    def _freshness(self) -> dict[str, str]:
-        value = self._pipeline.data_through()
-        if value is None:
-            return {"state": "unknown", "dataThrough": ""}
+    def _publication_snapshot(self) -> dict[str, Any]:
+        snapshot_reader = getattr(self._pipeline, "publication_snapshot", None)
+        if callable(snapshot_reader):
+            snapshot = snapshot_reader()
+            return dict(snapshot) if isinstance(snapshot, dict) else {}
+        return {"data_through": self._pipeline.data_through()}
+
+    @staticmethod
+    def _source_pipeline_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
+        def count(name: str) -> int:
+            try:
+                return max(0, int(snapshot.get(name) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        published_run_id = str(snapshot.get("published_run_id") or "")
+        latest_run_id = str(snapshot.get("latest_run_id") or "")
+        latest_run_status = str(snapshot.get("latest_run_status") or "")
+        latest_run_error_code = str(snapshot.get("latest_run_error_code") or "")
+        latest_run_finished_at = _as_datetime(
+            snapshot.get("latest_run_finished_at")
+        )
+        quarantined = count("quarantined_event_count")
+        axis_findings = count("axis_unmeasured_finding_count")
+        blocking = count("batch_blocking_failure_count")
+        if latest_run_status == "failed":
+            state = "blocked"
+        elif not published_run_id:
+            state = "unknown"
+        elif quarantined or axis_findings:
+            state = "degraded"
+        else:
+            state = "clean"
+        return {
+            "publishedRunId": published_run_id,
+            "latestRunId": latest_run_id,
+            "latestRunStatus": latest_run_status,
+            "latestRunErrorCode": latest_run_error_code,
+            "latestRunFinishedAt": (
+                latest_run_finished_at.astimezone(timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+                if latest_run_finished_at
+                else ""
+            ),
+            "state": state,
+            "quarantinedEventCount": quarantined,
+            "deduplicatedDeliveryCount": count("deduplicated_delivery_count"),
+            "repairedDuplicateFactCount": count("repaired_duplicate_fact_count"),
+            "axisUnmeasuredFindingCount": axis_findings,
+            "batchBlockingFailureCount": blocking,
+        }
+
+    def _freshness(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        value = _as_datetime(snapshot.get("data_through"))
         now = datetime.now(timezone.utc)
+        common = {
+            "refreshCadenceMinutes": int(
+                self._settings.monitor_refresh_cadence_minutes
+            ),
+            "expectedDelayMinutes": int(
+                self._settings.monitor_refresh_delay_minutes
+            ),
+            "staleAfterMinutes": int(
+                self._settings.monitor_data_freshness_minutes
+            ),
+            "nextPlannedRefreshAt": next_scheduled_refresh(
+                now=now,
+                timezone_name=self._settings.monitor_timezone,
+            )
+            .isoformat()
+            .replace("+00:00", "Z"),
+        }
+        if value is None:
+            return {"state": "unknown", "dataThrough": "", **common}
         state = (
             "fresh"
             if (now - value).total_seconds() <= self._settings.monitor_data_freshness_minutes * 60
@@ -250,6 +426,7 @@ class AnalyticsService:
         return {
             "state": state,
             "dataThrough": value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            **common,
         }
 
     def _roster(self, scope: AnalysisScope, *, area_key: str = "") -> list[dict[str, Any]]:
@@ -262,7 +439,13 @@ class AnalyticsService:
         ]
 
     def overview(self, *, window: MetricsTimeWindow, area_key: str = "") -> dict[str, Any]:
-        freshness = self._freshness()
+        publication = self._publication_snapshot()
+        freshness = self._freshness(publication)
+        data_through = _as_datetime(freshness.get("dataThrough"))
+        partial_date = _partial_published_date(
+            window,
+            data_through=data_through,
+        )
         roster = self._roster(AnalysisScope.GLOBAL, area_key=area_key)
         roster_ids = {str(item["roster_id"]) for item in roster}
         events = [
@@ -355,6 +538,10 @@ class AnalyticsService:
             "scope": "global",
             "scopeUserCount": len(roster),
             "freshness": freshness,
+            "analyticsQuality": _analytics_quality(
+                events,
+                source_pipeline=self._source_pipeline_quality(publication),
+            ),
             "kpis": {
                 "activeUsers": len(active_ids),
                 "adoptionRate": _rate(len(active_ids), len(roster)),
@@ -363,7 +550,13 @@ class AnalyticsService:
                 "completeDelivery": _complete_delivery_measurement(events),
                 "p95Latency": _complete_latency_measurement(events),
             },
-            "hourlyQuestions": [{"hour": key, "count": hourly.get(key, 0)} for key in (f"{hour:02d}:00" for hour in range(24))],
+            "hourlyQuestions": [
+                {"hour": key, "count": hourly.get(key, 0)}
+                for key in _published_hour_axis(
+                    window,
+                    data_through=data_through,
+                )
+            ],
             "deviceDistribution": _distribution(devices, {"desktop": "PC", "mobile": "モバイル"}),
             "deviceMeasurement": _measurement_coverage(
                 device_measured_count, len(events)
@@ -377,8 +570,12 @@ class AnalyticsService:
                     "date": day,
                     "activeUsers": len(date_users[day]),
                     "questions": date_questions[day],
+                    "isPartial": day == partial_date,
                 }
-                for day in _local_date_axis(window)
+                for day in _published_date_axis(
+                    window,
+                    data_through=data_through,
+                )
             ],
             "requestTasks": _distribution(
                 tasks,
@@ -427,7 +624,7 @@ class AnalyticsService:
         }
 
     def regions(self, *, window: MetricsTimeWindow) -> dict[str, Any]:
-        freshness = self._freshness()
+        freshness = self._freshness(self._publication_snapshot())
         roster = self._roster(AnalysisScope.USER_MAP)
         roster_ids = {str(item["roster_id"]) for item in roster}
         events = [
@@ -478,7 +675,7 @@ class AnalyticsService:
         activity: str = "",
         window: MetricsTimeWindow,
     ) -> dict[str, Any]:
-        freshness = self._freshness()
+        freshness = self._freshness(self._publication_snapshot())
         roster = self._roster(AnalysisScope.USER_MAP, area_key=area_key)
         metrics = {str(item.get("roster_id") or ""): item for item in self._analytics.user_metrics()}
         activity_times: dict[str, list[datetime]] = defaultdict(list)
@@ -536,7 +733,9 @@ class AnalyticsService:
         }
 
     def user_detail(self, roster_id: str, *, window: MetricsTimeWindow) -> dict[str, Any]:
-        freshness = self._freshness()
+        publication = self._publication_snapshot()
+        freshness = self._freshness(publication)
+        data_through = _as_datetime(freshness.get("dataThrough"))
         user = self._directory.get_user(roster_id)
         if user is None or not membership_for(
             Department(user["department"]),
@@ -544,18 +743,30 @@ class AnalyticsService:
         ).includes(AnalysisScope.USER_MAP):
             raise KeyError("user not found")
         events = self._analytics.user_detail_events(roster_id=roster_id, window=window)
+        events = [item for item in events if bool(item.get("valid_question", True))]
         labels = {str(item.get("label_id") or ""): item for item in self._directory.list_labels(include_inactive=True)}
         dates = {str(item.get("question_date") or "") for item in events}
         day_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in events:
             day_rows[str(item.get("question_date") or "")].append(item)
-        products = Counter(str(item.get("primary_product_name") or "") for item in events if str(item.get("primary_product_name") or ""))
-        product_candidate_count = sum(int(item.get("product_candidate_count") or 0) for item in events)
-        product_resolved_count = sum(int(item.get("product_resolved_count") or 0) for item in events)
+        measured_product_rows = [item for item in events if _product_is_measured(item)]
+        products = Counter(
+            str(item.get("primary_product_name") or "")
+            for item in measured_product_rows
+            if str(item.get("primary_product_name") or "")
+        )
+        product_candidate_count = sum(
+            int(item.get("product_candidate_count") or 0)
+            for item in measured_product_rows
+        )
+        product_resolved_count = sum(
+            int(item.get("product_resolved_count") or 0)
+            for item in measured_product_rows
+        )
         product_unresolved_questions = sum(
             int(item.get("product_resolved_count") or 0)
             < int(item.get("product_candidate_count") or 0)
-            for item in events
+            for item in measured_product_rows
         )
         tasks = Counter()
         task_measured_count = 0
@@ -570,7 +781,7 @@ class AnalyticsService:
             analytics_question_category(item.get("primary_question_category")).value
             for item in measured_category_rows
         )
-        product_measured_count = sum(_product_is_measured(item) for item in events)
+        product_measured_count = len(measured_product_rows)
         measured_modes = [
             value
             for item in events
@@ -603,8 +814,16 @@ class AnalyticsService:
             "area": self._peer_comparison(user=user, roster=peer_roster, events=peer_events, field="area"),
             "role": self._peer_comparison(user=user, roster=peer_roster, events=peer_events, field="role"),
         }
+        partial_date = _partial_published_date(
+            window,
+            data_through=data_through,
+        )
         return {
             "freshness": freshness,
+            "analyticsQuality": _analytics_quality(
+                events,
+                source_pipeline=self._source_pipeline_quality(publication),
+            ),
             "profile": {
                 "rosterId": roster_id,
                 "name": user["name"],
@@ -631,8 +850,12 @@ class AnalyticsService:
                     "completeDelivery": _complete_delivery_measurement(
                         day_rows.get(day, [])
                     ),
+                    "isPartial": day == partial_date,
                 }
-                for day in _local_date_axis(window)
+                for day in _published_date_axis(
+                    window,
+                    data_through=data_through,
+                )
             ],
             "products": [{"label": key, "count": value} for key, value in products.most_common(10)],
             "productResolution": {

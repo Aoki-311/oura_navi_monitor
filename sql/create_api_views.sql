@@ -14,6 +14,154 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events`(
       PARTITION BY COALESCE(NULLIF(request_id, ''), event_id)
       ORDER BY answer_ts DESC, source_event_ts DESC, event_id DESC
     ) = 1
+  ), versioned_questions AS (
+    SELECT
+      q.*,
+      COALESCE(NULLIF(q.analytics_contract_version, ''), 'request_spec_analytics_v1')
+        AS effective_analytics_contract_version,
+      COALESCE(
+        NULLIF(q.product_resolution_status, ''),
+        CASE
+          WHEN q.classification_status = 'producer_invalid' THEN 'producer_invalid'
+          WHEN q.product_candidate_count IS NULL OR q.product_resolved_count IS NULL THEN NULL
+          WHEN q.product_candidate_count = 0 THEN 'not_applicable'
+          WHEN q.product_resolved_count = q.product_candidate_count THEN 'resolved'
+          WHEN q.product_resolved_count = 0 THEN 'unresolved'
+          ELSE 'partially_resolved'
+        END
+      ) AS effective_product_resolution_status
+    FROM `${PROJECT_ID}.${DATASET_ID}.question_events` q
+    WHERE q.question_date BETWEEN p_start_date AND p_end_date
+  ), classification_owned AS (
+    SELECT
+      q.*,
+      CASE
+        WHEN q.record_origin IN ('firestore_history', 'legacy_audit_history') THEN 'unmeasured'
+        WHEN q.effective_analytics_contract_version = 'request_spec_analytics_v1'
+          AND q.classification_status IN ('classified', 'unclassified') THEN 'measured'
+        WHEN q.effective_analytics_contract_version = 'request_spec_analytics_v2'
+          AND q.classification_status IN ('classified', 'unclassified')
+          AND q.primary_question_category IN (
+            'product_information', 'price_product_code', 'comparison_fit_selection',
+            'usage_procedure', 'troubleshooting_safety', 'sales_proposal',
+            'institution_gpo_market', 'document_search', 'other_general',
+            'unclassified'
+          )
+          AND ARRAY_LENGTH(IFNULL(q.question_categories, [])) > 0
+          AND q.primary_question_category IN UNNEST(IFNULL(q.question_categories, []))
+          AND NOT EXISTS (
+            SELECT 1
+            FROM UNNEST(IFNULL(q.question_categories, [])) category
+            WHERE category NOT IN (
+              'product_information', 'price_product_code', 'comparison_fit_selection',
+              'usage_procedure', 'troubleshooting_safety', 'sales_proposal',
+              'institution_gpo_market', 'document_search', 'other_general',
+              'unclassified'
+            )
+          )
+          AND q.is_multi_intent = (ARRAY_LENGTH(q.question_categories) > 1)
+          AND (
+            (
+              q.classification_status = 'classified'
+              AND EXISTS (
+                SELECT 1 FROM UNNEST(q.question_categories) category
+                WHERE category != 'unclassified'
+              )
+            )
+            OR (
+              q.classification_status = 'unclassified'
+              AND NOT EXISTS (
+                SELECT 1 FROM UNNEST(q.question_categories) category
+                WHERE category != 'unclassified'
+              )
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM UNNEST(IFNULL(q.classification_reason_codes, [])) reason
+            WHERE reason IN ('invalid_question_category', 'request_spec_unavailable')
+          ) THEN 'measured'
+        ELSE 'unmeasured'
+      END AS classification_measurement_state
+    FROM versioned_questions q
+  ), axis_owned_questions AS (
+    SELECT
+      q.*,
+      CASE
+        WHEN q.record_origin IN ('firestore_history', 'legacy_audit_history') THEN 'unmeasured'
+        WHEN q.effective_analytics_contract_version = 'request_spec_analytics_v1'
+          AND q.classification_measurement_state = 'measured'
+          AND IFNULL(ARRAY_LENGTH(q.analytics_tasks), 0) > 0 THEN 'measured'
+        WHEN q.effective_analytics_contract_version = 'request_spec_analytics_v2'
+          AND IFNULL(ARRAY_LENGTH(q.analytics_tasks), 0) > 0
+          AND NOT EXISTS (
+            SELECT 1
+            FROM UNNEST(IFNULL(q.analytics_tasks, [])) task
+            WHERE task NOT IN (
+              'fact_lookup', 'explanation', 'comparison_selection',
+              'procedure_guidance', 'troubleshooting', 'content_creation',
+              'source_retrieval', 'market_research', 'other', 'unclassified'
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM UNNEST(IFNULL(q.classification_reason_codes, [])) reason
+            WHERE reason IN ('invalid_analytics_task', 'request_spec_unavailable')
+          ) THEN 'measured'
+        ELSE 'unmeasured'
+      END AS task_measurement_state,
+      CASE
+        WHEN q.record_origin IN ('firestore_history', 'legacy_audit_history') THEN 'unmeasured'
+        WHEN q.product_candidate_count IS NULL OR q.product_resolved_count IS NULL
+          OR q.product_candidate_count < 0 OR q.product_resolved_count < 0
+          OR q.product_resolved_count > q.product_candidate_count THEN 'unmeasured'
+        WHEN q.effective_analytics_contract_version = 'request_spec_analytics_v1'
+          AND q.classification_status != 'producer_invalid' THEN 'measured'
+        WHEN q.effective_analytics_contract_version = 'request_spec_analytics_v2'
+          AND ARRAY_LENGTH(IFNULL(q.product_keys, []))
+            = ARRAY_LENGTH(IFNULL(q.product_names, []))
+          AND ARRAY_LENGTH(IFNULL(q.product_keys, [])) <= q.product_resolved_count
+          AND (
+            (
+              NULLIF(q.primary_product_key, '') IS NULL
+              AND NULLIF(q.primary_product_name, '') IS NULL
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM UNNEST(IFNULL(q.product_keys, [])) product_key WITH OFFSET position
+              WHERE product_key = q.primary_product_key
+                AND q.product_names[SAFE_OFFSET(position)] = q.primary_product_name
+            )
+          )
+          AND (
+            (
+              q.effective_product_resolution_status = 'not_applicable'
+              AND q.product_candidate_count = 0
+              AND q.product_resolved_count = 0
+              AND ARRAY_LENGTH(IFNULL(q.product_keys, [])) = 0
+              AND ARRAY_LENGTH(IFNULL(q.product_resolution_reason_codes, [])) = 0
+            )
+            OR (
+              q.effective_product_resolution_status = 'resolved'
+              AND q.product_candidate_count > 0
+              AND q.product_resolved_count = q.product_candidate_count
+              AND ARRAY_LENGTH(IFNULL(q.product_resolution_reason_codes, [])) = 0
+            )
+            OR (
+              q.effective_product_resolution_status = 'partially_resolved'
+              AND q.product_resolved_count > 0
+              AND q.product_resolved_count < q.product_candidate_count
+            )
+            OR (
+              q.effective_product_resolution_status = 'unresolved'
+              AND q.product_candidate_count > 0
+              AND q.product_resolved_count = 0
+              AND ARRAY_LENGTH(IFNULL(q.product_keys, [])) = 0
+            )
+          ) THEN 'measured'
+        ELSE 'unmeasured'
+      END AS product_measurement_state
+    FROM classification_owned q
   )
   SELECT
     q.event_id AS question_event_id,
@@ -33,14 +181,21 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events`(
     q.primary_question_category,
     q.question_categories,
     q.classification_status,
+    q.effective_analytics_contract_version AS analytics_contract_version,
+    IFNULL(q.classification_reason_codes, []) AS classification_reason_codes,
+    q.classification_measurement_state,
     q.is_multi_intent,
     q.analytics_tasks,
+    q.task_measurement_state,
     q.primary_product_key,
     q.primary_product_name,
     q.product_keys,
     q.product_names,
     q.product_candidate_count,
     q.product_resolved_count,
+    q.effective_product_resolution_status AS product_resolution_status,
+    IFNULL(q.product_resolution_reason_codes, []) AS product_resolution_reason_codes,
+    q.product_measurement_state,
     q.record_origin,
     q.measurement_profile AS question_measurement_profile,
     answer.measurement_available,
@@ -48,7 +203,7 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events`(
     answer.primary_failure_reason,
     answer.total_latency_ms,
     answer.measurement_profile AS answer_measurement_profile
-  FROM `${PROJECT_ID}.${DATASET_ID}.question_events` q
+  FROM axis_owned_questions q
   LEFT JOIN canonical_answers answer
     ON q.request_id IS NOT NULL
     AND q.request_id != ''
@@ -57,14 +212,11 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events`(
       AND DATE_ADD(q.question_date, INTERVAL 1 DAY)
   LEFT JOIN `${PROJECT_ID}.${DATASET_ID}.user_scope` scope
     ON q.roster_id = scope.roster_id
-  WHERE q.question_date BETWEEN p_start_date AND p_end_date
 );
 
 -- The current 80-person user list reads the same question fact owner directly.
 -- No user_daily copy is maintained, so a stale aggregate cannot disagree with
 -- the overview or hide historical last-use timestamps.
-DROP VIEW IF EXISTS `${PROJECT_ID}.${DATASET_ID}.dashboard_user_list`;
-DROP TABLE FUNCTION IF EXISTS `${PROJECT_ID}.${DATASET_ID}.dashboard_user_list`;
 CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_user_list`(
   p_history_start DATE,
   p_today DATE
@@ -99,8 +251,3 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_user_lis
   FROM current_scope scope
   LEFT JOIN metrics USING (roster_id)
 );
-
--- Explicitly close the two former unbounded mega-view owners.
-DROP VIEW IF EXISTS `${PROJECT_ID}.${DATASET_ID}.dashboard_overview`;
-DROP VIEW IF EXISTS `${PROJECT_ID}.${DATASET_ID}.dashboard_user_detail`;
-DROP TABLE IF EXISTS `${PROJECT_ID}.${DATASET_ID}.user_daily`;

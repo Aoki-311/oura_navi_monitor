@@ -19,7 +19,7 @@ done
 [[ -n "${PROJECT_ID}" ]] || { echo "--project is required" >&2; exit 2; }
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "mode=$([[ "${APPLY}" == "true" ]] && echo apply || echo plan)"
-echo "publish backward-compatible canonical semantic table functions for ${PROJECT_ID}.${DATASET_ID}"
+echo "publish canonical raw source views for ${PROJECT_ID}.${DATASET_ID}"
 if [[ "${APPLY}" != "true" ]]; then exit 0; fi
 [[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || {
   echo "approved credential is required" >&2; exit 2;
@@ -29,14 +29,14 @@ if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && "${GOOGLE_APPLICATION_CREDENTI
 fi
 export GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}"
 command -v bq >/dev/null 2>&1 || { echo "bq not found" >&2; exit 2; }
-for table in question_events answer_events user_scope; do
+for table in run_googleapis_com_requests run_googleapis_com_stdout; do
   bq --project_id="${PROJECT_ID}" --location="${LOCATION}" show "${PROJECT_ID}:${DATASET_ID}.${table}" >/dev/null || {
-    echo "canonical table not ready: ${PROJECT_ID}.${DATASET_ID}.${table}" >&2
+    echo "raw table not ready: ${PROJECT_ID}.${DATASET_ID}.${table}" >&2
     exit 2
   }
 done
 TMP_SQL="$(mktemp)"
 trap 'rm -f "${TMP_SQL}"' EXIT
 MONITOR_PROJECT_ID="${PROJECT_ID}" MONITOR_BQ_DATASET="${DATASET_ID}" MONITOR_BQ_LOCATION="${LOCATION}" \
-  PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c "from app.jobs.refresh_analytics import render_sql; from app.settings import Settings; print(render_sql('create_api_views.sql', Settings()))" > "${TMP_SQL}"
+  PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c "from app.jobs.refresh_analytics import render_sql; from app.settings import Settings; print(render_sql('create_source_tables.sql', Settings()))" > "${TMP_SQL}"
 bq --project_id="${PROJECT_ID}" --location="${LOCATION}" query --use_legacy_sql=false < "${TMP_SQL}"

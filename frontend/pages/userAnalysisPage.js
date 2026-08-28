@@ -6,6 +6,7 @@ import {
 import { barChart, doughnutChart, trendChart } from "../components/charts.js";
 import { bindPagination, bindResponsiveCollection, paginate, paginationMarkup } from "../components/collection.js";
 import { chips, escapeHtml, measurementContent, moduleMessage, setBusy } from "../components/dom.js";
+import { renderFreshnessBanner } from "../components/freshnessBanner.js";
 import { displayCount, displayDateTime, displayMeasuredRate, displayRate, measurementCoverage, measurementStateLabel } from "../viewModels/formatters.js";
 
 const DETAIL_MODULES = ["profile", "summary", "trend", "needs"];
@@ -48,6 +49,7 @@ export class UserAnalysisPage {
 
   shell() {
     return `<div class="pageHeading"><div><p class="eyebrow">個人の利用状況とニーズ</p><h2>ユーザー分析</h2></div><button class="ghostButton" id="changeUser">別のユーザーを選択</button></div>
+      <div class="freshnessBanner" data-freshness-banner data-state="loading">更新状況を確認中です。</div>
       <section class="panel" data-module="profile"><div data-module-body>${moduleMessage("読み込み中…")}</div></section>
       <section class="panel" data-module="summary"><div class="panelHead"><h3><span>01</span>個人利用サマリー</h3></div><div data-module-body>${moduleMessage("読み込み中…")}</div></section>
       <section class="panel" data-module="trend"><div class="panelHead"><h3><span>02</span>個人利用推移</h3></div><div data-module-body>${moduleMessage("読み込み中…")}</div></section>
@@ -64,10 +66,11 @@ export class UserAnalysisPage {
   }
 
   async renderChooser() {
-    this.root.innerHTML = `<div class="pageHeading"><div><p class="eyebrow">管理者を除くユーザー</p><h2>ユーザー分析</h2><p>氏名またはメールから分析対象を選択してください。</p></div></div><section class="panel chooserPanel"><div class="collectionToolbar"><label>ユーザー検索<input id="userSearch" type="search" value="${escapeHtml(this.userQuery)}" placeholder="氏名またはメール"></label></div><div id="userChoices" class="userChoices">${moduleMessage("読み込み中…", "loading")}</div><div id="userChooserPagination"></div></section>`;
+    this.root.innerHTML = `<div class="pageHeading"><div><p class="eyebrow">管理者を除くユーザー</p><h2>ユーザー分析</h2><p>氏名またはメールから分析対象を選択してください。</p></div></div><div class="freshnessBanner" data-freshness-banner data-state="loading">更新状況を確認中です。</div><section class="panel chooserPanel"><div class="collectionToolbar"><label>ユーザー検索<input id="userSearch" type="search" value="${escapeHtml(this.userQuery)}" placeholder="氏名またはメール"></label></div><div id="userChoices" class="userChoices">${moduleMessage("読み込み中…", "loading")}</div><div id="userChooserPagination"></div></section>`;
     try {
       const model = usersModel(await getUsers({ preset: this.getPreset() }, { signal: this.signal }));
       if (!this.isCurrent()) return;
+      renderFreshnessBanner(this.root.querySelector("[data-freshness-banner]"), model.freshness);
       this.chooserUsers = [...model.users].sort((a, b) => a.name.localeCompare(b.name, "ja-JP"));
       this.renderChooserRows();
       this.root.querySelector("#userSearch").addEventListener("input", (event) => {
@@ -102,7 +105,8 @@ export class UserAnalysisPage {
     try {
       const raw = await getUserDetail(this.rosterId, { preset: this.getPreset() }, { signal: this.signal });
       if (!this.isCurrent()) return;
-      userDetailEnvelope(raw);
+      const envelope = userDetailEnvelope(raw);
+      renderFreshnessBanner(this.root.querySelector("[data-freshness-banner]"), envelope.freshness, envelope.analyticsQuality);
       try { this.renderProfile(userProfileModel(raw)); } catch (error) { this.fail("profile", error); }
       try { this.renderSummary(userSummaryModel(raw), userComparisonsModel(raw)); } catch (error) { this.fail("summary", error); }
       try { this.renderTrend(userTrendModel(raw)); } catch (error) { this.fail("trend", error); }
@@ -136,7 +140,8 @@ export class UserAnalysisPage {
 
   renderTrend(rows) {
     const body = this.body("trend");
-    body.innerHTML = '<div class="chartBox tall"><canvas id="personalTrend"></canvas></div>';
+    const partial = rows.find((row) => row.isPartial);
+    body.innerHTML = `<div class="chartBox tall"><canvas id="personalTrend"></canvas></div>${partial ? `<p class="measurementNote">${escapeHtml(partial.date)} は反映済み時刻までの途中集計です。</p>` : ""}`;
     trendChart(body.querySelector("#personalTrend"), rows);
   }
 

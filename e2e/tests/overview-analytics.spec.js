@@ -6,6 +6,7 @@ test("overview renders seven analytics modules and preserves charts after refres
   await page.goto("/dashboard");
   for (const title of ["主要KPI", "利用環境・モード", "利用推移", "活性度分布", "ユーザー一覧", "日本利用マップ", "製品ニーズ"]) await expect(page.locator("main")).toContainText(title);
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
+  await expect(page.locator('[data-module="usage"]')).toContainText("途中集計");
   await expect(page.locator("#overviewUsers tbody tr")).toHaveCount(2);
   await expect(page.locator('[data-module="tasks"] h3')).toHaveText("質問種類");
   await expect(page.locator("main")).toContainText("製品 × 質問種類");
@@ -113,14 +114,46 @@ test("one user with missing analytics does not hide other valid users", async ({
 });
 
 test("stale freshness metadata never hides otherwise available data", async ({ page }) => {
+  const staleFreshness = {
+    ...overview.freshness,
+    state: "stale",
+    dataThrough: "2026-08-20T00:00:00Z",
+  };
   await installApiMocks(page, {
-    overviewOverride: { freshness: { state: "stale", dataThrough: "2026-08-20T00:00:00Z" } },
-    usersOverride: { freshness: { state: "stale", dataThrough: "2026-08-20T00:00:00Z" } },
+    overviewOverride: { freshness: staleFreshness },
+    usersOverride: { freshness: staleFreshness },
   });
   await page.goto("/dashboard");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("3時間ごと");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("反映済み");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("更新が遅れています");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("元イベント 2件");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("重複配信 3件");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("重複ファクト 1件");
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.locator("#regionRanking")).toContainText("関西");
+});
+
+test("a blocked latest refresh keeps the previous published dashboard and explains the failure", async ({ page }) => {
+  const analyticsQuality = {
+    ...overview.analyticsQuality,
+    sourcePipeline: {
+      ...overview.analyticsQuality.sourcePipeline,
+      latestRunId: "run-blocked",
+      latestRunStatus: "failed",
+      latestRunErrorCode: "DataQualityGateError",
+      latestRunFinishedAt: "2026-08-23T02:00:00Z",
+      state: "blocked",
+      batchBlockingFailureCount: 2,
+    },
+  };
+  await installApiMocks(page, { overviewOverride: { analyticsQuality } });
+  await page.goto("/dashboard");
+
+  await expect(page.locator("[data-freshness-banner]")).toContainText("品質チェック 2件");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("直前の成功データ");
+  await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
 });
 
 test("a slower obsolete period request cannot overwrite the latest selection", async ({ page }) => {

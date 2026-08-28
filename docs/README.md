@@ -8,6 +8,8 @@
   不另行定义指标。
 - [IMPLEMENTATION_AND_CUTOVER_CHECKLIST.md](IMPLEMENTATION_AND_CUTOVER_CHECKLIST.md)：
   文件删除、验证、云端 STOP 条件、切换顺序和当前发布状态；不另行定义产品。
+- [THREE_HOUR_RECOVERY_RUNBOOK.md](THREE_HOUR_RECOVERY_RUNBOOK.md)：本次 LCS 故障、
+  两天补数、3 小时 Scheduler 切换和旧 DTS 暂停的唯一操作顺序。
 
 其他 Markdown/XLSX 是历史调查、原始盘点或用户产物，只能作为证据线索，不能覆盖
 上述最终规范。尤其是 2026-08-22/23 的审计和字段 Excel 可能包含有偏样本、旧

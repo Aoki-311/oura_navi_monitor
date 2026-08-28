@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.question_events` (
   primary_question_category STRING,
   question_categories ARRAY<STRING>,
   classification_status STRING,
+  analytics_contract_version STRING,
+  classification_reason_codes ARRAY<STRING>,
   is_multi_intent BOOL,
   analytics_tasks ARRAY<STRING>,
   primary_product_key STRING,
@@ -43,6 +45,8 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.question_events` (
   product_names ARRAY<STRING>,
   product_candidate_count INT64,
   product_resolved_count INT64,
+  product_resolution_status STRING,
+  product_resolution_reason_codes ARRAY<STRING>,
   producer_revision STRING,
   producer_git_sha STRING,
   record_origin STRING,
@@ -57,6 +61,14 @@ ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
 ADD COLUMN IF NOT EXISTS record_origin STRING;
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
 ADD COLUMN IF NOT EXISTS measurement_profile STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
+ADD COLUMN IF NOT EXISTS analytics_contract_version STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
+ADD COLUMN IF NOT EXISTS classification_reason_codes ARRAY<STRING>;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
+ADD COLUMN IF NOT EXISTS product_resolution_status STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
+ADD COLUMN IF NOT EXISTS product_resolution_reason_codes ARRAY<STRING>;
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
 SET OPTIONS (partition_expiration_days = NULL);
 
@@ -80,6 +92,8 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.answer_events` (
   primary_question_category STRING,
   question_categories ARRAY<STRING>,
   classification_status STRING,
+  analytics_contract_version STRING,
+  classification_reason_codes ARRAY<STRING>,
   is_multi_intent BOOL,
   analytics_tasks ARRAY<STRING>,
   primary_product_key STRING,
@@ -88,6 +102,8 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.answer_events` (
   product_names ARRAY<STRING>,
   product_candidate_count INT64,
   product_resolved_count INT64,
+  product_resolution_status STRING,
+  product_resolution_reason_codes ARRAY<STRING>,
   demand_total INT64,
   delivered_demand_count INT64,
   partial_demand_count INT64,
@@ -121,6 +137,14 @@ ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
 ADD COLUMN IF NOT EXISTS record_origin STRING;
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
 ADD COLUMN IF NOT EXISTS measurement_profile STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
+ADD COLUMN IF NOT EXISTS analytics_contract_version STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
+ADD COLUMN IF NOT EXISTS classification_reason_codes ARRAY<STRING>;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
+ADD COLUMN IF NOT EXISTS product_resolution_status STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
+ADD COLUMN IF NOT EXISTS product_resolution_reason_codes ARRAY<STRING>;
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
 SET OPTIONS (partition_expiration_days = NULL);
 
@@ -160,8 +184,12 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.demand_events` (
   demand_order INT64,
   question_category STRING,
   analytics_task STRING,
+  analytics_contract_version STRING,
+  classification_reason_codes ARRAY<STRING>,
   product_keys ARRAY<STRING>,
   product_names ARRAY<STRING>,
+  product_resolution_status STRING,
+  product_resolution_reason_codes ARRAY<STRING>,
   requirement STRING,
   delivery_state STRING,
   evidence_state STRING,
@@ -173,6 +201,14 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.demand_events` (
 PARTITION BY question_date
 CLUSTER BY question_category, delivery_state, roster_id
 OPTIONS (require_partition_filter = TRUE);
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.demand_events`
+ADD COLUMN IF NOT EXISTS analytics_contract_version STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.demand_events`
+ADD COLUMN IF NOT EXISTS classification_reason_codes ARRAY<STRING>;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.demand_events`
+ADD COLUMN IF NOT EXISTS product_resolution_status STRING;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.demand_events`
+ADD COLUMN IF NOT EXISTS product_resolution_reason_codes ARRAY<STRING>;
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.demand_events`
 SET OPTIONS (partition_expiration_days = NULL);
 
@@ -241,3 +277,39 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.user_scope` (
   updated_at TIMESTAMP NOT NULL
 )
 CLUSTER BY roster_id, user_id, area_key, department;
+
+-- Privacy-safe, row-level disposition ledger. It stores only hashes and
+-- closed operational codes: never raw event ids, user ids, payloads or text.
+CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.pipeline_event_issues` (
+  source_event_hash STRING NOT NULL,
+  issue_code STRING NOT NULL,
+  disposition STRING NOT NULL,
+  event_family STRING,
+  source_ts TIMESTAMP NOT NULL,
+  event_ts TIMESTAMP,
+  first_run_id STRING NOT NULL,
+  last_run_id STRING NOT NULL,
+  first_observed_at TIMESTAMP NOT NULL,
+  last_observed_at TIMESTAMP NOT NULL,
+  observation_count INT64 NOT NULL,
+  resolution_status STRING NOT NULL,
+  resolved_at TIMESTAMP
+)
+CLUSTER BY resolution_status, disposition, issue_code, event_family;
+
+-- Immutable per-run accounting without raw identifiers. This is the bridge
+-- between a frozen source snapshot, its row disposition and the canonical
+-- fact that a controlled backfill must prove was materialized.
+CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.pipeline_run_event_manifest` (
+  run_id STRING NOT NULL,
+  source_event_hash STRING NOT NULL,
+  event_key_hash STRING,
+  event_family STRING NOT NULL,
+  source_ts TIMESTAMP NOT NULL,
+  event_ts TIMESTAMP,
+  disposition STRING NOT NULL,
+  observed_at TIMESTAMP NOT NULL
+)
+PARTITION BY DATE(observed_at)
+CLUSTER BY run_id, disposition, event_family
+OPTIONS (require_partition_filter = TRUE);

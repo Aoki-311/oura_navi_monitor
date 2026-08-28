@@ -25,11 +25,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "mode=$([[ "${APPLY}" == "true" ]] && echo apply || echo plan)"
 echo "canonical rebuild project=${PROJECT_ID} dataset=${DATASET_ID} start=${ANALYTICS_START_AT}"
 echo "No backup, shadow dataset, compatibility view, or old-table fallback will be created."
-echo "order=read_only_history_preflight,canonical_tables,source_views,history_apply,bounded_incremental_catchup,semantic_publish"
+echo "order=read_only_history_preflight,canonical_tables,source_views,history_apply,semantic_v2_publish"
 if [[ "${APPLY}" != "true" ]]; then
   echo "Apply requires --history-confirm from: PYTHONPATH=${ROOT_DIR} MONITOR_PROJECT_ID=${PROJECT_ID} MONITOR_BQ_DATASET=${DATASET_ID} MONITOR_BQ_LOCATION=${LOCATION} MONITOR_ANALYTICS_START_AT=${ANALYTICS_START_AT} ${PYTHON_BIN} -m app.jobs.rebuild_history"
   exit 0
 fi
+[[ "${PROJECT_ID}" != "lcs-developer-483404" ]] || {
+  echo "the one-time history rebuild entry is retired for production" >&2
+  echo "use the frozen incremental backfill workflow; any new history migration needs separate review" >&2
+  exit 2
+}
 [[ -n "${HISTORY_CONFIRM}" ]] || { echo "--history-confirm is required on apply" >&2; exit 2; }
 [[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || {
   echo "approved credential is required" >&2; exit 2;
@@ -55,20 +60,8 @@ PREFLIGHT_CONFIRM="$(
 }
 
 "${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --apply
-"${ROOT_DIR}/scripts/publish_monitor_views.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --apply
+"${ROOT_DIR}/scripts/publish_monitor_source_views.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --apply
 MONITOR_PROJECT_ID="${PROJECT_ID}" MONITOR_BQ_DATASET="${DATASET_ID}" MONITOR_BQ_LOCATION="${LOCATION}" \
 MONITOR_ANALYTICS_START_AT="${ANALYTICS_START_AT}" PYTHONPATH="${ROOT_DIR}" \
   "${PYTHON_BIN}" -m app.jobs.rebuild_history --apply --confirm "${HISTORY_CONFIRM}"
-MONITOR_PROJECT_ID="${PROJECT_ID}" MONITOR_BQ_DATASET="${DATASET_ID}" MONITOR_BQ_LOCATION="${LOCATION}" \
-MONITOR_ANALYTICS_START_AT="${ANALYTICS_START_AT}" \
-  "${ROOT_DIR}/scripts/run_monitor_refresh.sh" --python "${PYTHON_BIN}" --apply --until-current
-
-TMP_SQL="$(mktemp)"
-trap 'rm -f "${TMP_SQL}"' EXIT
-MONITOR_PROJECT_ID="${PROJECT_ID}" MONITOR_BQ_DATASET="${DATASET_ID}" \
-MONITOR_BQ_LOCATION="${LOCATION}" PYTHONPATH="${ROOT_DIR}" \
-  "${PYTHON_BIN}" -c \
-  "from app.jobs.refresh_analytics import render_sql; from app.settings import Settings; print(render_sql('create_api_views.sql', Settings()))" \
-  > "${TMP_SQL}"
-bq --project_id="${PROJECT_ID}" --location="${LOCATION}" query \
-  --use_legacy_sql=false < "${TMP_SQL}"
+"${ROOT_DIR}/scripts/publish_monitor_views.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --apply

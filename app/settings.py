@@ -6,6 +6,8 @@ from typing import List
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.refresh_policy import REFRESH_POLICY
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
@@ -28,10 +30,17 @@ class Settings(BaseSettings):
     monitor_cors_allowed_origins: str = Field(default="")
 
     monitor_default_days: int = Field(default=7)
-    monitor_data_freshness_minutes: int = Field(default=45)
-    monitor_refresh_overlap_minutes: int = Field(default=120)
-    monitor_refresh_delay_minutes: int = Field(default=5)
-    monitor_refresh_max_window_hours: int = Field(default=24)
+    monitor_refresh_cadence_minutes: int = Field(default=REFRESH_POLICY.cadence_minutes)
+    monitor_data_freshness_minutes: int = Field(
+        default=REFRESH_POLICY.freshness_stale_after_minutes
+    )
+    monitor_refresh_overlap_minutes: int = Field(default=REFRESH_POLICY.overlap_minutes)
+    monitor_refresh_delay_minutes: int = Field(default=REFRESH_POLICY.expected_delay_minutes)
+    monitor_event_future_tolerance_minutes: int = Field(
+        default=REFRESH_POLICY.event_future_tolerance_minutes
+    )
+    monitor_refresh_max_window_hours: int = Field(default=REFRESH_POLICY.max_window_hours)
+    monitor_refresh_lease_ttl_minutes: int = Field(default=REFRESH_POLICY.lease_ttl_minutes)
     monitor_firestore_read_timeout_seconds: int = Field(default=120)
     monitor_firestore_read_page_size: int = Field(default=1000)
     monitor_query_maximum_bytes: int = Field(default=1_073_741_824)

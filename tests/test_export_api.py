@@ -11,7 +11,14 @@ class _Analytics:
     def users(self, **_kwargs):
         return {
             "scopeUserCount": 80,
-            "freshness": {"state": "fresh", "dataThrough": "2026-08-24T00:00:00Z"},
+            "freshness": {
+                "state": "fresh",
+                "dataThrough": "2026-08-24T00:00:00Z",
+                "refreshCadenceMinutes": 180,
+                "expectedDelayMinutes": 5,
+                "staleAfterMinutes": 240,
+                "nextPlannedRefreshAt": "2026-08-24T03:05:00Z",
+            },
             "users": [
                 {
                     "rosterId": "roster_1",

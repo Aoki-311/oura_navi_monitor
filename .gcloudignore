@@ -1,0 +1,15 @@
+.git
+.git/**
+.venv
+.venv/**
+.pytest_cache
+.pytest_cache/**
+**/__pycache__/**
+**/*.pyc
+**/.DS_Store
+**/credentials/**
+**/*credential*.json
+**/*service-account*.json
+e2e/node_modules/**
+e2e/test-results/**
+e2e/playwright-report/**

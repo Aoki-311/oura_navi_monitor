@@ -6,9 +6,23 @@ steps:
       - -lc
       - |
         set -euo pipefail
+        [[ "${COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+          echo 'A full Git COMMIT_SHA is required for candidate provenance' >&2
+          exit 2
+        }
+        [[ "${_WEB_RUNTIME_SERVICE_ACCOUNT}" =~ ^[a-z0-9-]+@${PROJECT_ID}\.iam\.gserviceaccount\.com$ ]] || {
+          echo 'A dedicated web-reader runtime service account is required' >&2
+          exit 2
+        }
         test -f deploy/cloudrun.env.yaml
         test -f app/main.py
         test -f requirements.txt
+        test -f .dockerignore
+        test -f .gcloudignore
+        if find . -type f \( -path '*/credentials/*' -o -name '*service-account*.json' \) -print -quit | grep -q .; then
+          echo 'credential-shaped file is present in the Cloud Build source' >&2
+          exit 2
+        fi
 
   - id: precheck-python-compile
     name: python:3.12-slim
@@ -18,8 +32,9 @@ steps:
       - |
         set -euo pipefail
         pip install --no-cache-dir -r requirements-dev.txt
-        python -m compileall app
+        python -m compileall app scripts
         python -m pytest -q
+        bash -n scripts/*.sh
 
   - id: precheck-frontend-syntax
     name: node:22-slim
@@ -38,6 +53,36 @@ steps:
       - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA
       - .
 
+  - id: candidate-browser-contract
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA"
+        network="monitor-e2e-${BUILD_ID}"
+        container="monitor-e2e-${BUILD_ID}"
+        cleanup() {
+          docker rm -f "$${container}" >/dev/null 2>&1 || true
+          docker network rm "$${network}" >/dev/null 2>&1 || true
+        }
+        trap cleanup EXIT
+        docker network create "$${network}" >/dev/null
+        docker run -d --name "$${container}" --network "$${network}" \
+          -e MONITOR_ALLOW_UNVERIFIED_LOCAL=true \
+          -e MONITOR_ADMIN_ALLOWLIST=2401145@tc.terumo.co.jp \
+          -e MONITOR_ANALYTICS_START_AT=2026-03-16T00:00:00Z \
+          "$${image}" >/dev/null
+        docker run --rm --network "$${network}" \
+          mcr.microsoft.com/playwright:v1.58.2-noble \
+          bash -lc "for attempt in \$(seq 1 60); do curl -fsS http://$${container}:8080/api/health >/dev/null && exit 0; sleep 1; done; exit 1"
+        docker run --rm --network "$${network}" \
+          -e MONITOR_E2E_BASE_URL="http://$${container}:8080" \
+          -v /workspace/e2e:/work -w /work \
+          mcr.microsoft.com/playwright:v1.58.2-noble \
+          bash -lc 'npm ci --no-audit --no-fund && npm test'
+
   - id: docker-push
     name: gcr.io/cloud-builders/docker
     args:
@@ -46,33 +91,90 @@ steps:
 
   - id: cloud-run-deploy
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
-    entrypoint: gcloud
+    entrypoint: bash
     args:
-      - run
-      - deploy
-      - ${_SERVICE_NAME}
-      - --image
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA
-      - --region
-      - ${_REGION}
-      - --platform
-      - managed
-      - --service-account
-      - ${_RUNTIME_SERVICE_ACCOUNT}
-      - --no-allow-unauthenticated
-      - --no-traffic
-      - --tag
-      - candidate
-      - --env-vars-file
-      - deploy/cloudrun.env.yaml
-      - --remove-secrets=MONITOR_IDENTITY_HMAC_KEY
-      - --labels
-      - managed-by=cloud-build,repo=oura_navi_monitor
+      - -lc
+      - |
+        set -euo pipefail
+        [[ "${SHORT_SHA}" =~ ^[0-9a-f]{7}$ ]] || {
+          echo 'A Git-backed SHORT_SHA is required for candidate provenance' >&2
+          exit 2
+        }
+        tagged_image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}:$COMMIT_SHA"
+        digest="$(gcloud artifacts docker images describe "$${tagged_image}" --format='value(image_summary.digest)')"
+        [[ "$${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+          echo 'Artifact Registry did not return one immutable sha256 digest' >&2
+          exit 2
+        }
+        immutable_image="${_REGION}-docker.pkg.dev/${PROJECT_ID}/cloud-run-source-deploy/${_SERVICE_NAME}@$${digest}"
+        printf '%s\n' "$${immutable_image}" > /workspace/monitor-image-digest.txt
+        gcloud run deploy "${_SERVICE_NAME}" \
+          --image "$${immutable_image}" \
+          --region "${_REGION}" \
+          --platform managed \
+          --service-account "${_WEB_RUNTIME_SERVICE_ACCOUNT}" \
+          --no-allow-unauthenticated \
+          --no-traffic \
+          --tag candidate \
+          --revision-suffix "${SHORT_SHA}" \
+          --env-vars-file deploy/cloudrun.env.yaml \
+          --remove-secrets=MONITOR_IDENTITY_HMAC_KEY \
+          --labels "managed-by=cloud-build,repo=oura-navi-monitor,git-sha=${COMMIT_SHA}"
+        printf 'candidate_image=%s\n' "$${immutable_image}"
+
+  - id: verify-candidate
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        set -euo pipefail
+        immutable_image="$$(cat /workspace/monitor-image-digest.txt)"
+        service_json="$$(gcloud run services describe "${_SERVICE_NAME}" --region "${_REGION}" --format=json)"
+        revision="$$(SERVICE_JSON="$${service_json}" python3 -c 'import json,os; print((json.loads(os.environ["SERVICE_JSON"]).get("status") or {}).get("latestCreatedRevisionName") or "")')"
+        [[ -n "$${revision}" && "$${revision}" == *"-${SHORT_SHA}" ]] || {
+          echo 'candidate revision does not carry the requested Git suffix' >&2
+          exit 2
+        }
+        revision_json="$$(gcloud run revisions describe "$${revision}" --region "${_REGION}" --format=json)"
+        SERVICE_JSON="$${service_json}" REVISION_JSON="$${revision_json}" \
+        IMMUTABLE_IMAGE="$${immutable_image}" EXPECTED_REVISION="$${revision}" \
+        EXPECTED_SERVICE_ACCOUNT="${_WEB_RUNTIME_SERVICE_ACCOUNT}" \
+        EXPECTED_GIT_SHA="${COMMIT_SHA}" python3 - <<'PY'
+        import json
+        import os
+
+        service = json.loads(os.environ["SERVICE_JSON"])
+        revision = json.loads(os.environ["REVISION_JSON"])
+        expected_revision = os.environ["EXPECTED_REVISION"]
+        spec = revision.get("spec") or {}
+        containers = spec.get("containers") or []
+        if len(containers) != 1 or containers[0].get("image") != os.environ["IMMUTABLE_IMAGE"]:
+            raise SystemExit("candidate revision image digest readback failed")
+        if spec.get("serviceAccountName") != os.environ["EXPECTED_SERVICE_ACCOUNT"]:
+            raise SystemExit("candidate revision service account readback failed")
+        labels = (revision.get("metadata") or {}).get("labels") or {}
+        if labels.get("git-sha") != os.environ["EXPECTED_GIT_SHA"]:
+            raise SystemExit("candidate revision full Git SHA label is missing")
+        conditions = (revision.get("status") or {}).get("conditions") or []
+        if not any(item.get("type") == "Ready" and str(item.get("status")).lower() == "true" for item in conditions):
+            raise SystemExit("candidate revision is not Ready")
+        traffic = (service.get("status") or {}).get("traffic") or []
+        if any(item.get("revisionName") == expected_revision and int(item.get("percent") or 0) > 0 for item in traffic):
+            raise SystemExit("candidate revision unexpectedly has production traffic")
+        print(json.dumps({
+            "candidateRevision": expected_revision,
+            "gitSha": os.environ["EXPECTED_GIT_SHA"],
+            "image": os.environ["IMMUTABLE_IMAGE"],
+            "ready": True,
+            "trafficPercent": 0,
+        }, sort_keys=True))
+        PY
 
 substitutions:
   _SERVICE_NAME: oura-navi-monitor
   _REGION: us-central1
-  _RUNTIME_SERVICE_ACCOUNT: lcs-agent@lcs-developer-483404.iam.gserviceaccount.com
+  _WEB_RUNTIME_SERVICE_ACCOUNT: required-web-reader@invalid.invalid
 
 timeout: 1800s
 

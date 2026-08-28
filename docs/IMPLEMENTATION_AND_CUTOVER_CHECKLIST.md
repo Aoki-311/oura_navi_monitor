@@ -1,6 +1,6 @@
 # OurA Navi Monitor 实施、删除与切换清单
 
-更新日：2026-08-26
+更新日：2026-08-29
 
 规则：只有代码处于最终状态、冲突旧路径关闭且最后一次修改后的对应验证通过，
 本地项目才能打勾。云端写入、构建、部署、登录、业务和流量是独立授权与证据。
@@ -14,8 +14,9 @@
 - 唯一 owner：历史编译、canonical facts、两个参数化语义函数、AnalyticsService、
   page controller、用户管理 transaction、独立 conversation repository。
 - 影响范围：本仓库后端、前端、SQL、脚本、测试和权威文档。
-- 不在本轮授权：commit、push、构建、部署、Cloud Run、BigQuery/Firestore/Logging
-  写入/删除、LCS revision 与任何流量切换。
+- 本次 Git 门已授权：本仓库与 LCS 修复仓库的 commit、push。
+- 仍不在本轮授权：构建、部署、Cloud Run、BigQuery/Firestore/Logging 写入/删除、
+  IAM、Scheduler、DTS 停用、LCS revision 与任何流量切换。
 
 ## 2. 本地必选任务
 
@@ -57,6 +58,16 @@
 - [x] 最后一次业务代码修改后的 Python 全量回归通过。
 - [x] 最后一次业务代码修改后的 JS syntax、脚本/YAML/SQL 合同和 E2E 通过。
 - [x] 最终 diff、旧引用、敏感信息、用户文件和 release state 复核。
+- [x] 晚到事件按本次 event ID/effective partition 去重、补充字段和质量检查。
+- [x] `pipeline_run_event_manifest` 与 `pipeline_event_issues` 保存逐事件哈希化去向。
+- [x] 质量阻断回滚 facts，但独立保留诊断和 latest failed run；旧成功页面继续可读。
+- [x] overview、用户选择和个人页共享鲜度/质量 banner；当天部分日明确标记。
+- [x] 3 小时 timing 只有 `app/refresh_policy.py` 一个 owner，Scheduler retry 为 0。
+- [x] freeze 等待 Cloud Run execution 与 BigQuery DML；补数绑定固定目标和逐项对账。
+- [x] activation、backfill、DTS pause/45 分钟/72 小时验证均产生不可覆盖 receipt。
+- [x] Web、Refresh writer、Scheduler invoker 三身份硬分离；镜像必须是同一 digest。
+- [x] additive table functions 与 destructive cleanup 分开；旧对象删除 apply 永久硬停止。
+- [x] Monitor 与 LCS 均有精确 candidate promotion 门、验收收据、切流前快照和 100% 读回。
 
 ## 3. 已关闭的本地旧路径
 
@@ -143,7 +154,7 @@ run_googleapis_com_stdout
 run_googleapis_com_stderr
 ```
 
-历史 apply、event ID 验证、页面验收全部通过后，才允许删除 17 个旧派生对象：
+以下 17 个旧派生对象只做保留盘点，本次不允许删除：
 
 ```text
 monitor_answer_events
@@ -165,16 +176,15 @@ v_monitor_event_message_join_keys
 run_googleapis_com_varlog_system
 ```
 
-另行只删除已 inventory 的旧 DTS、四个 obsolete log metrics 和只依赖旧合同的精确
-policy ID。脚本无 glob、无 dataset delete、无 raw delete；`--apply` 需另行授权、
-精确确认字符串、完整 DTS resource name、批准凭据和 `issueCount=0` 的
-`--history-confirm`。该确认串必须已由成功的逐 event ID 验证写入
-`pipeline_state(source=history_rebuild)`；只跑 plan 不能解锁删除。
+`delete_obsolete_monitor_resources.sh` 现在只输出只读清单；任何 `--apply` 都硬停止。
+本次只允许在完整依赖门后暂停旧 DTS 自动调度，并保留 transfer config、旧表、raw、
+log metrics 和 policy。未来删除必须另做保留期、依赖、回滚和授权设计。
 
 ## 7. 从当前状态继续的唯一云端顺序
 
 - [x] 重新只读 inventory 并保存对象类型、生产 revision/image/SHA。
 - [x] 运行最终 history plan，人工核对数量并固定只读确认串。
+- [ ] 建立 Web runtime、Refresh writer、Scheduler invoker 三个独立身份并完成最小 IAM。
 - [ ] 获得 BigQuery/Logging/Firestore 写入授权。
 - [x] canonical facts、state、source view 和两个参数化语义函数在线存在。
 - [ ] 用最新确认串追平 8/26 的 15/15 差额并逐 event ID 验证。
@@ -182,7 +192,8 @@ policy ID。脚本无 glob、无 dataset delete、无 raw delete；`--apply` 需
 - [ ] 构建 Monitor 无流量候选；IAP 登录并验收三页历史数据、空值和局部失败。
 - [ ] 之后才创建/选择 LCS 候选 revision，跑 internal/Web 真实问答和写回成功/失败链。
 - [ ] 刷新增窗口，验证同一 canonical 页面同时连续显示历史与新事件。
-- [ ] 停旧 DTS，精确删除旧派生 owner；再次验证页面。
+- [ ] 三次 Scheduler-proven 正式窗口后，以零依赖 receipt 暂停旧 DTS 自动调度。
+- [ ] DTS 暂停后完成 45 分钟与 72 小时不变性验证；旧对象继续保留。
 - [ ] 分别完成 Monitor/LCS 业务验收和明确流量切换。
 
 任一步失败：停止后续 release 动作，修复唯一 owner；不恢复旧表读取或建立 fallback。
@@ -200,38 +211,42 @@ for script_file in scripts/*.sh; do bash -n "$script_file"; done
 git diff --check
 ```
 
-2026-08-26 最后一次完整本地证据：
+2026-08-29 最后一次完整本地证据：
 
-- `pytest`：133 passed；历史任务、停用用户、模式/设备计测、单日回访率、活性度边界
-  等新增 RED 先失败，修复后定向与全量均通过；
-- `compileall`：通过；`pip check`：无破损依赖；YAML：可解析；
+- Monitor `pytest`：176 passed；晚到事件、逐事件去向、质量失败、lease、固定目标补数、
+  Scheduler provenance、DTS pause/观察和身份绑定均有回归；
+- `compileall`：通过；YAML：可解析；
 - JavaScript `node --check`、全部 Shell `bash -n`、`git diff --check`：通过；
-- Playwright：27 passed，覆盖三页、局部失败、历史未计测环境、停用用户直达链接、
+- Monitor Playwright：30 passed，覆盖三页、局部失败、最新刷新失败仍显示旧成功数据、
+  历史未计测环境、停用用户直达链接、
   请求竞态、地图键盘联动、URL 刷新/返回、并发编辑、停用标签、分页状态与
   PC/iPad/mobile；
-- Chromium 快照：1440px 三页及 390px 首页/用户/管理已人工检查；页面无全局横向溢出，
-  产品矩阵仅在自身卡片内横向滚动；
-- BigQuery 只读 dry-run：计划序列与 9 个单文件全部通过；
-- 真实只读 Chromium：三页实际 BigQuery/Firestore 链路 0 个模块错误，管理范围
-  83/69/80/3；这不替代 IAP。
+- BigQuery 只读 dry-run：planned cutover 与所有当前 SQL 通过；projection 11,017 bytes，
+  其他当前合同为 0 bytes；无 BigQuery 写入；
+- LCS 交叉门禁：后端 992 passed（1 个 httpx deprecation warning），ESLint、TypeScript、
+  production build 通过；stale-parent/durability Playwright 7 passed；
+- LCS build 有既存的 Browserslist 资料较旧与一个 622 KB chunk warning，不阻断本次
+  正确性，但应作为后续性能维护项。
 
 本仓库没有独立的 TypeScript/mypy/ruff/eslint 配置；没有擅自安装第二套工具。
-Cloud Build/Docker build 属于用户明确禁止的未授权构建动作，本轮没有执行。
+Cloud Build/Docker build 未获本次授权，本轮没有执行。
 
 ## 9. 发布状态矩阵
 
 | 层次 | 当前状态 |
 | --- | --- |
-| 本地代码 | 本地最终 diff 已通过完整门禁与真实历史只读产品链路 |
-| Git commit | 以当前仓库 `HEAD` 为准；只证明源码版本，不证明构建或运行状态 |
-| Git push | 以 `origin/main` 为准；只证明远端源码版本，不证明部署状态 |
+| 本地代码 | `local validated`：当前两个 repair worktree 已通过本轮完整本地门禁 |
+| Git commit | 已获授权；精确 SHA 以仓库历史和本次交付记录为准 |
+| Git push | 已获授权；远端状态以 `origin/main` 回读为准 |
 | Build | 未执行 |
-| Cloud Run candidate | 本轮未创建；现有 `oura-navi-monitor-00042-jum` Ready，镜像是旧提交 `66da5e4`，candidate tag 与 100% 流量同指该 revision |
+| IAM | 新的三个独立运行身份尚不存在；当前 live 仍依赖共享 `lcs-agent`，因此 STOP |
+| Cloud Run candidate | 本轮未创建 |
 | Monitor 登录验收 | 未执行 |
 | Monitor 业务验收 | 未执行 |
 | BigQuery/Firestore/Logging apply | 本轮未执行；线上已有此前 backfill 与刷新结果 |
-| 历史 backfill | 8/25 已验证 3,331/3,215；8/26 只读 plan 多出 15/15，未 apply |
-| LCS revision | 生产 `00243-sas` 为 100%；`00247-jug` 仅 candidate tag、0% 生产流量；本轮未改 |
-| Monitor/LCS production traffic | 本轮未改变；Monitor 00042=100%，LCS 00243=100% |
+| 历史 backfill | 本轮未 apply；两天/当前缺口仍需冻结后用固定目标补齐 |
+| Scheduler | live 只读核对仍只有旧 15 分钟 Scheduler ENABLED；新三小时 Scheduler 未创建 |
+| LCS revision | 本轮未构建或部署新 revision |
+| Monitor/LCS production traffic | 本轮未改变；本次只读回读为 Monitor 00046=100%，LCS 00247=100% |
 
-整体结论：**尚未完成**。
+整体结论：**代码已完成本地闭合；Git 状态以 `origin/main` 回读为准；生产收口尚未完成**。
