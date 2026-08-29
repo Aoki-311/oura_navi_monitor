@@ -8,6 +8,7 @@ from app.jobs.refresh_analytics import (
     DataQualityGateError,
     PublicationOutcomeUnknownError,
     _failed_quality_checks,
+    _render_begin_run_sql,
     render_publish_sql,
 )
 from app.settings import Settings
@@ -137,6 +138,58 @@ def test_pipeline_run_records_a_closed_scheduler_or_backfill_trigger_source() ->
     assert "--trigger-source" in refresh
     assert "scheduler_three_hour" in refresh
     assert "manual_backfill" in refresh
+
+
+def test_begin_run_uses_partition_bounded_update_then_insert() -> None:
+    sql = _render_begin_run_sql("test-project.monitor").lower()
+
+    assert "merge `test-project.monitor.pipeline_runs`" not in sql
+    assert "update `test-project.monitor.pipeline_runs`" in sql
+    assert "started_at >= @run_partition_start" in sql
+    assert "started_at < @run_partition_end" in sql
+    assert "set matched_run_count = @@row_count" in sql
+    assert "assert matched_run_count <= 1" in sql
+    assert "if matched_run_count = 0 then" in sql
+    assert "insert into `test-project.monitor.pipeline_runs`" in sql
+    assert "@run_started_at" in sql
+    assert "commit transaction" in sql
+
+
+class _BeginRunCaptureJob(AnalyticsRefreshJob):
+    def __init__(self) -> None:
+        super().__init__(
+            _settings(),
+            client=object(),
+            projector=object(),
+            execution_id="execution-partition-bound",
+            trigger_source="manual_backfill",
+        )
+        self.parameters = {}
+
+    def _query(self, sql, parameters):
+        self.parameters = {
+            parameter.name: parameter.value for parameter in parameters
+        }
+        return []
+
+
+def test_begin_run_binds_the_same_started_at_inside_a_three_day_scan() -> None:
+    job = _BeginRunCaptureJob()
+
+    job._begin_run(
+        run_id="run-1",
+        window_start=datetime(2026, 8, 26, tzinfo=timezone.utc),
+        window_end=datetime(2026, 8, 27, tzinfo=timezone.utc),
+    )
+
+    assert job.parameters["execution_id"] == "execution-partition-bound"
+    assert job.parameters["trigger_source"] == "manual_backfill"
+    assert job.parameters["run_partition_start"] <= job.parameters["run_started_at"]
+    assert job.parameters["run_started_at"] < job.parameters["run_partition_end"]
+    assert (
+        job.parameters["run_partition_end"]
+        - job.parameters["run_partition_start"]
+    ).days == 3
 
 
 def test_only_nonzero_quality_findings_emit_bounded_operator_events() -> None:

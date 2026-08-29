@@ -242,6 +242,39 @@ def _has_blocking_quality_failure(checks: list[dict[str, Any]]) -> bool:
     )
 
 
+def _render_begin_run_sql(dataset: str) -> str:
+    """Create or reset one recent run without an unbounded MERGE target scan."""
+
+    return f"""
+DECLARE matched_run_count INT64 DEFAULT 0;
+BEGIN TRANSACTION;
+UPDATE `{dataset}.pipeline_runs`
+SET finished_at = NULL,
+    execution_id = @execution_id,
+    trigger_source = @trigger_source,
+    window_start = @window_start,
+    window_end = @window_end,
+    source = 'published',
+    status = 'running',
+    error_code = NULL
+WHERE run_id = @run_id
+  AND started_at >= @run_partition_start
+  AND started_at < @run_partition_end;
+SET matched_run_count = @@row_count;
+ASSERT matched_run_count <= 1 AS 'duplicate pipeline run identity';
+IF matched_run_count = 0 THEN
+  INSERT INTO `{dataset}.pipeline_runs` (
+    run_id, execution_id, trigger_source, started_at, window_start, window_end,
+    source, status
+  ) VALUES (
+    @run_id, @execution_id, @trigger_source, @run_started_at, @window_start,
+    @window_end, 'published', 'running'
+  );
+END IF;
+COMMIT TRANSACTION;
+""".strip()
+
+
 class AnalyticsRefreshJob:
     def __init__(
         self,
@@ -487,29 +520,15 @@ ORDER BY check_name
         window_start: datetime,
         window_end: datetime,
     ) -> None:
+        run_started_at = datetime.now(timezone.utc)
+        partition_day = run_started_at.replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
         self._query(
-            f"""
-MERGE `{self._dataset}.pipeline_runs` target
-USING (SELECT @run_id AS run_id) incoming
-ON target.run_id = incoming.run_id
-  AND DATE(target.started_at) BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY) AND CURRENT_DATE()
-WHEN MATCHED THEN UPDATE SET
-  finished_at = NULL,
-  execution_id = @execution_id,
-  trigger_source = @trigger_source,
-  window_start = @window_start,
-  window_end = @window_end,
-  source = 'published',
-  status = 'running',
-  error_code = NULL
-WHEN NOT MATCHED THEN INSERT (
-  run_id, execution_id, trigger_source, started_at, window_start, window_end,
-  source, status
-) VALUES (
-  @run_id, @execution_id, @trigger_source, CURRENT_TIMESTAMP(), @window_start,
-  @window_end, 'published', 'running'
-);
-""".strip(),
+            _render_begin_run_sql(self._dataset),
             [
                 bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
                 bigquery.ScalarQueryParameter(
@@ -517,6 +536,21 @@ WHEN NOT MATCHED THEN INSERT (
                 ),
                 bigquery.ScalarQueryParameter(
                     "trigger_source", "STRING", self._trigger_source
+                ),
+                bigquery.ScalarQueryParameter(
+                    "run_started_at",
+                    "TIMESTAMP",
+                    run_started_at,
+                ),
+                bigquery.ScalarQueryParameter(
+                    "run_partition_start",
+                    "TIMESTAMP",
+                    partition_day - timedelta(days=2),
+                ),
+                bigquery.ScalarQueryParameter(
+                    "run_partition_end",
+                    "TIMESTAMP",
+                    partition_day + timedelta(days=1),
                 ),
                 bigquery.ScalarQueryParameter("window_start", "TIMESTAMP", window_start),
                 bigquery.ScalarQueryParameter("window_end", "TIMESTAMP", window_end),

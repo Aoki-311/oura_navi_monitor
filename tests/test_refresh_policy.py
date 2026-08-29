@@ -424,7 +424,7 @@ elif [[ " $* " == *" scheduler jobs resume "* ]]; then
   : > "${FAKE_NEW_ENABLED}"
   printf '%s\n' resume-new >> "${FAKE_OPERATION_LOG}"
 elif [[ " $* " == *" run jobs executions list "* ]]; then
-  printf '%s\n' '[]'
+  printf '%s\n' "${FAKE_EXECUTIONS_JSON:-[]}"
 elif [[ " $* " == *" run jobs describe "* ]]; then
   printf '%s\n' "${FAKE_JOB_JSON}"
 else
@@ -633,6 +633,44 @@ def test_scheduler_cutover_does_not_resume_new_when_a_racing_lease_exists(
     assert not new_enabled.exists()
     assert operation_log.read_text(encoding="utf-8").splitlines() == ["pause-old"]
     assert "still owns the pipeline lease" in result.stderr
+
+
+def test_scheduler_cutover_rejects_a_nonterminal_refresh_execution(
+    tmp_path: Path,
+) -> None:
+    env, old_paused, new_enabled, operation_log = _scheduler_cutover_environment(
+        tmp_path
+    )
+    env["FAKE_EXECUTIONS_JSON"] = json.dumps(
+        [
+            {
+                "name": "oura-navi-monitor-refresh-still-running",
+                "status": {
+                    "conditions": [
+                        {"type": "Completed", "status": "Unknown"}
+                    ]
+                },
+            }
+        ]
+    )
+
+    result = _run_scheduler_cutover_stage(
+        tmp_path,
+        env=env,
+        stage="freeze-old",
+    )
+
+    assert result.returncode != 0
+    assert old_paused.exists()
+    assert not new_enabled.exists()
+    assert operation_log.read_text(encoding="utf-8").splitlines() == ["pause-old"]
+    assert "still has non-terminal executions" in result.stderr
+    snapshot = json.loads(
+        (tmp_path / "scheduler-cutover.json").read_text(encoding="utf-8")
+    )
+    assert "freeze_verified_at" not in snapshot
+    assert "active_bigquery_writers_at_freeze" not in snapshot
+    assert "legacy_scheduler_freeze=complete" not in result.stdout
 
 
 def _canonical_gate_rows() -> list[dict[str, str]]:

@@ -261,6 +261,29 @@ os.replace(temporary, path)
 PY
 }
 
+invalidate_freeze_verification() {
+  python3 - "${SNAPSHOT_OUTPUT}" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    payload = json.load(handle)
+for key in (
+    "freeze_verified_at",
+    "refresh_executions_at_freeze",
+    "active_bigquery_writers_at_freeze",
+):
+    payload.pop(key, None)
+temporary = f"{path}.tmp"
+with open(temporary, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+    handle.write("\n")
+os.replace(temporary, path)
+PY
+}
+
 query_pipeline_gate() {
   bq --project_id="${PROJECT_ID}" --location="${LOCATION}" query \
     --use_legacy_sql=false --format=json --quiet \
@@ -399,12 +422,14 @@ if [[ "${STAGE}" == "freeze-old" ]]; then
 
   # The old scheduler can start once between the first gate and pause call.
   # Leave it paused and require a safe retry if that execution owns the lease.
+  invalidate_freeze_verification
   POST_PAUSE_GATE_JSON="$(query_pipeline_gate)"
   POST_PAUSE_GATE_SUMMARY="$(validate_pipeline_gate "${POST_PAUSE_GATE_JSON}" "freeze")"
   echo "post_pause_gate=${POST_PAUSE_GATE_SUMMARY}"
   EXECUTIONS_JSON="$(query_execution_inventory)"
   ACTIVE_BQ_JOBS_JSON="$(query_active_bigquery_writers)"
-  echo "writer_quiescence=$(validate_no_inflight_writers "${EXECUTIONS_JSON}" "${ACTIVE_BQ_JOBS_JSON}")"
+  WRITER_QUIESCENCE="$(validate_no_inflight_writers "${EXECUTIONS_JSON}" "${ACTIVE_BQ_JOBS_JSON}")"
+  echo "writer_quiescence=${WRITER_QUIESCENCE}"
   OLD_AFTER="$(describe_scheduler "${OLD_SCHEDULER}")"
   OLD_AFTER_STATE="$(validate_old_scheduler "${OLD_AFTER}")"
   [[ "${OLD_AFTER_STATE}" == "PAUSED" ]] || {
@@ -432,12 +457,14 @@ if [[ "${STAGE}" == "freeze" ]]; then
 
   # Close the race where an execution started between the first gate and pause.
   # A retry is safe and reuses the same pre-change snapshot.
+  invalidate_freeze_verification
   POST_PAUSE_GATE_JSON="$(query_pipeline_gate)"
   POST_PAUSE_GATE_SUMMARY="$(validate_pipeline_gate "${POST_PAUSE_GATE_JSON}" "freeze")"
   echo "post_pause_gate=${POST_PAUSE_GATE_SUMMARY}"
   EXECUTIONS_JSON="$(query_execution_inventory)"
   ACTIVE_BQ_JOBS_JSON="$(query_active_bigquery_writers)"
-  echo "writer_quiescence=$(validate_no_inflight_writers "${EXECUTIONS_JSON}" "${ACTIVE_BQ_JOBS_JSON}")"
+  WRITER_QUIESCENCE="$(validate_no_inflight_writers "${EXECUTIONS_JSON}" "${ACTIVE_BQ_JOBS_JSON}")"
+  echo "writer_quiescence=${WRITER_QUIESCENCE}"
 
   OLD_AFTER="$(describe_scheduler "${OLD_SCHEDULER}")"
   NEW_AFTER="$(describe_scheduler "${NEW_SCHEDULER}")"
