@@ -1,4 +1,4 @@
-import { analyticsQualityModel, coverageModel, freshnessModel, measurementModel } from "./overviewAdapter.js";
+import { analyticsMetadataModel, coverageModel, measurementModel } from "./overviewAdapter.js";
 
 const ACTIVITY_KEYS = new Set(["high", "middle", "low", "dormant"]);
 
@@ -45,8 +45,12 @@ function labels(value) {
 }
 
 export function usersModel(payload) {
-  if (!payload || !Array.isArray(payload.users) || !Number.isInteger(payload.scopeUserCount) || payload.scopeUserCount < 0) throw new Error("ユーザーデータの形式が不正です。");
-  const freshness = freshnessModel(payload.freshness);
+  if (!payload || !Array.isArray(payload.users)) throw new Error("ユーザーデータの形式が不正です。");
+  const metadata = analyticsMetadataModel(payload);
+  const scopeUserCount = Number.isInteger(payload.scopeUserCount) && payload.scopeUserCount >= 0
+    ? payload.scopeUserCount
+    : null;
+  if (scopeUserCount == null) metadata.metadataIssues.push("ユーザー対象者数を確認できません。");
   const issues = [];
   const users = payload.users.flatMap((row, index) => {
     try {
@@ -78,12 +82,12 @@ export function usersModel(payload) {
       return [];
     }
   });
-  return { scopeUserCount: payload.scopeUserCount, freshness, users, issues };
+  return { scopeUserCount, ...metadata, users, issues };
 }
 
 export function userDetailEnvelope(payload) {
-  if (!payload) throw new Error("ユーザー分析データの形式が不正です。");
-  return { ...payload, freshness: freshnessModel(payload.freshness), analyticsQuality: analyticsQualityModel(payload.analyticsQuality) };
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("ユーザー分析データの形式が不正です。");
+  return { ...payload, ...analyticsMetadataModel(payload, { includeQuality: true }) };
 }
 
 export function userProfileModel(payload) {

@@ -58,16 +58,11 @@ PARTITION BY question_date
 CLUSTER BY roster_id, primary_question_category, primary_product_key, mode
 OPTIONS (require_partition_filter = TRUE);
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
-ADD COLUMN IF NOT EXISTS record_origin STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
-ADD COLUMN IF NOT EXISTS measurement_profile STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
-ADD COLUMN IF NOT EXISTS analytics_contract_version STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
-ADD COLUMN IF NOT EXISTS classification_reason_codes ARRAY<STRING>;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
-ADD COLUMN IF NOT EXISTS product_resolution_status STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
+ADD COLUMN IF NOT EXISTS record_origin STRING,
+ADD COLUMN IF NOT EXISTS measurement_profile STRING,
+ADD COLUMN IF NOT EXISTS analytics_contract_version STRING,
+ADD COLUMN IF NOT EXISTS classification_reason_codes ARRAY<STRING>,
+ADD COLUMN IF NOT EXISTS product_resolution_status STRING,
 ADD COLUMN IF NOT EXISTS product_resolution_reason_codes ARRAY<STRING>;
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.question_events`
 SET OPTIONS (partition_expiration_days = NULL);
@@ -134,16 +129,11 @@ PARTITION BY answer_date
 CLUSTER BY roster_id, terminal, primary_question_category, revision_name
 OPTIONS (require_partition_filter = TRUE);
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
-ADD COLUMN IF NOT EXISTS record_origin STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
-ADD COLUMN IF NOT EXISTS measurement_profile STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
-ADD COLUMN IF NOT EXISTS analytics_contract_version STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
-ADD COLUMN IF NOT EXISTS classification_reason_codes ARRAY<STRING>;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
-ADD COLUMN IF NOT EXISTS product_resolution_status STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
+ADD COLUMN IF NOT EXISTS record_origin STRING,
+ADD COLUMN IF NOT EXISTS measurement_profile STRING,
+ADD COLUMN IF NOT EXISTS analytics_contract_version STRING,
+ADD COLUMN IF NOT EXISTS classification_reason_codes ARRAY<STRING>,
+ADD COLUMN IF NOT EXISTS product_resolution_status STRING,
 ADD COLUMN IF NOT EXISTS product_resolution_reason_codes ARRAY<STRING>;
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.answer_events`
 SET OPTIONS (partition_expiration_days = NULL);
@@ -202,12 +192,9 @@ PARTITION BY question_date
 CLUSTER BY question_category, delivery_state, roster_id
 OPTIONS (require_partition_filter = TRUE);
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.demand_events`
-ADD COLUMN IF NOT EXISTS analytics_contract_version STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.demand_events`
-ADD COLUMN IF NOT EXISTS classification_reason_codes ARRAY<STRING>;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.demand_events`
-ADD COLUMN IF NOT EXISTS product_resolution_status STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.demand_events`
+ADD COLUMN IF NOT EXISTS analytics_contract_version STRING,
+ADD COLUMN IF NOT EXISTS classification_reason_codes ARRAY<STRING>,
+ADD COLUMN IF NOT EXISTS product_resolution_status STRING,
 ADD COLUMN IF NOT EXISTS product_resolution_reason_codes ARRAY<STRING>;
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.demand_events`
 SET OPTIONS (partition_expiration_days = NULL);

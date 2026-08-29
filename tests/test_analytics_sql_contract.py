@@ -570,3 +570,48 @@ def test_obsolete_deletion_is_a_read_only_inventory_and_hard_stops_apply() -> No
     assert "bq --project_id" not in script
     assert "gcloud --project" not in script
     assert " rm -f " not in script
+
+
+def test_additive_schema_and_semantic_publishers_never_run_legacy_retirement() -> None:
+    additive_sql = [
+        ROOT_DIR / "sql" / "create_dataset.sql",
+        ROOT_DIR / "sql" / "create_fact_tables.sql",
+        ROOT_DIR / "sql" / "create_aggregates.sql",
+        ROOT_DIR / "sql" / "create_source_tables.sql",
+        ROOT_DIR / "sql" / "create_api_views.sql",
+    ]
+    for path in additive_sql:
+        source = path.read_text(encoding="utf-8").lower()
+        assert "drop table" not in source, path.name
+        assert "drop view" not in source, path.name
+        assert "drop function" not in source, path.name
+
+    for name in (
+        "bootstrap_monitor_data.sh",
+        "publish_monitor_source_views.sh",
+        "publish_monitor_views.sh",
+    ):
+        source = (ROOT_DIR / "scripts" / name).read_text(encoding="utf-8")
+        assert "retire_legacy_api_objects.sql" not in source
+
+    retirement = (
+        ROOT_DIR / "sql" / "retire_legacy_api_objects.sql"
+    ).read_text(encoding="utf-8").lower()
+    assert "drop" in retirement
+
+
+def test_schema_migration_batches_new_columns_into_one_metadata_update_per_table() -> None:
+    facts = (ROOT_DIR / "sql" / "create_fact_tables.sql").read_text(
+        encoding="utf-8"
+    )
+    aggregates = (ROOT_DIR / "sql" / "create_aggregates.sql").read_text(
+        encoding="utf-8"
+    )
+    for table in ("question_events", "answer_events", "demand_events"):
+        assert facts.count(
+            f"ALTER TABLE `${{PROJECT_ID}}.${{DATASET_ID}}.{table}`\nADD COLUMN"
+        ) == 1
+    for table in ("pipeline_runs", "pipeline_state"):
+        assert aggregates.count(
+            f"ALTER TABLE `${{PROJECT_ID}}.${{DATASET_ID}}.{table}`\nADD COLUMN"
+        ) == 1

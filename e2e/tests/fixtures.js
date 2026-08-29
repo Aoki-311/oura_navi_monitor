@@ -36,6 +36,8 @@ const analyticsQuality = (measuredCount, totalCount) => {
       latestRunStatus: "succeeded",
       latestRunErrorCode: "",
       latestRunFinishedAt: "2026-08-23T01:00:00Z",
+      diagnosticsStatus: "available",
+      diagnosticsErrorCode: "",
       state: "degraded",
       quarantinedEventCount: 2,
       deduplicatedDeliveryCount: 3,
@@ -160,6 +162,7 @@ async function installApiMocks(page, {
   overviewByPreset = {},
   overviewDelayByPreset = {},
   usersOverride = {},
+  regionsOverride = {},
   detailOverride = {},
   managedUsersOverride = {},
   managedLabelsOverride = {},
@@ -178,7 +181,7 @@ async function installApiMocks(page, {
         ? route.fulfill({ status: 503, json: { detail: { code: "source_unavailable", message: "集計停止" } } })
         : route.fulfill({ json: { ...overview, ...overviewOverride, ...(overviewByPreset[preset] || {}) } });
     }
-    if (url.pathname === "/api/analytics/regions") return route.fulfill({ json: regions });
+    if (url.pathname === "/api/analytics/regions") return route.fulfill({ json: { ...regions, ...regionsOverride } });
     if (url.pathname === "/api/analytics/users") return route.fulfill({ json: { ...users, ...usersOverride } });
     if (url.pathname === "/api/analytics/users/roster_1") {
       if (detailNotFound) return route.fulfill({ status: 404, json: { detail: { code: "user_not_found", message: "user not found" } } });

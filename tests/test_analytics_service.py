@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -40,6 +41,29 @@ class _QualityPipeline:
             "repaired_duplicate_fact_count": 1,
             "axis_unmeasured_finding_count": 4,
             "batch_blocking_failure_count": 0,
+        }
+
+
+class _UnavailableDiagnosticsPipeline:
+    @staticmethod
+    def publication_snapshot():
+        return {
+            "publication_state_available": True,
+            "data_through": datetime.now(timezone.utc),
+            "published_run_id": "last-known-good-run",
+            "quality_diagnostics_available": False,
+            "quality_diagnostics_error_code": "schema_unavailable",
+        }
+
+
+class _UnavailablePublicationStatePipeline:
+    @staticmethod
+    def publication_snapshot():
+        return {
+            "publication_state_available": False,
+            "publication_state_error_code": "provider_unavailable",
+            "quality_diagnostics_available": False,
+            "quality_diagnostics_error_code": "publication_state_unavailable",
         }
 
 
@@ -300,6 +324,8 @@ def test_published_run_quality_is_exposed_separately_from_visible_axis_coverage(
         "latestRunStatus": "succeeded",
         "latestRunErrorCode": "",
         "latestRunFinishedAt": quality["sourcePipeline"]["latestRunFinishedAt"],
+        "diagnosticsStatus": "available",
+        "diagnosticsErrorCode": "",
         "state": "degraded",
         "quarantinedEventCount": 2,
         "deduplicatedDeliveryCount": 3,
@@ -325,6 +351,88 @@ def test_latest_failed_run_is_visible_without_replacing_last_published_data() ->
     assert quality["latestRunId"] == "run-failed"
     assert quality["state"] == "blocked"
     assert quality["batchBlockingFailureCount"] == 2
+
+
+def test_missing_quality_diagnostics_never_erases_available_overview_facts() -> None:
+    now = datetime.now(timezone.utc)
+    question_at = now - timedelta(hours=1)
+    service = AnalyticsService(
+        analytics=_Analytics(
+            [
+                {
+                    "question_ts": question_at,
+                    "question_date": question_at.astimezone(
+                        timezone.utc
+                    ).date().isoformat(),
+                    "roster_id": "field_1",
+                    "area_key": "関西",
+                    "valid_question": True,
+                    "measurement_available": False,
+                    "complete_delivery": None,
+                    "total_latency_ms": None,
+                    "classification_measurement_state": "not_measured",
+                    "task_measurement_state": "not_measured",
+                    "product_measurement_state": "not_measured",
+                }
+            ]
+        ),
+        pipeline=_UnavailableDiagnosticsPipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    payload = service.overview(window=_window(now))
+
+    assert payload["kpis"]["activeUsers"] == 1
+    assert sum(row["questions"] for row in payload["usageTrend"]) == 1
+    assert sum(row["count"] for row in payload["hourlyQuestions"]) == 1
+    assert payload["analyticsQuality"]["sourcePipeline"]["state"] == "unavailable"
+    assert payload["analyticsQuality"]["sourcePipeline"]["diagnosticsStatus"] == "unavailable"
+    assert payload["analyticsQuality"]["sourcePipeline"]["diagnosticsErrorCode"] == "schema_unavailable"
+
+
+def test_unknown_publication_metadata_uses_observed_axes_without_forging_zeroes() -> None:
+    now = datetime.now(timezone.utc)
+    question_at = now - timedelta(hours=1)
+    question_day = question_at.astimezone(ZoneInfo("Asia/Tokyo")).date().isoformat()
+    service = AnalyticsService(
+        analytics=_Analytics(
+            [
+                {
+                    "question_ts": question_at,
+                    "question_date": question_day,
+                    "roster_id": "field_1",
+                    "area_key": "関西",
+                    "valid_question": True,
+                    "measurement_available": False,
+                    "complete_delivery": None,
+                    "total_latency_ms": None,
+                    "classification_measurement_state": "not_measured",
+                    "task_measurement_state": "not_measured",
+                    "product_measurement_state": "not_measured",
+                }
+            ]
+        ),
+        pipeline=_UnavailablePublicationStatePipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    overview = service.overview(window=_window(now))
+    detail = service.user_detail("field_1", window=_window(now))
+
+    assert overview["freshness"]["state"] == "unknown"
+    assert overview["usageTrend"] == [
+        {
+            "date": question_day,
+            "activeUsers": 1,
+            "questions": 1,
+            "isPartial": False,
+        }
+    ]
+    assert sum(row["count"] for row in overview["hourlyQuestions"]) == 1
+    assert detail["summary"]["questions"] == 1
+    assert [row["date"] for row in detail["trend"]] == [question_day]
 
 
 def test_missing_request_tasks_are_explicitly_unmeasured_without_hiding_other_metrics() -> None:

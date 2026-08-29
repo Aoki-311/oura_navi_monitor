@@ -79,6 +79,7 @@ async function requestJson(method, path, { params = {}, body, signal, timeoutMs 
   try {
     const response = await fetch(url.toString(), {
       method,
+      cache: "no-store",
       credentials: "same-origin",
       signal: request.signal,
       headers: {

@@ -34,6 +34,30 @@ test("historical mode and device gaps are explained without fake unknown charts"
   await expect(needs.locator("#personalDevices")).toHaveCount(0);
 });
 
+test("malformed detail metadata never erases a valid personal analysis transaction", async ({ page }) => {
+  await installApiMocks(page, {
+    detailOverride: {
+      freshness: null,
+      analyticsQuality: { contractVersion: "broken" },
+    },
+  });
+  await page.goto("/dashboard?page=user&roster=roster_1");
+
+  await expect(page.locator("[data-freshness-banner]")).toContainText("更新情報を確認できません");
+  await expect(page.locator('[data-module="profile"]')).toContainText("山田 太郎");
+  await expect(page.locator('[data-module="summary"]')).toContainText("回答成功率");
+  await expect(page.locator('[data-module="needs"]')).toContainText("情報確認");
+  await expect(page.locator("#conversationList")).toContainText("製品情報の確認");
+});
+
+test("malformed chooser metadata never erases valid users", async ({ page }) => {
+  await installApiMocks(page, { usersOverride: { scopeUserCount: null, freshness: null } });
+  await page.goto("/dashboard?page=user");
+
+  await expect(page.locator("[data-freshness-banner]")).toContainText("更新情報を確認できません");
+  await expect(page.locator(".userChoice").filter({ hasText: "山田 太郎" })).toHaveCount(1);
+});
+
 test("inactive direct user link returns to the chooser with one clear explanation", async ({ page }) => {
   await installApiMocks(page, { detailNotFound: true });
   await page.goto("/dashboard?page=user&roster=roster_1");

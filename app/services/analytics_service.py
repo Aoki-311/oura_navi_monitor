@@ -205,6 +205,33 @@ def _published_hour_axis(
     return labels
 
 
+def _visible_date_axis(
+    window: MetricsTimeWindow,
+    *,
+    data_through: datetime | None,
+    observed_dates: set[str],
+) -> list[str]:
+    if data_through is not None:
+        return _published_date_axis(window, data_through=data_through)
+    allowed = set(_local_date_axis(window))
+    return sorted(day for day in observed_dates if day in allowed)
+
+
+def _visible_hour_axis(
+    window: MetricsTimeWindow,
+    *,
+    data_through: datetime | None,
+    observed_hours: set[str],
+) -> list[str]:
+    if data_through is not None:
+        return _published_hour_axis(window, data_through=data_through)
+    allowed = {f"{hour:02d}:00" for hour in range(24)}
+    return sorted(
+        (hour for hour in observed_hours if hour in allowed),
+        key=lambda value: int(value[:2]),
+    )
+
+
 def _partial_published_date(
     window: MetricsTimeWindow,
     *,
@@ -368,7 +395,28 @@ class AnalyticsService:
         quarantined = count("quarantined_event_count")
         axis_findings = count("axis_unmeasured_finding_count")
         blocking = count("batch_blocking_failure_count")
-        if latest_run_status == "failed":
+        diagnostics_marker = snapshot.get("quality_diagnostics_available")
+        if isinstance(diagnostics_marker, bool):
+            diagnostics_available = diagnostics_marker
+        else:
+            diagnostics_available = any(
+                key in snapshot
+                for key in (
+                    "latest_run_id",
+                    "latest_run_status",
+                    "quarantined_event_count",
+                    "deduplicated_delivery_count",
+                    "repaired_duplicate_fact_count",
+                    "axis_unmeasured_finding_count",
+                    "batch_blocking_failure_count",
+                )
+            )
+        diagnostics_error_code = str(
+            snapshot.get("quality_diagnostics_error_code") or ""
+        )
+        if not diagnostics_available:
+            state = "unavailable"
+        elif latest_run_status == "failed":
             state = "blocked"
         elif not published_run_id:
             state = "unknown"
@@ -388,6 +436,10 @@ class AnalyticsService:
                 if latest_run_finished_at
                 else ""
             ),
+            "diagnosticsStatus": (
+                "available" if diagnostics_available else "unavailable"
+            ),
+            "diagnosticsErrorCode": diagnostics_error_code,
             "state": state,
             "quarantinedEventCount": quarantined,
             "deduplicatedDeliveryCount": count("deduplicated_delivery_count"),
@@ -552,9 +604,10 @@ class AnalyticsService:
             },
             "hourlyQuestions": [
                 {"hour": key, "count": hourly.get(key, 0)}
-                for key in _published_hour_axis(
+                for key in _visible_hour_axis(
                     window,
                     data_through=data_through,
+                    observed_hours=set(hourly),
                 )
             ],
             "deviceDistribution": _distribution(devices, {"desktop": "PC", "mobile": "モバイル"}),
@@ -572,9 +625,10 @@ class AnalyticsService:
                     "questions": date_questions[day],
                     "isPartial": day == partial_date,
                 }
-                for day in _published_date_axis(
+                for day in _visible_date_axis(
                     window,
                     data_through=data_through,
+                    observed_dates=set(date_questions),
                 )
             ],
             "requestTasks": _distribution(
@@ -852,9 +906,10 @@ class AnalyticsService:
                     ),
                     "isPartial": day == partial_date,
                 }
-                for day in _published_date_axis(
+                for day in _visible_date_axis(
                     window,
                     data_through=data_through,
+                    observed_dates=set(day_rows),
                 )
             ],
             "products": [{"label": key, "count": value} for key, value in products.most_common(10)],

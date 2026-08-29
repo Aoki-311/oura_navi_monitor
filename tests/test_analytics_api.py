@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.dependencies import get_analytics_service, get_user_management_service
@@ -170,6 +172,10 @@ def test_only_unversioned_analytics_contract_is_exposed() -> None:
     try:
         response = client.get("/api/analytics/overview", headers=headers)
         assert response.status_code == 200
+        assert response.headers["cache-control"] == (
+            "no-cache, no-store, must-revalidate"
+        )
+        assert response.headers["pragma"] == "no-cache"
         assert response.json()["kpis"]["completeDelivery"]["value"] == 0.91
         assert response.json()["deviceMeasurement"]["measurementState"] == "not_measured"
         assert client.get("/api/metrics/dashboard", headers=headers).status_code == 404
@@ -177,6 +183,14 @@ def test_only_unversioned_analytics_contract_is_exposed() -> None:
         assert client.get("/ops-legacy", headers=headers).status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+def test_frontend_api_requests_always_bypass_browser_http_cache() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "frontend" / "api" / "client.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'cache: "no-store"' in source
 
 
 def test_user_url_uses_roster_id_and_never_email() -> None:

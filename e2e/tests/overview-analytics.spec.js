@@ -135,6 +135,72 @@ test("stale freshness metadata never hides otherwise available data", async ({ p
   await expect(page.locator("#regionRanking")).toContainText("関西");
 });
 
+test("malformed update metadata is isolated and never erases valid overview modules", async ({ page }) => {
+  await installApiMocks(page, {
+    overviewOverride: {
+      scopeUserCount: null,
+      freshness: { state: "broken" },
+      analyticsQuality: { contractVersion: "broken" },
+    },
+  });
+  await page.goto("/dashboard");
+
+  await expect(page.locator("[data-freshness-banner]")).toContainText("更新情報を確認できません");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("表示中の集計値は保持しています");
+  await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
+  await expect(page.locator('[data-module="usage"]')).toContainText("途中集計");
+  await expect(page.locator('[data-module="products"]')).toContainText("テルフュージョン");
+});
+
+test("unavailable pipeline diagnostics are explicit while published facts remain visible", async ({ page }) => {
+  const analyticsQuality = {
+    ...overview.analyticsQuality,
+    sourcePipeline: {
+      publishedRunId: "run-20260823-01",
+      latestRunId: "",
+      latestRunStatus: "",
+      latestRunErrorCode: "",
+      latestRunFinishedAt: "",
+      diagnosticsStatus: "unavailable",
+      diagnosticsErrorCode: "schema_unavailable",
+      state: "unavailable",
+      quarantinedEventCount: 0,
+      deduplicatedDeliveryCount: 0,
+      repairedDuplicateFactCount: 0,
+      axisUnmeasuredFindingCount: 0,
+      batchBlockingFailureCount: 0,
+    },
+  };
+  await installApiMocks(page, { overviewOverride: { analyticsQuality } });
+  await page.goto("/dashboard");
+
+  await expect(page.locator("[data-freshness-banner]")).toContainText("診断情報を確認できません");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("表示中の集計値は保持しています");
+  await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
+});
+
+test("rolling compatibility and independent region-user metadata failures preserve each body", async ({ page }) => {
+  const legacySourcePipeline = { ...overview.analyticsQuality.sourcePipeline };
+  delete legacySourcePipeline.diagnosticsStatus;
+  delete legacySourcePipeline.diagnosticsErrorCode;
+  await installApiMocks(page, {
+    overviewOverride: {
+      analyticsQuality: {
+        ...overview.analyticsQuality,
+        sourcePipeline: legacySourcePipeline,
+      },
+    },
+    usersOverride: { scopeUserCount: null, freshness: null },
+    regionsOverride: { scopeUserCount: null, freshness: null },
+  });
+  await page.goto("/dashboard");
+
+  await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
+  await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
+  await expect(page.locator("#regionRanking")).toContainText("関西");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("3時間ごと");
+});
+
 test("a blocked latest refresh keeps the previous published dashboard and explains the failure", async ({ page }) => {
   const analyticsQuality = {
     ...overview.analyticsQuality,

@@ -70,7 +70,12 @@ export class UserAnalysisPage {
     try {
       const model = usersModel(await getUsers({ preset: this.getPreset() }, { signal: this.signal }));
       if (!this.isCurrent()) return;
-      renderFreshnessBanner(this.root.querySelector("[data-freshness-banner]"), model.freshness);
+      renderFreshnessBanner(
+        this.root.querySelector("[data-freshness-banner]"),
+        model.freshness,
+        null,
+        model.metadataIssues,
+      );
       this.chooserUsers = [...model.users].sort((a, b) => a.name.localeCompare(b.name, "ja-JP"));
       this.renderChooserRows();
       this.root.querySelector("#userSearch").addEventListener("input", (event) => {
@@ -106,7 +111,12 @@ export class UserAnalysisPage {
       const raw = await getUserDetail(this.rosterId, { preset: this.getPreset() }, { signal: this.signal });
       if (!this.isCurrent()) return;
       const envelope = userDetailEnvelope(raw);
-      renderFreshnessBanner(this.root.querySelector("[data-freshness-banner]"), envelope.freshness, envelope.analyticsQuality);
+      renderFreshnessBanner(
+        this.root.querySelector("[data-freshness-banner]"),
+        envelope.freshness,
+        envelope.analyticsQuality,
+        envelope.metadataIssues,
+      );
       try { this.renderProfile(userProfileModel(raw)); } catch (error) { this.fail("profile", error); }
       try { this.renderSummary(userSummaryModel(raw), userComparisonsModel(raw)); } catch (error) { this.fail("summary", error); }
       try { this.renderTrend(userTrendModel(raw)); } catch (error) { this.fail("trend", error); }

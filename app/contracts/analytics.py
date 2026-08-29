@@ -50,7 +50,9 @@ class SourcePipelineQuality(AnalyticsModel):
     latestRunStatus: str
     latestRunErrorCode: str
     latestRunFinishedAt: str
-    state: Literal["clean", "degraded", "blocked", "unknown"]
+    diagnosticsStatus: Literal["available", "unavailable"] = "available"
+    diagnosticsErrorCode: str = ""
+    state: Literal["clean", "degraded", "blocked", "unknown", "unavailable"]
     quarantinedEventCount: int
     deduplicatedDeliveryCount: int
     repairedDuplicateFactCount: int

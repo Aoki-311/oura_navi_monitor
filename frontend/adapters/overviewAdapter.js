@@ -77,7 +77,10 @@ export function analyticsQualityModel(value) {
     return { ...coverage, isolatedCount };
   };
   const source = requiredObject(value, "sourcePipeline", "取込品質");
-  if (!["clean", "degraded", "blocked", "unknown"].includes(source.state) || typeof source.publishedRunId !== "string") throw new Error("取込品質の状態を確認できません。");
+  const diagnosticsStatus = source.diagnosticsStatus == null ? "available" : source.diagnosticsStatus;
+  const diagnosticsErrorCode = source.diagnosticsErrorCode == null ? "" : source.diagnosticsErrorCode;
+  if (!["available", "unavailable"].includes(diagnosticsStatus) || typeof diagnosticsErrorCode !== "string") throw new Error("取込品質の診断状態を確認できません。");
+  if (!["clean", "degraded", "blocked", "unknown", "unavailable"].includes(source.state) || typeof source.publishedRunId !== "string") throw new Error("取込品質の状態を確認できません。");
   for (const key of ["latestRunId", "latestRunStatus", "latestRunErrorCode", "latestRunFinishedAt"]) {
     if (typeof source[key] !== "string") throw new Error("最新更新の状態を確認できません。");
   }
@@ -88,6 +91,8 @@ export function analyticsQualityModel(value) {
     latestRunStatus: source.latestRunStatus,
     latestRunErrorCode: source.latestRunErrorCode,
     latestRunFinishedAt: source.latestRunFinishedAt,
+    diagnosticsStatus,
+    diagnosticsErrorCode,
     state: source.state,
     quarantinedEventCount: requiredCount(source.quarantinedEventCount, "取込隔離イベント"),
     deduplicatedDeliveryCount: requiredCount(source.deduplicatedDeliveryCount, "重複配信"),
@@ -95,7 +100,9 @@ export function analyticsQualityModel(value) {
     axisUnmeasuredFindingCount: requiredCount(source.axisUnmeasuredFindingCount, "分析軸未計測"),
     batchBlockingFailureCount: requiredCount(source.batchBlockingFailureCount, "公開停止エラー"),
   };
-  const expectedSourceState = sourcePipeline.latestRunStatus === "failed"
+  const expectedSourceState = sourcePipeline.diagnosticsStatus === "unavailable"
+    ? "unavailable"
+    : sourcePipeline.latestRunStatus === "failed"
     ? "blocked"
     : !sourcePipeline.publishedRunId
       ? "unknown"
@@ -116,16 +123,41 @@ export function analyticsQualityModel(value) {
 
 function envelope(payload, scope) {
   if (!payload || (scope && payload.scope !== scope)) throw new Error("分析データの形式が不正です。");
-  return { ...payload, freshness: freshnessModel(requiredObject(payload, "freshness", "データ更新情報")) };
+  return payload;
+}
+
+export function analyticsMetadataModel(payload, { includeQuality = false } = {}) {
+  const metadataIssues = [];
+  let freshness = null;
+  let analyticsQuality = null;
+  try {
+    freshness = freshnessModel(payload?.freshness);
+  } catch (error) {
+    metadataIssues.push(error?.message || "データ更新情報を確認できません。");
+  }
+  if (includeQuality) {
+    try {
+      analyticsQuality = analyticsQualityModel(payload?.analyticsQuality);
+    } catch (error) {
+      metadataIssues.push(error?.message || "分析品質情報を確認できません。");
+    }
+  }
+  return { freshness, analyticsQuality, metadataIssues };
 }
 
 export function overviewEnvelope(payload) {
-  const normalized = envelope(payload, "global");
+  envelope(payload, "global");
+  const metadata = analyticsMetadataModel(payload, { includeQuality: true });
+  let scopeUserCount = null;
+  try {
+    scopeUserCount = requiredCount(payload.scopeUserCount, "全体対象者");
+  } catch (error) {
+    metadata.metadataIssues.push(error?.message || "全体対象者数を確認できません。");
+  }
   return {
     payload,
-    scopeUserCount: requiredCount(payload.scopeUserCount, "全体対象者"),
-    freshness: normalized.freshness,
-    analyticsQuality: analyticsQualityModel(payload.analyticsQuality),
+    scopeUserCount,
+    ...metadata,
   };
 }
 
@@ -203,8 +235,15 @@ export function productsModel(payload) {
 }
 
 export function regionsModel(payload) {
-  const normalized = envelope(payload);
-  if (!Number.isInteger(payload.scopeUserCount) || payload.scopeUserCount < 0 || !Array.isArray(payload.regions)) throw new Error("地域データの形式が不正です。");
+  envelope(payload);
+  if (!Array.isArray(payload.regions)) throw new Error("地域データの形式が不正です。");
+  const metadata = analyticsMetadataModel(payload);
+  let scopeUserCount = null;
+  try {
+    scopeUserCount = requiredCount(payload.scopeUserCount, "地域対象者");
+  } catch (error) {
+    metadata.metadataIssues.push(error?.message || "地域対象者数を確認できません。");
+  }
   const issues = [];
   const regions = payload.regions.flatMap((row, index) => {
     try {
@@ -224,5 +263,5 @@ export function regionsModel(payload) {
       return [];
     }
   });
-  return { scopeUserCount: payload.scopeUserCount, freshness: normalized.freshness, regions, issues };
+  return { scopeUserCount, ...metadata, regions, issues };
 }

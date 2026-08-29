@@ -85,8 +85,15 @@ export class OverviewPage {
       const raw = await getOverview({ preset: this.getPreset(), area_key: this.areaKey }, { signal: this.signal });
       if (!this.isCurrent()) return;
       const envelope = overviewEnvelope(raw);
-      this.root.querySelector("[data-global-count]").textContent = `主要分析対象 ${envelope.scopeUserCount}名`;
-      renderFreshnessBanner(this.root.querySelector("[data-freshness-banner]"), envelope.freshness, envelope.analyticsQuality);
+      this.root.querySelector("[data-global-count]").textContent = envelope.scopeUserCount == null
+        ? "主要分析対象人数を確認できません"
+        : `主要分析対象 ${envelope.scopeUserCount}名`;
+      renderFreshnessBanner(
+        this.root.querySelector("[data-freshness-banner]"),
+        envelope.freshness,
+        envelope.analyticsQuality,
+        envelope.metadataIssues,
+      );
       this.renderPart("kpis", () => this.renderKpis(kpisModel(raw)));
       this.renderPart("environment", () => this.renderEnvironment(environmentModel(raw)));
       this.renderPart("usage", () => this.renderUsage(usageTrendModel(raw)));
@@ -162,7 +169,9 @@ export class OverviewPage {
     try {
       const model = regionsModel(await getRegions({ preset: this.getPreset() }, { signal: this.signal }));
       if (!this.isCurrent()) return;
-      this.root.querySelector("[data-user-count]").textContent = `ユーザー・地域対象 ${model.scopeUserCount}名`;
+      this.root.querySelector("[data-user-count]").textContent = model.scopeUserCount == null
+        ? "ユーザー・地域対象人数を確認できません"
+        : `ユーザー・地域対象 ${model.scopeUserCount}名`;
       this.renderRanking(model.regions, model.issues);
       try { await this.renderMap(model.regions); } catch (error) { this.fail("map", error); }
       this.renderAreaChip(model.regions);

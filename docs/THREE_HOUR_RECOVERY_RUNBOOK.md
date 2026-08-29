@@ -34,6 +34,17 @@ parent 外保持不变，并在远端保存后重新读取验证。
 
 ### 2.2 Monitor 为什么这几天显示不好
 
+这次“上线后整页没有数据”的直接触发点，不是事实表突然被删了，而是读取合同写反了：
+每个分析 API 为了读取一个稳定的 `dataThrough`，同时强制查询三张新增诊断表。线上先有
+旧 revision、后有不完整 schema 时，任一诊断表不存在都会让整个 API 返回 500，已经
+存在的 3,334 条问题和 3,218 条回答也一起无法返回。现在稳定发布水位只读
+`pipeline_state`；运行质量和逐事件诊断是独立的可选读取。诊断不可用时，API 明确返回
+`diagnosticsStatus=unavailable`，但正文、趋势和用户详情继续保留。
+
+另一个旧兼容路径是 HTTP 缓存：旧代码只禁止缓存 HTML/JS，没有禁止浏览器复用分析
+API 的 GET 响应。现在服务端对全部 `/api/` 返回 `no-store`，前端每次 `fetch` 也显式
+使用 `cache: no-store`。所以 schema 或 revision 恢复后，不会继续显示修复前的空响应。
+
 原链路混用了“日志到达时间”和“业务发生时间”。一条今天才到、但昨天发生的事件，
 可能写进昨天分区，却躲过今天的去重、补充字段和质量检查；水位仍然向前，后续任务也
 不会再处理它。与此同时，坏记录只有一个总数，没有可追踪、可重放的逐事件去向；质量
@@ -152,6 +163,28 @@ Git SHA、Ready、身份和 0% 流量。
 
 发布后必须回读 `pipeline_state` 的 lease 字段、两张逐事件 ledger、质量账，以及
 `dashboard_events` / `dashboard_user_list` 的对象类型和参数；缺一项就不能进入冻结。
+使用候选的完整 SHA 和同一个不可变 digest 生成不可覆盖的 schema 收据：
+
+```bash
+CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="<ABSOLUTE_APPROVED_KEY_JSON>" \
+GOOGLE_APPLICATION_CREDENTIALS="<ABSOLUTE_APPROVED_KEY_JSON>" \
+.venv/bin/python scripts/verify_monitor_data_contract.py \
+  --project "<PROJECT_ID>" \
+  --dataset "<DATASET_ID>" \
+  --location "<BQ_LOCATION>" \
+  --expected-git-sha "<FULL_40_CHARACTER_GIT_SHA>" \
+  --expected-image "<EXACT_MONITOR_IMAGE_AT_SHA256>" \
+  --receipt-output "<NEW_ABSOLUTE_SCHEMA_RECEIPT_JSON>" \
+  --verify
+```
+
+验证器会在 published 水位附近真实执行 `dashboard_events` 和
+`dashboard_user_list`，核对服务实际消费的输出字段；只看 routine 名称或类型不能通过。
+两条读取使用 64 MiB 的独立费用硬上限（当前 BigQuery 编译结果至少需要 30 MiB），不会
+借验收脚本放开无界扫描。
+
+additive DDL 对同一张表的新增字段必须合并为一次 metadata update，避免触发 BigQuery
+短时间表更新配额；任何 DDL 失败都先读回已有字段，再安全重跑同一个幂等入口。
 
 ### C. 先冻结旧 15 分钟 Scheduler
 
@@ -233,18 +266,24 @@ Monitor 流量只能通过精确候选门执行：
   --project "<PROJECT_ID>" \
   --region "<REGION>" \
   --service "oura-navi-monitor" \
+  --dataset "<DATASET_ID>" \
+  --location "<BQ_LOCATION>" \
   --revision "<EXACT_CANDIDATE_REVISION>" \
   --expected-image "<EXACT_MONITOR_IMAGE_AT_SHA256>" \
   --expected-git-sha "<FULL_40_CHARACTER_GIT_SHA>" \
   --expected-service-account "<MONITOR_RUNTIME_SA>" \
+  --schema-receipt "<ABSOLUTE_SCHEMA_RECEIPT_JSON>" \
+  --api-receipt "<ABSOLUTE_AUTHENTICATED_API_RECEIPT_JSON>" \
+  --backfill-receipt "<ABSOLUTE_BACKFILL_RECEIPT_JSON>" \
   --acceptance-receipt "<ABSOLUTE_ACCEPTANCE_RECEIPT_JSON>" \
   --snapshot-output "<ABSOLUTE_PROMOTION_SNAPSHOT_JSON>"
 ```
 
-apply 时加入 plan 输出的 `--confirm-promotion` 与 `--apply`。验收 receipt 必须绑定同一
-project/region/service/revision/digest/SHA/身份，并明确 authenticated 与 business 两项
-都通过。脚本在切流前保存旧 traffic，切流后只接受目标 revision=100%，其他 revision
-正流量必须为 0；snapshot 是精确回滚依据。
+apply 时加入 plan 输出的 `--confirm-promotion` 与 `--apply`。schema、API、backfill 和
+页面/业务四张 receipt 都必须绑定同一 project/region/service/revision/digest/SHA/身份；
+API 四个端点必须分别为 200，历史趋势和个人趋势必须可见，诊断状态必须明确；页面收据
+还必须分别记录登录浏览器、历史数据和业务验收。脚本在切流前保存旧 traffic，切流后只
+接受目标 revision=100%，其他 revision 正流量必须为 0；snapshot 是精确回滚依据。
 
 - 原受影响路径能生成答案；
 - stale parent 最多一次恢复，parent 外请求不变；

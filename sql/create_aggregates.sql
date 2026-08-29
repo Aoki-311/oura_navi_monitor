@@ -18,8 +18,7 @@ PARTITION BY DATE(started_at)
 CLUSTER BY source, status
 OPTIONS (require_partition_filter = TRUE);
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.pipeline_runs`
-ADD COLUMN IF NOT EXISTS execution_id STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.pipeline_runs`
+ADD COLUMN IF NOT EXISTS execution_id STRING,
 ADD COLUMN IF NOT EXISTS trigger_source STRING;
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.pipeline_runs`
 SET OPTIONS (partition_expiration_days = NULL);
@@ -36,10 +35,8 @@ CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.pipeline_state` (
 )
 CLUSTER BY source, status;
 ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
-ADD COLUMN IF NOT EXISTS lease_run_id STRING;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
-ADD COLUMN IF NOT EXISTS lease_acquired_at TIMESTAMP;
-ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
+ADD COLUMN IF NOT EXISTS lease_run_id STRING,
+ADD COLUMN IF NOT EXISTS lease_acquired_at TIMESTAMP,
 ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.pipeline_quality_events` (

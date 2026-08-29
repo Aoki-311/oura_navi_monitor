@@ -281,14 +281,19 @@ owner；这些旧对象在依赖、流量和观察期完成前仍物理保留，
 15 行分页与地图无错误；用户详细能打开真实会话双栏；用户管理返回 83/69/80/3，
 20 行分页，无横向溢出。该证据不是 IAP 登录或线上业务验收。
 
-2026-08-29 再次只读核对：两个正式语义入口均已经是同名 table-valued function；当前
-只存在旧 `oura-navi-monitor-refresh-quarter-hour`，状态 ENABLED、日程 `*/15`、时区
-Asia/Tokyo、30 秒 deadline，调用身份仍为共享 `lcs-agent`。新的三小时 Scheduler 尚未
-创建；Refresh writer 与 Scheduler invoker 的最终身份合同也尚未激活。当前 Monitor Web、
-Refresh Job 与 LCS Web 仍使用共享 `lcs-agent`，且 Monitor Web 与 Refresh Job 的镜像
-digest 不一致。`pipeline_state` 线上结构仍未包含本次 additive lease 字段，published
-水位为 2026-08-27 00:57:05 UTC。因此数据切换必须保持 STOP；但 main push 和由现有
-trigger 自动生成待审批 source build 不受这个后续激活门阻塞。
+2026-08-29 additive 修复后再次回读：`pipeline_state` / `pipeline_runs` 的新增字段、
+`pipeline_event_issues`、`pipeline_run_event_manifest`、`pipeline_quality_events`、两张
+source view 和两个同名 table-valued function 均已存在；只读合同验证全部通过。当前事实
+为 `question_events=3,334`、`answer_events=3,218`，published 水位仍为
+2026-08-27 00:57:05 UTC，lease 已释放。两个函数不只检查对象名，还在 64 MiB 查询硬
+上限内真实执行、返回样本并核对后端所需字段。换句话说，旧历史没有被删除，schema 读取故障
+已经解除，但两天/当前缺口尚未补齐。
+
+控制面仍只有旧 `oura-navi-monitor-refresh-quarter-hour` 为 ENABLED，日程 `*/15`、时区
+Asia/Tokyo；新的三小时 Scheduler 尚未创建。Refresh writer 与 Scheduler invoker 的最终
+身份合同也尚未激活，Monitor Web 与旧 Refresh Job 的镜像 digest 仍不一致。因此数据
+切换继续保持 STOP：还需要 clean commit/candidate、冻结旧 Scheduler、同 digest Job、
+受控补数、登录/业务验收和正式切流，不能把 schema 修复说成生产已经收口。
 
 ## 10. 正式 API
 
@@ -307,7 +312,8 @@ GET/POST/PATCH/DELETE /api/admin/labels...
 POST/GET /api/export/jobs...
 ```
 
-静态页面资源使用 `no-store`，避免 revision 切换后浏览器继续组合旧 HTML 与新 JS。
+静态页面资源和全部 `/api/` 响应使用 `no-store`，前端 API 请求也显式绕过 HTTP 缓存，
+避免 revision 或 schema 恢复后浏览器继续组合旧 HTML、旧 JSON 与新 JS。
 生产身份只接受 IAP 注入邮箱并命中三名管理员 allowlist；这次 Monitor 分析升级不
 新增任何 IAP key、页面 secret 或测试专用权限。
 

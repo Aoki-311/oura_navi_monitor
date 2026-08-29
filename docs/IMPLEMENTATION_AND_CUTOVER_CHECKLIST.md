@@ -30,7 +30,8 @@
 - [x] 停用标签保留显示但不可新分配；冲突时抽屉不关闭。
 - [x] 用户分析与会话双栏独立读取，未知 role 和坏 messageCount 局部排除。
 - [x] 地图、Chart.js 空值、表格 fallback、键盘、ARIA、PC/iPad/mobile 合同。
-- [x] 静态 HTML/JS/CSS `no-store`，避免 revision 资源混用。
+- [x] 静态 HTML/JS/CSS 与全部 API `no-store`，前端 `fetch` 同时绕过 HTTP 缓存，避免
+  revision/schema 恢复后继续显示旧空响应。
 - [x] `user_daily`/snapshot/overview mega view/detail mega view owner 从代码关闭。
 - [x] 增量刷新最多 24 小时一批，并由同一 owner 追到冻结当前水位。
 - [x] retained raw sink 范围包含 request、canonical stdout、旧 terminal/request marker
@@ -120,6 +121,12 @@ table function 均存在；`pipeline_state=2`、`pipeline_runs=226`。
 线上旧 Monitor 页面问题不能再归因于“canonical 全空”，必须区分旧 SHA 的前端实现、
 最新 Firestore 与 canonical 的 15 条差额，以及尚未切换的 LCS 统一事件 revision。
 
+2026-08-29 additive 修复后的当前读回为 `question_events=3,334`、
+`answer_events=3,218`；新增三张诊断/manifest 表、lease/运行字段、两张 source view 和
+两个正式函数均通过只读合同验证，并在 64 MiB 费用硬上限内各返回一条真实样本。published
+水位仍停在 8/27 00:57:05 UTC，所以这是
+“旧历史重新可读”，不是“两天补数完成”。
+
 ### 5.2 历史 plan
 
 首次旧实现运行 8 分钟卡在逐会话 `messages` RPC，手动中止，无写入。当前实现于
@@ -190,7 +197,8 @@ log metrics 和 policy。未来删除必须另做保留期、依赖、回滚和�
 - [ ] 激活数据链前确认不同的 Refresh writer 与 Scheduler invoker；如需新建或改权，另行
   完成最小 IAM 授权。
 - [ ] 获得 BigQuery/Logging/Firestore 写入授权。
-- [x] canonical facts、state、source view 和两个参数化语义函数在线存在。
+- [x] canonical facts、additive state/诊断表、source view 和两个参数化语义函数在线存在，
+  并有只读 schema 收据；未运行 destructive retirement。
 - [ ] 用最新确认串追平 8/26 的 15/15 差额并逐 event ID 验证。
 - [ ] bounded incremental `--until-current`，验证质量门和 dataThrough。
 - [ ] 构建 Monitor 无流量候选；IAP 登录并验收三页历史数据、空值和局部失败。
@@ -217,24 +225,26 @@ git diff --check
 
 2026-08-29 最后一次完整本地证据：
 
-- Monitor `pytest`：176 passed；晚到事件、逐事件去向、质量失败、lease、固定目标补数、
+- Monitor `pytest`：197 passed；晚到事件、逐事件去向、质量失败、lease、固定目标补数、
   Scheduler provenance、DTS pause/观察和身份绑定均有回归；
 - `compileall`：通过；YAML：可解析；
 - JavaScript `node --check`、全部 Shell `bash -n`、`git diff --check`：通过；
-- Monitor Playwright：30 passed，覆盖三页、局部失败、最新刷新失败仍显示旧成功数据、
+- Monitor Playwright：35 passed，覆盖三页、局部失败、元数据/诊断查询失败仍保留正文、
+  API/浏览器缓存禁用、旧响应滚动兼容、最新刷新失败仍显示旧成功数据、
   历史未计测环境、停用用户直达链接、
   请求竞态、地图键盘联动、URL 刷新/返回、并发编辑、停用标签、分页状态与
   PC/iPad/mobile；
 - BigQuery 只读 dry-run：planned cutover 与所有当前 SQL 通过；projection 11,017 bytes，
   其他当前合同为 0 bytes；无 BigQuery 写入；
-- LCS 交叉门禁：后端 992 passed（1 个 httpx deprecation warning），ESLint、TypeScript、
-  production build 通过；stale-parent/durability Playwright 7 passed；
+- LCS 交叉门禁：后端 996 passed（1 个 httpx deprecation warning），ESLint、TypeScript、
+  production build 通过；stale-parent/durability 定向事务通过；最终单 worker 全量
+  Playwright 为 175 passed、2 个按浏览器能力设计跳过、0 failed；
 - LCS build 有既存的 Browserslist 资料较旧与一个 622 KB chunk warning，不阻断本次
   正确性，但应作为后续性能维护项。
 
 本仓库没有独立的 TypeScript/mypy/ruff/eslint 配置；没有擅自安装第二套工具。
-本轮不手工创建、重触发或批准 Cloud Build。获准的 main push 会由现有 GitHub trigger
-自动生成新的待审批 build；build 执行和后续 candidate/traffic 仍分别以云端状态为准。
+本地结果不代替 Cloud Build。main push 后必须读取自动触发 build 的原始步骤；build、
+0% candidate、登录浏览器、业务验收、traffic、Scheduler 三周期和 DTS 退役仍分别取证。
 
 ## 9. 发布状态矩阵
 
