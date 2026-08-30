@@ -10,6 +10,7 @@ PAUSE_SNAPSHOT=""
 RECEIPT_OUTPUT=""
 MIN_OBSERVATION_MINUTES="45"
 VERIFY="false"
+CREDENTIAL_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -21,6 +22,7 @@ while [[ $# -gt 0 ]]; do
     --pause-snapshot) PAUSE_SNAPSHOT="$2"; shift 2 ;;
     --receipt-output) RECEIPT_OUTPUT="$2"; shift 2 ;;
     --min-observation-minutes) MIN_OBSERVATION_MINUTES="$2"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="$2"; shift 2 ;;
     --verify) VERIFY="true"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -50,15 +52,12 @@ if [[ "${VERIFY}" != "true" ]]; then exit 0; fi
 [[ -d "$(dirname "${RECEIPT_OUTPUT}")" ]] || {
   echo "verification receipt parent does not exist" >&2; exit 2;
 }
-[[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || {
-  echo "approved credential is required" >&2; exit 2;
-}
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && "${GOOGLE_APPLICATION_CREDENTIALS}" != "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]]; then
-  echo "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential" >&2; exit 2
-fi
-export GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}"
+python3 "${ROOT_DIR}/scripts/credential_preflight.py" \
+  --credential-file "${CREDENTIAL_FILE}"
 command -v bq >/dev/null 2>&1 || { echo "bq not found" >&2; exit 2; }
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
+source "${ROOT_DIR}/scripts/credential_shell.sh"
+monitor_install_google_credential_wrappers "${CREDENTIAL_FILE}"
 
 SNAPSHOT_VALUES="$(python3 - "${PAUSE_SNAPSHOT}" "${PROJECT_ID}" "${DATASET_ID}" \
   "${LOCATION}" "${REGION}" "${MIN_OBSERVATION_MINUTES}" <<'PY'
@@ -160,7 +159,9 @@ for item in runs:
 PY
 
 query_legacy_table_inventory() {
-  python3 - "${PROJECT_ID}" "${DATASET_ID}" "${LOCATION}" <<'PY'
+  CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="${CREDENTIAL_FILE}" \
+  GOOGLE_APPLICATION_CREDENTIALS="${CREDENTIAL_FILE}" \
+    python3 - "${PROJECT_ID}" "${DATASET_ID}" "${LOCATION}" <<'PY'
 import json
 import subprocess
 import sys

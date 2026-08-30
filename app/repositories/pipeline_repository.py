@@ -132,7 +132,15 @@ class PipelineRepository:
             publication_rows = list(
                 self._client.query(
                     f"""
-                    SELECT data_through, published_run_id, updated_at
+                    SELECT
+                      data_through,
+                      published_run_id,
+                      scope_policy_version,
+                      global_roster_fingerprint,
+                      global_content_fingerprint,
+                      user_map_roster_fingerprint,
+                      user_map_content_fingerprint,
+                      updated_at
                     FROM {self._table}
                     WHERE source = 'published' AND status = 'succeeded'
                     ORDER BY updated_at DESC

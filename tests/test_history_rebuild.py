@@ -250,7 +250,21 @@ class _ChatReader:
 def _history_job(*, users: list[dict], snapshot: FullChatSnapshot) -> HistoryRebuildJob:
     job = HistoryRebuildJob.__new__(HistoryRebuildJob)
     job.settings = type("Settings", (), {"monitor_timezone": "Asia/Tokyo"})()
-    job.directory = _Directory(users)
+    roster = []
+    for user in users:
+        row = {
+            "name": "利用者",
+            "area": "関西",
+            "area_key": "関西",
+            "workplace": "大阪",
+            "role": "本社MR",
+            "label_ids": [],
+            "is_active": True,
+            **user,
+        }
+        row.setdefault("_document_id", str(row.get("roster_id") or ""))
+        roster.append(row)
+    job.directory = _Directory(roster)
     job.chat_reader = _ChatReader(snapshot)
     job.telemetry = lambda **_kwargs: TelemetryIndex()
     job.legacy_audits = lambda **_kwargs: []
@@ -325,6 +339,182 @@ def test_history_identity_uses_existing_exact_binding_and_reports_no_ambiguity()
     assert len(rows.questions) == 1
     assert rows.unmatched_users == []
     assert rows.issues["ambiguous_verified_roots"] == 0
+
+
+def test_history_rebuild_keeps_existing_events_after_roster_user_is_deactivated() -> None:
+    user = {
+        "roster_id": "roster-1",
+        "email": "inactive@example.com",
+        "department": "DM専任",
+        "chat_user_id": "root-1",
+        "user_id": "subject-1",
+        "is_active": False,
+    }
+    snapshot = FullChatSnapshot(
+        roots=[
+            ChatRootRecord(
+                "root-1",
+                {
+                    "identityVerified": True,
+                    "userEmail": "inactive@example.com",
+                    "subject": "subject-1",
+                },
+            )
+        ],
+        conversations=[
+            ChatConversationRecord(
+                root_id="root-1",
+                conversation_id="conversation-1",
+                conversation={"updatedAt": "2026-08-20T01:01:00Z"},
+                messages=_messages(),
+            )
+        ],
+    )
+
+    rows = _history_job(users=[user], snapshot=snapshot).compile(
+        start=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+
+    assert len(rows.questions) == 1
+    assert rows.questions[0]["roster_id"] == "roster-1"
+    assert rows.unmatched_users == []
+
+
+def test_history_rebuild_isolates_invalid_roster_rows_before_identity_matching() -> None:
+    valid_inactive = {
+        "roster_id": "valid-inactive",
+        "email": "valid-inactive@example.com",
+        "department": "DM専任",
+        "chat_user_id": "valid-root",
+        "user_id": "valid-subject",
+        "is_active": False,
+    }
+    invalid_users = [
+        {
+            "roster_id": "invalid-active",
+            "email": "invalid-active@example.com",
+            "department": "DM専任",
+            "user_id": "invalid-active-subject",
+            "is_active": "false",
+        },
+        {
+            "roster_id": "invalid-email",
+            "email": "not-an-email",
+            "department": "DM専任",
+            "user_id": "invalid-email-subject",
+        },
+        {
+            "_document_id": "actual-document-id",
+            "roster_id": "stored-roster-id",
+            "email": "mismatch@example.com",
+            "department": "DM専任",
+            "user_id": "mismatch-subject",
+        },
+        {
+            "roster_id": "missing-name",
+            "name": "",
+            "email": "missing-name@example.com",
+            "department": "DM専任",
+            "user_id": "missing-name-subject",
+        },
+    ]
+    snapshot = FullChatSnapshot(
+        roots=[
+            ChatRootRecord(
+                "valid-root",
+                {
+                    "identityVerified": True,
+                    "userEmail": "valid-inactive@example.com",
+                    "subject": "valid-subject",
+                },
+            )
+        ],
+        conversations=[
+            ChatConversationRecord(
+                root_id="valid-root",
+                conversation_id="valid-conversation",
+                conversation={"updatedAt": "2026-08-20T01:01:00Z"},
+                messages=_messages(),
+            )
+        ],
+    )
+    job = _history_job(users=[valid_inactive, *invalid_users], snapshot=snapshot)
+    job.legacy_audits = lambda **_kwargs: [
+        {
+            "event_ts": datetime(2026, 8, 20, 2, index, tzinfo=timezone.utc),
+            "trace_id": f"invalid-trace-{index}",
+            "request_id": f"invalid-request-{index}",
+            "user_id": user["user_id"],
+        }
+        for index, user in enumerate(invalid_users)
+    ]
+
+    rows = job.compile(
+        start=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+
+    assert [row["roster_id"] for row in rows.questions] == ["valid-inactive"]
+    assert rows.unmatched_users == []
+    assert rows.issues["roster_invalid_is_active"] == 1
+    assert rows.issues["roster_invalid_email"] == 1
+    assert rows.issues["roster_roster_id_document_mismatch"] == 1
+    assert rows.issues["roster_missing_name"] == 1
+    assert rows.exclusions["legacy_audit_not_in_roster"] == len(invalid_users)
+
+
+def test_history_rebuild_excludes_duplicate_normalized_identity_from_root_matching() -> None:
+    users = [
+        {
+            "roster_id": "duplicate-a",
+            "email": " Shared@Example.com ",
+            "department": "DM専任",
+            "chat_user_id": "",
+            "user_id": "shared-subject",
+        },
+        {
+            "roster_id": "duplicate-b",
+            "email": "shared@example.COM",
+            "department": "DM専任",
+            "chat_user_id": "",
+            "user_id": "shared-subject",
+        },
+    ]
+    snapshot = FullChatSnapshot(
+        roots=[
+            ChatRootRecord(
+                "shared-root",
+                {
+                    "identityVerified": True,
+                    "userEmail": "shared@example.com",
+                    "subject": "shared-subject",
+                },
+            )
+        ],
+        conversations=[
+            ChatConversationRecord(
+                root_id="shared-root",
+                conversation_id="shared-conversation",
+                conversation={"updatedAt": "2026-08-20T01:01:00Z"},
+                messages=_messages(),
+            )
+        ],
+    )
+
+    rows = _history_job(users=users, snapshot=snapshot).compile(
+        start=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+
+    assert rows.questions == []
+    assert rows.answers == []
+    assert rows.conversations == []
+    assert rows.citations == []
+    assert rows.unmatched_users == []
+    assert rows.issues["roster_duplicate_email"] == 2
+    assert rows.issues["roster_duplicate_identity"] == 2
+    assert sum(rows.issues.values()) == 4
 
 
 def test_legacy_audit_migration_preserves_exact_category_but_not_old_success_claim() -> None:

@@ -24,7 +24,16 @@ SELECT
   JSON_VALUE(raw_json, '$.insertId') AS insert_id,
   JSON_VALUE(event_payload, '$.event_id') AS event_id,
   JSON_VALUE(event_payload, '$.event_family') AS event_family,
+  JSON_VALUE(event_payload, '$.monitor_contract_version') AS monitor_contract_version,
   SAFE_CAST(JSON_VALUE(event_payload, '$.event_ts') AS TIMESTAMP) AS event_ts,
+  COALESCE(
+    NULLIF(JSON_VALUE(raw_json, '$.trace'), ''),
+    NULLIF(JSON_VALUE(event_payload, '$."logging.googleapis.com/trace"'), '')
+  ) AS cloud_trace,
+  COALESCE(
+    NULLIF(JSON_VALUE(raw_json, '$.spanId'), ''),
+    NULLIF(JSON_VALUE(event_payload, '$."logging.googleapis.com/spanId"'), '')
+  ) AS cloud_span_id,
   JSON_VALUE(event_payload, '$.trace_id') AS trace_id,
   JSON_VALUE(event_payload, '$.request_id') AS request_id,
   JSON_VALUE(event_payload, '$.conversation_id') AS conversation_id,
@@ -46,14 +55,57 @@ WITH serialized AS (
   SELECT timestamp AS source_ts, TO_JSON_STRING(raw) AS raw_json
   FROM `${PROJECT_ID}.${DATASET_ID}.run_googleapis_com_requests` raw
   WHERE timestamp IS NOT NULL
+), normalized AS (
+  SELECT
+    source_ts,
+    raw_json,
+    REGEXP_EXTRACT(
+      JSON_VALUE(raw_json, '$.httpRequest.requestUrl'),
+      r'^https?://[^/]+([^?]*)'
+    ) AS request_path
+  FROM serialized
+), classified AS (
+  SELECT
+    *,
+    CASE
+      WHEN REGEXP_CONTAINS(
+        request_path,
+        r'^/v[0-9]+/debug/ask(/enhance_full)?/stream/?$'
+      ) THEN 'debug_ask_stream'
+      WHEN REGEXP_CONTAINS(
+        request_path,
+        r'^/v[0-9]+/debug/ask(/enhance_full)?/?$'
+      ) THEN 'debug_ask'
+      WHEN REGEXP_CONTAINS(
+        request_path,
+        r'^/v[0-9]+/ask(/enhance_full)?/stream/?$'
+      ) THEN 'ask_stream'
+      WHEN REGEXP_CONTAINS(
+        request_path,
+        r'^/v[0-9]+/ask(/enhance_full)?/?$'
+      ) THEN 'ask'
+      WHEN REGEXP_CONTAINS(
+        request_path,
+        r'^/v[0-9]+/conversations/[^/]+/messages/[^/]+/?$'
+      ) THEN 'message_write'
+      WHEN REGEXP_CONTAINS(request_path, r'^/v[0-9]+/conversations')
+        THEN 'conversation'
+      ELSE 'other'
+    END AS endpoint_class
+  FROM normalized
 )
 SELECT
   source_ts,
   JSON_VALUE(raw_json, '$.insertId') AS insert_id,
   JSON_VALUE(raw_json, '$.httpRequest.requestMethod') AS method,
   JSON_VALUE(raw_json, '$.httpRequest.requestUrl') AS request_url,
+  request_path,
+  endpoint_class,
+  endpoint_class IN ('ask', 'ask_stream') AS business_ask,
   SAFE_CAST(JSON_VALUE(raw_json, '$.httpRequest.status') AS INT64) AS status,
   JSON_VALUE(raw_json, '$.httpRequest.latency') AS latency_text,
+  NULLIF(JSON_VALUE(raw_json, '$.trace'), '') AS cloud_trace,
+  NULLIF(JSON_VALUE(raw_json, '$.spanId'), '') AS cloud_span_id,
   JSON_VALUE(raw_json, '$.resource.labels.revision_name') AS revision_name
-FROM serialized
+FROM classified
 WHERE JSON_VALUE(raw_json, '$.resource.labels.service_name') = '${SOURCE_SERVICE}';

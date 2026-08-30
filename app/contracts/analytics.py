@@ -2,9 +2,18 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 MeasurementState = Literal["measured", "partial", "not_measured", "no_usage"]
+MeasurementReason = Literal[
+    "complete",
+    "no_usage",
+    "population_without_usage",
+    "historical_unavailable",
+    "current_data_gap",
+    "mixed_history_and_current_gap",
+    "mixed_no_usage_and_data_gap",
+]
 
 
 class AnalyticsModel(BaseModel):
@@ -14,10 +23,6 @@ class AnalyticsModel(BaseModel):
 class DataFreshness(AnalyticsModel):
     state: Literal["fresh", "stale", "unknown"]
     dataThrough: str
-    refreshCadenceMinutes: int
-    expectedDelayMinutes: int
-    staleAfterMinutes: int
-    nextPlannedRefreshAt: str
 
 
 class RateMeasurement(AnalyticsModel):
@@ -25,6 +30,7 @@ class RateMeasurement(AnalyticsModel):
     measuredCount: int
     totalCount: int
     measurementState: MeasurementState
+    measurementReason: MeasurementReason
 
 
 class LatencyMeasurement(AnalyticsModel):
@@ -32,12 +38,14 @@ class LatencyMeasurement(AnalyticsModel):
     measuredCount: int
     totalCount: int
     measurementState: MeasurementState
+    measurementReason: MeasurementReason
 
 
 class MeasurementCoverage(AnalyticsModel):
     measuredCount: int
     totalCount: int
     measurementState: MeasurementState
+    measurementReason: MeasurementReason
 
 
 class AnalyticsAxisQuality(MeasurementCoverage):
@@ -68,6 +76,17 @@ class AnalyticsQuality(AnalyticsModel):
     task: AnalyticsAxisQuality
     product: AnalyticsAxisQuality
     sourcePipeline: SourcePipelineQuality
+
+
+class ContentDiagnostics(AnalyticsModel):
+    state: Literal["complete", "degraded"]
+    labelCatalogStatus: Literal[
+        "available", "partial", "unavailable", "not_applicable"
+    ]
+    rosterStatus: Literal["available", "partial"]
+    rosterIsolatedCount: int = Field(ge=0)
+    rosterIssueCounts: dict[str, int]
+    issues: list[str]
 
 
 class Kpis(AnalyticsModel):
@@ -131,6 +150,7 @@ class ProductResolution(AnalyticsModel):
     measuredCount: int
     totalCount: int
     measurementState: MeasurementState
+    measurementReason: MeasurementReason
 
 
 class AnalyticsLabel(AnalyticsModel):
@@ -155,6 +175,9 @@ class UserRow(AnalyticsModel):
     email: str
     area: str
     areaKey: str
+    workplace: str
+    role: str
+    department: str
     labels: list[AnalyticsLabel]
     lastActiveAt: str
     activeDays7: int
@@ -182,6 +205,7 @@ class UserSummary(AnalyticsModel):
     questions: int
     questionsPerActiveDay: float | None
     completeDelivery: RateMeasurement
+    p95Latency: LatencyMeasurement
 
 
 class PeerComparison(AnalyticsModel):
@@ -214,6 +238,14 @@ class ConversationRow(AnalyticsModel):
 
 class OverviewResponse(AnalyticsModel):
     scope: Literal["global"]
+    scopePolicyVersion: str
+    rosterFingerprint: str
+    contentFingerprint: str
+    publishedRunId: str
+    windowStart: str
+    windowEnd: str
+    windowTimezone: str
+    contentDiagnostics: ContentDiagnostics
     scopeUserCount: int
     freshness: DataFreshness
     analyticsQuality: AnalyticsQuality
@@ -235,18 +267,45 @@ class OverviewResponse(AnalyticsModel):
 
 
 class RegionsResponse(AnalyticsModel):
+    scope: Literal["global"]
+    scopePolicyVersion: str
+    rosterFingerprint: str
+    contentFingerprint: str
+    publishedRunId: str
+    windowStart: str
+    windowEnd: str
+    windowTimezone: str
+    contentDiagnostics: ContentDiagnostics
     scopeUserCount: int
     freshness: DataFreshness
     regions: list[RegionRow]
 
 
 class UsersResponse(AnalyticsModel):
+    scope: Literal["global", "user_map"]
+    scopePolicyVersion: str
+    rosterFingerprint: str
+    contentFingerprint: str
+    publishedRunId: str
+    windowStart: str
+    windowEnd: str
+    windowTimezone: str
+    contentDiagnostics: ContentDiagnostics
     scopeUserCount: int
     freshness: DataFreshness
     users: list[UserRow]
 
 
 class UserDetailResponse(AnalyticsModel):
+    scope: Literal["user_map"]
+    scopePolicyVersion: str
+    rosterFingerprint: str
+    contentFingerprint: str
+    publishedRunId: str
+    windowStart: str
+    windowEnd: str
+    windowTimezone: str
+    contentDiagnostics: ContentDiagnostics
     freshness: DataFreshness
     analyticsQuality: AnalyticsQuality
     profile: UserProfile

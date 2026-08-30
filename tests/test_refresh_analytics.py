@@ -11,6 +11,7 @@ from app.jobs.refresh_analytics import (
     _render_begin_run_sql,
     render_publish_sql,
 )
+from app.jobs.project_firestore import UserScopeProjection
 from app.settings import Settings
 
 
@@ -37,9 +38,6 @@ class _WatermarkClient:
 def _settings(**updates):
     return Settings(
         monitor_analytics_start_at="2026-08-01T00:00:00Z",
-        monitor_refresh_delay_minutes=5,
-        monitor_refresh_overlap_minutes=240,
-        monitor_refresh_max_window_hours=24,
         **updates,
     )
 
@@ -280,23 +278,34 @@ class _MinimalProjector:
         return 1
 
     def user_scope_rows(self):
-        return [
+        return UserScopeProjection([
             {
+                "snapshot_run_id": "",
+                "snapshot_created_at": None,
                 "roster_id": "roster-1",
                 "user_id": "subject-1",
+                "name": "利用者",
+                "email": "user@example.com",
                 "area": "area",
                 "area_key": "area-key",
                 "workplace": "workplace",
                 "role": "role",
                 "department": "department",
                 "mr_experience": "experience",
+                "label_ids_json": "[]",
+                "labels_json": "[]",
                 "is_active": True,
                 "global_scope_enabled": True,
                 "user_map_scope_enabled": True,
                 "is_admin": False,
                 "updated_at": datetime(2026, 8, 2, tzinfo=timezone.utc),
             }
-        ]
+        ], fingerprints={
+            "global_roster_fingerprint": "global-roster",
+            "global_content_fingerprint": "global-content",
+            "user_map_roster_fingerprint": "user-map-roster",
+            "user_map_content_fingerprint": "user-map-content",
+        })
 
     def changed_conversation_rows(self, *, window_start, window_end):
         return [], [], {}
@@ -427,7 +436,7 @@ class _QualityBlockedJob(AnalyticsRefreshJob):
         if sql.lstrip().startswith("DECLARE event_partition_start"):
             return [
                 {
-                    "check_name": "duplicate_question_event_id",
+                    "check_name": "current_final_without_persistence_measurement",
                     "disposition": "batch_blocking",
                     "severity": "critical",
                     "failure_count": 1,
@@ -444,7 +453,9 @@ def test_blocking_quality_is_a_typed_failure_and_releases_the_lease() -> None:
         job.run(now=datetime(2026, 8, 2, 12, tzinfo=timezone.utc))
 
     assert raised.value.run_id.startswith("refresh_")
-    assert raised.value.checks[0]["check_name"] == "duplicate_question_event_id"
+    assert raised.value.checks[0]["check_name"] == (
+        "current_final_without_persistence_measurement"
+    )
     assert job.failed_marked is True
     assert job.lease_released is True
 

@@ -12,8 +12,18 @@ from app.contracts.admin import (
     UserPatch,
     normalize_email,
 )
-from app.domain.analysis_scopes import Department, membership_for
+from app.domain.analysis_scopes import (
+    Department,
+    SCOPE_POLICY_VERSION,
+    SUMMARY_ROLES,
+    membership_for,
+)
 from app.domain.management_errors import ManagementError, revision_text
+from app.domain.label_records import (
+    normalize_label_name_claim,
+    read_canonical_label_collection,
+)
+from app.domain.roster_records import read_canonical_roster
 from app.domain.roster_values import (
     CANONICAL_AREAS,
     HEADQUARTERS_AREA,
@@ -34,6 +44,15 @@ class UserDirectory(Protocol):
         change: dict[str, Any],
         *,
         expected_updated_at: str = "",
+    ) -> dict[str, Any]: ...
+    def bind_user_identity(
+        self,
+        roster_id: str,
+        *,
+        chat_user_id: str,
+        user_id: str,
+        bound_at: Any,
+        change: dict[str, Any],
     ) -> dict[str, Any]: ...
     def list_labels(self, *, include_inactive: bool = True) -> list[dict[str, Any]]: ...
     def get_label(self, label_id: str) -> dict[str, Any] | None: ...
@@ -90,9 +109,33 @@ class UserManagementService:
         self._directory = directory
         self._audit_retention_days = max(1, int(audit_retention_days))
 
-    def _change(self, *, action: str, target_type: str, target_id: str, actor: str) -> dict[str, Any]:
+    def _change(
+        self,
+        *,
+        action: str,
+        target_type: str,
+        target_id: str,
+        actor: str,
+        before: dict[str, Any] | None = None,
+        after: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         changed_at = datetime.now(timezone.utc)
-        return {
+        before = dict(before or {})
+        after = dict(after or {})
+        tracked_fields = (
+            ("role", "department", "is_active", "label_ids", "area", "workplace", "mr_experience")
+            if target_type == "user"
+            else ("name", "color", "is_active")
+        )
+        before_values = {key: before.get(key) for key in tracked_fields if key in before}
+        after_values = {key: after.get(key) for key in tracked_fields if key in after}
+        changed_fields = [
+            key
+            for key in tracked_fields
+            if before.get(key) != after.get(key)
+            and (key in before or key in after)
+        ]
+        change = {
             "change_id": f"change_{uuid4().hex}",
             "action": action,
             "target_type": target_type,
@@ -100,18 +143,104 @@ class UserManagementService:
             "updated_at": changed_at,
             "expires_at": changed_at + timedelta(days=self._audit_retention_days),
             "updated_by": normalize_email(actor),
+            "changed_fields": changed_fields,
+            "before": before_values,
+            "after": after_values,
         }
+        if target_type == "user":
+            def scope(record: dict[str, Any]) -> dict[str, bool]:
+                evaluation = read_canonical_roster(record).evaluation
+                return {
+                    "global_scope_enabled": evaluation.membership.global_enabled,
+                    "user_map_scope_enabled": evaluation.membership.user_map_enabled,
+                }
+
+            change.update(
+                {
+                    "scope_policy_version": SCOPE_POLICY_VERSION,
+                    "scope_before": scope(before),
+                    "scope_after": scope(after),
+                }
+            )
+        return change
 
     def _validate_labels(self, label_ids: list[str]) -> list[str]:
         unique = list(dict.fromkeys(str(value or "").strip() for value in label_ids if str(value or "").strip()))
-        missing = [
-            label_id
-            for label_id in unique
-            if not (self._directory.get_label(label_id) or {}).get("is_active", False)
-        ]
+        if not unique:
+            return []
+        records = read_canonical_label_collection(
+            self._directory.list_labels(include_inactive=True)
+        )
+        if any(not record.catalog_eligible for record in records):
+            raise ManagementError(
+                "invalid_label_catalog",
+                "label catalog must be repaired before editing relationships",
+            )
+        labels = {
+            str(record.value.get("label_id") or ""): record.value
+            for record in records
+        }
+        missing: list[str] = []
+        for label_id in unique:
+            label = labels.get(label_id)
+            if label is None or label.get("is_active") is not True:
+                missing.append(label_id)
         if missing:
             raise ManagementError("invalid_roster_value", "unknown or inactive labels")
         return unique
+
+    def _editable_label_catalog(self) -> list[dict[str, Any]]:
+        records = read_canonical_label_collection(
+            self._directory.list_labels(include_inactive=True)
+        )
+        if any(not record.catalog_eligible for record in records):
+            raise ManagementError(
+                "invalid_label_catalog",
+                "label catalog must be repaired before editing",
+            )
+        return [record.value for record in records]
+
+    def _label_catalog_for_update(
+        self,
+        *,
+        label_id: str,
+        replacement: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Allow one-row repair only when the resulting full catalog is valid."""
+
+        raw_rows = self._directory.list_labels(include_inactive=True)
+        records = read_canonical_label_collection(raw_rows)
+        if all(record.catalog_eligible for record in records):
+            return [record.value for record in records]
+
+        matching_indexes = [
+            index
+            for index, record in enumerate(records)
+            if str(record.document_id or record.value.get("label_id") or "")
+            == label_id
+        ]
+        if len(matching_indexes) != 1:
+            raise ManagementError(
+                "invalid_label_catalog",
+                "label catalog must be repaired before editing",
+            )
+        candidate_rows = list(raw_rows)
+        candidate_rows[matching_indexes[0]] = replacement
+        candidate_records = read_canonical_label_collection(candidate_rows)
+        if any(not record.catalog_eligible for record in candidate_records):
+            raise ManagementError(
+                "invalid_label_catalog",
+                "label catalog must be repaired before editing",
+            )
+        return [record.value for record in candidate_records]
+
+    @staticmethod
+    def _require_scope_policy_version(expected_version: str) -> None:
+        if str(expected_version or "").strip() != SCOPE_POLICY_VERSION:
+            raise ManagementError(
+                "scope_policy_conflict",
+                "scope policy changed; reload management metadata and preview again",
+            )
 
     def _labels_for_update(
         self,
@@ -122,14 +251,29 @@ class UserManagementService:
         current = list(dict.fromkeys(str(value) for value in current_ids if str(value)))
         requested = list(dict.fromkeys(str(value) for value in requested_ids if str(value)))
         current_set = set(current)
+        records = read_canonical_label_collection(
+            self._directory.list_labels(include_inactive=True)
+        )
+        if any(not record.catalog_eligible for record in records):
+            raise ManagementError(
+                "invalid_label_catalog",
+                "label catalog must be repaired before editing relationships",
+            )
+        labels = {
+            str(record.value.get("label_id") or ""): record.value
+            for record in records
+        }
         preserved_inactive: list[str] = []
         for label_id in current:
-            label = self._directory.get_label(label_id)
+            label = labels.get(label_id)
             if label is not None and label.get("is_active") is not True:
                 preserved_inactive.append(label_id)
         for label_id in requested:
-            label = self._directory.get_label(label_id)
-            if label is None or (label.get("is_active") is not True and label_id not in current_set):
+            label = labels.get(label_id)
+            if label is None or (
+                label.get("is_active") is not True
+                and label_id not in current_set
+            ):
                 raise ManagementError("invalid_roster_value", "unknown or inactive labels")
         return list(dict.fromkeys([*requested, *preserved_inactive]))
 
@@ -138,6 +282,13 @@ class UserManagementService:
 
     def metadata(self) -> dict[str, Any]:
         users = self._directory.list_users(include_inactive=True)
+        observed_roles = sorted(
+            {
+                normalize_roster_text(item.get("role", ""))
+                for item in users
+                if normalize_roster_text(item.get("role", ""))
+            }
+        )
         return {
             "areas": list(CANONICAL_AREAS),
             "workplaces": sorted(
@@ -147,29 +298,32 @@ class UserManagementService:
                     if normalize_roster_text(item.get("workplace", ""))
                 }
             ),
-            "roles": sorted(
-                {
-                    normalize_roster_text(item.get("role", ""))
-                    for item in users
-                    if normalize_roster_text(item.get("role", ""))
-                }
-            ),
+            "roles": list(dict.fromkeys([*SUMMARY_ROLES, *observed_roles])),
+            "summaryRoles": list(SUMMARY_ROLES),
             "departments": [member.value for member in Department],
-            "departmentScopes": [
-                {
-                    "department": department.value,
-                    "globalScopeEnabled": membership_for(
-                        department, is_active=True
-                    ).global_enabled,
-                    "userMapScopeEnabled": membership_for(
-                        department, is_active=True
-                    ).user_map_enabled,
-                }
-                for department in Department
-            ],
+            "scopePolicyVersion": SCOPE_POLICY_VERSION,
+        }
+
+    @staticmethod
+    def scope_preview(
+        *,
+        role: str,
+        department: Department | str,
+        is_active: bool,
+    ) -> dict[str, Any]:
+        membership = membership_for(
+            role=role,
+            department=department,
+            is_active=is_active,
+        )
+        return {
+            "globalScopeEnabled": membership.global_enabled,
+            "userMapScopeEnabled": membership.user_map_enabled,
+            "scopePolicyVersion": SCOPE_POLICY_VERSION,
         }
 
     def create_user(self, payload: UserCreate, *, actor: str) -> dict[str, Any]:
+        self._require_scope_policy_version(payload.expected_scope_policy_version)
         email = normalize_email(payload.email)
         if self._directory.find_user_by_email(email) is not None:
             raise ManagementError("duplicate_email", "email already exists")
@@ -202,7 +356,13 @@ class UserManagementService:
         }
         stored = self._directory.put_user_and_change(
             user,
-            self._change(action="create", target_type="user", target_id=user["roster_id"], actor=actor),
+            self._change(
+                action="create",
+                target_type="user",
+                target_id=user["roster_id"],
+                actor=actor,
+                after=user,
+            ),
         )
         return stored
 
@@ -211,6 +371,10 @@ class UserManagementService:
         if current is None:
             raise KeyError("user not found")
         changes = payload.model_dump(exclude_unset=True, exclude_none=True)
+        expected_scope_policy_version = str(
+            changes.pop("expected_scope_policy_version", "") or ""
+        ).strip()
+        self._require_scope_policy_version(expected_scope_policy_version)
         expected_updated_at = str(changes.pop("expected_updated_at", "") or "").strip()
         current_revision = revision_text(current.get("updated_at"))
         if current_revision and expected_updated_at != current_revision:
@@ -224,7 +388,12 @@ class UserManagementService:
             ):
                 raise ManagementError("bound_email", "bound email cannot be changed")
             existing = self._directory.find_user_by_email(email)
-            if existing is not None and existing.get("roster_id") != roster_id:
+            existing_document_id = str(
+                (existing or {}).get("_document_id")
+                or (existing or {}).get("roster_id")
+                or ""
+            )
+            if existing is not None and existing_document_id != roster_id:
                 raise ManagementError("duplicate_email", "email already exists")
             changes["email"] = email
         for key in ("name", "area", "workplace", "role", "mr_experience"):
@@ -240,13 +409,23 @@ class UserManagementService:
                 requested_ids=list(changes["label_ids"] or []),
             )
         updated = {**current, **changes}
+        # The route id is the actual Firestore repair address.  Persisting it
+        # repairs legacy documents whose internal roster_id is absent or stale.
+        updated["roster_id"] = str(current.get("_document_id") or roster_id)
         updated["area_key"] = area_key_for(area=updated["area"], workplace=updated["workplace"])
         if Department(updated["department"]) is not Department.DM_FIELD:
             updated["mr_experience"] = "-"
         updated.update({"updated_at": now, "updated_by": normalize_email(actor)})
         stored = self._directory.put_user_and_change(
             updated,
-            self._change(action="update", target_type="user", target_id=roster_id, actor=actor),
+            self._change(
+                action="update",
+                target_type="user",
+                target_id=roster_id,
+                actor=actor,
+                before=current,
+                after=updated,
+            ),
             expected_updated_at=expected_updated_at,
         )
         return stored
@@ -257,6 +436,7 @@ class UserManagementService:
         *,
         chat_user_id: str,
         user_id: str,
+        actor: str = "monitor-refresh@system.local",
     ) -> dict[str, Any]:
         """Persist the verified LCS root-document binding without exposing it as a label."""
 
@@ -275,27 +455,38 @@ class UserManagementService:
             raise ValueError("chat identity cannot be rebound")
         if current_user_id and current_user_id != resolved_user_id:
             raise ValueError("user identity cannot be rebound")
-        for item in self._directory.list_users(include_inactive=True):
-            if item.get("roster_id") == roster_id:
-                continue
-            if str(item.get("chat_user_id") or "") == resolved_chat_user_id:
-                raise ValueError("chat identity already bound")
-            if str(item.get("user_id") or "") == resolved_user_id:
-                raise ValueError("user identity already bound")
-        updated = {
-            **current,
-            "chat_user_id": resolved_chat_user_id,
-            "user_id": resolved_user_id,
-            "identity_bound_at": datetime.now(timezone.utc),
-        }
-        return self._directory.put_user(updated)
+        bound_at = datetime.now(timezone.utc)
+        audit_before = {**current, "identity_binding": bool(current_chat_user_id or current_user_id)}
+        audit_after = {**current, "identity_binding": True}
+        change = self._change(
+            action="identity_bind",
+            target_type="user",
+            target_id=roster_id,
+            actor=actor,
+            before=audit_before,
+            after=audit_after,
+        )
+        change["changed_fields"] = ["identity_binding"]
+        change["before"] = {"identity_binding": audit_before["identity_binding"]}
+        change["after"] = {"identity_binding": True}
+        return self._directory.bind_user_identity(
+            roster_id,
+            chat_user_id=resolved_chat_user_id,
+            user_id=resolved_user_id,
+            bound_at=bound_at,
+            change=change,
+        )
 
     def list_labels(self, *, include_inactive: bool = True) -> list[dict[str, Any]]:
         return self._directory.list_labels(include_inactive=include_inactive)
 
     def create_label(self, payload: LabelCreate, *, actor: str) -> dict[str, Any]:
         name = normalize_roster_text(payload.name)
-        if any(normalize_roster_text(item["name"]).casefold() == name.casefold() for item in self._directory.list_labels(include_inactive=True)):
+        if any(
+            normalize_label_name_claim(item["name"])
+            == normalize_label_name_claim(name)
+            for item in self._editable_label_catalog()
+        ):
             raise ManagementError("duplicate_label", "label name already exists")
         now = datetime.now(timezone.utc)
         label = {
@@ -310,7 +501,13 @@ class UserManagementService:
         }
         stored = self._directory.put_label_and_change(
             label,
-            self._change(action="create", target_type="label", target_id=label["label_id"], actor=actor),
+            self._change(
+                action="create",
+                target_type="label",
+                target_id=label["label_id"],
+                actor=actor,
+                after=label,
+            ),
         )
         return stored
 
@@ -324,10 +521,17 @@ class UserManagementService:
             raise ManagementError("update_conflict", "label update conflict")
         if "name" in changes:
             changes["name"] = normalize_roster_text(str(changes["name"]))
+        candidate = {**current, **changes}
+        candidate["label_id"] = str(current.get("_document_id") or label_id)
+        catalog = self._label_catalog_for_update(
+            label_id=label_id,
+            replacement=candidate,
+        )
         if "name" in changes and any(
-            normalize_roster_text(item["name"]).casefold() == changes["name"].casefold()
+            normalize_label_name_claim(item["name"])
+            == normalize_label_name_claim(changes["name"])
             and item["label_id"] != label_id
-            for item in self._directory.list_labels(include_inactive=True)
+            for item in catalog
         ):
             raise ManagementError("duplicate_label", "label name already exists")
         updated = {
@@ -337,9 +541,17 @@ class UserManagementService:
             "updated_at": datetime.now(timezone.utc),
             "updated_by": normalize_email(actor),
         }
+        updated["label_id"] = str(current.get("_document_id") or label_id)
         stored = self._directory.put_label_and_change(
             updated,
-            self._change(action="update", target_type="label", target_id=label_id, actor=actor),
+            self._change(
+                action="update",
+                target_type="label",
+                target_id=label_id,
+                actor=actor,
+                before=current,
+                after=updated,
+            ),
             expected_updated_at=expected_updated_at,
         )
         return stored
@@ -351,6 +563,7 @@ class UserManagementService:
         actor: str,
         expected_updated_at: str,
     ) -> None:
+        self._editable_label_catalog()
         current = self._directory.get_label(label_id)
         if current is None:
             raise KeyError("label not found")
@@ -361,6 +574,12 @@ class UserManagementService:
             raise ManagementError("label_in_use", "label is in use")
         self._directory.delete_label_and_change(
             label_id,
-            self._change(action="delete", target_type="label", target_id=label_id, actor=actor),
+            self._change(
+                action="delete",
+                target_type="label",
+                target_id=label_id,
+                actor=actor,
+                before=current,
+            ),
             expected_updated_at=expected,
         )

@@ -9,6 +9,7 @@ REPO_NAME="oura_navi_monitor"
 BRANCH_PATTERN="^main$"
 SERVICE_ACCOUNT=""
 APPLY="false"
+CREDENTIAL_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -19,6 +20,7 @@ while [[ $# -gt 0 ]]; do
     --repo-name) REPO_NAME="$2"; shift 2 ;;
     --branch-pattern) BRANCH_PATTERN="$2"; shift 2 ;;
     --service-account) SERVICE_ACCOUNT="$2"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="$2"; shift 2 ;;
     --apply) APPLY="true"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -42,11 +44,12 @@ if [[ "${APPLY}" != "true" ]]; then
   exit 0
 fi
 
-[[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || {
-  echo "approved credential is required" >&2
-  exit 2
-}
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python3 "${ROOT_DIR}/scripts/credential_preflight.py" \
+  --credential-file "${CREDENTIAL_FILE}"
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
+source "${ROOT_DIR}/scripts/credential_shell.sh"
+monitor_install_google_credential_wrappers "${CREDENTIAL_FILE}"
 
 trigger_id="$(
   gcloud --project="${PROJECT_ID}" builds triggers list \

@@ -47,13 +47,13 @@ function dataTable(canvas, headers, rows) {
 function chart(canvas, config, { summary, headers, rows }) {
   if (!canvas) return null;
   if (!window.Chart) return showChartMessage(canvas, "グラフ機能を読み込めませんでした。");
-  const old = instances.get(canvas.id);
+  const old = instances.get(canvas);
   if (old) old.destroy();
   canvas.setAttribute("role", "img");
   canvas.setAttribute("aria-label", summary);
   dataTable(canvas, headers, rows);
   const instance = new window.Chart(canvas.getContext("2d"), config);
-  instances.set(canvas.id, instance);
+  instances.set(canvas, instance);
   return instance;
 }
 
@@ -160,6 +160,24 @@ export function stackedChart(canvas, rows, { summary = "活性度構成の100パ
 }
 
 export function destroyAllCharts() {
-  instances.forEach((instance) => instance.destroy());
+  instances.forEach((instance) => {
+    try { instance.destroy(); } catch (_error) { /* cleanup must not break page transactions */ }
+  });
   instances.clear();
+}
+
+export function destroyChartCanvases(canvases) {
+  for (const canvas of canvases || []) {
+    const instance = instances.get(canvas);
+    if (!instance) continue;
+    try { instance.destroy(); } catch (_error) { /* the DOM commit already succeeded */ }
+    instances.delete(canvas);
+  }
+}
+
+export function destroyChartsInRoot(root) {
+  if (!root) return;
+  destroyChartCanvases(
+    [...instances.keys()].filter((canvas) => canvas === root || root.contains?.(canvas)),
+  );
 }

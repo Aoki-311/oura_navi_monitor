@@ -15,6 +15,7 @@ EXPECTED_OLD_SCHEDULER_SERVICE_ACCOUNT=""
 EXPECTED_NEW_SCHEDULER_SERVICE_ACCOUNT=""
 CONFIRM_CUTOVER=""
 APPLY="false"
+CREDENTIAL_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -31,6 +32,7 @@ while [[ $# -gt 0 ]]; do
     --expected-old-scheduler-service-account) EXPECTED_OLD_SCHEDULER_SERVICE_ACCOUNT="$2"; shift 2 ;;
     --expected-new-scheduler-service-account) EXPECTED_NEW_SCHEDULER_SERVICE_ACCOUNT="$2"; shift 2 ;;
     --confirm-cutover) CONFIRM_CUTOVER="$2"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="$2"; shift 2 ;;
     --apply) APPLY="true"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -90,22 +92,16 @@ if [[ "${STAGE}" == "activate" ]]; then
   [[ -n "${ACTIVATION_RECEIPT_OUTPUT}" ]] || {
     echo "activate requires --activation-receipt-output" >&2; exit 2;
   }
-  [[ ! -e "${ACTIVATION_RECEIPT_OUTPUT}" ]] || {
-    echo "activation receipt output already exists" >&2; exit 2;
-  }
   [[ -d "$(dirname "${ACTIVATION_RECEIPT_OUTPUT}")" ]] || {
     echo "activation receipt output parent does not exist" >&2; exit 2;
   }
 fi
-[[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || {
-  echo "approved credential is required" >&2; exit 2;
-}
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && "${GOOGLE_APPLICATION_CREDENTIALS}" != "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]]; then
-  echo "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential" >&2; exit 2
-fi
-export GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}"
+python3 "${ROOT_DIR}/scripts/credential_preflight.py" \
+  --credential-file "${CREDENTIAL_FILE}"
 command -v bq >/dev/null 2>&1 || { echo "bq not found" >&2; exit 2; }
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
+source "${ROOT_DIR}/scripts/credential_shell.sh"
+monitor_install_google_credential_wrappers "${CREDENTIAL_FILE}"
 
 describe_scheduler() {
   gcloud --project="${PROJECT_ID}" scheduler jobs describe "$1" \
@@ -346,9 +342,12 @@ else
   OLD_STATE="${SCHEDULER_STATES%%,*}"
   NEW_STATE="${SCHEDULER_STATES##*,}"
 fi
-GATE_JSON="$(query_pipeline_gate)"
-GATE_SUMMARY="$(validate_pipeline_gate "${GATE_JSON}" "${STAGE}")"
-echo "pre_cutover_gate=${GATE_SUMMARY}"
+GATE_JSON=""
+if [[ "${STAGE}" != "activate" ]]; then
+  GATE_JSON="$(query_pipeline_gate)"
+  GATE_SUMMARY="$(validate_pipeline_gate "${GATE_JSON}" "${STAGE}")"
+  echo "pre_cutover_gate=${GATE_SUMMARY}"
+fi
 
 if [[ -e "${SNAPSHOT_OUTPUT}" ]]; then
   FREEZE_STARTED_AT="$(python3 - "${SNAPSHOT_OUTPUT}" "${PROJECT_ID}" "${REGION}" "${DATASET_ID}" "${LOCATION}" "${SOURCE_SERVICE}" "${EXPECTED_JOB_SERVICE_ACCOUNT}" "${EXPECTED_OLD_SCHEDULER_SERVICE_ACCOUNT}" "${EXPECTED_NEW_SCHEDULER_SERVICE_ACCOUNT}" "${OLD_SCHEDULER}" "${NEW_SCHEDULER}" <<'PY'
@@ -540,6 +539,19 @@ if "@sha256:" not in image:
 contract = receipt.get("validated_job_contract") or {}
 if contract.get("image") != image or contract.get("serviceAccount") != job_service_account:
     raise SystemExit("backfill receipt does not contain the approved Job contract")
+execution_contract = receipt.get("validated_execution_provenance") or {}
+if (
+    execution_contract.get("image") != image
+    or execution_contract.get("serviceAccount") != job_service_account
+    or int(execution_contract.get("succeededCount") or 0) < 1
+    or int(execution_contract.get("failedCount") or 0) != 0
+):
+    raise SystemExit("backfill receipt does not contain the approved execution provenance")
+deploy_receipt_sha = str(receipt.get("job_deploy_receipt_sha256") or "")
+if len(deploy_receipt_sha) != 64 or any(
+    character not in "0123456789abcdef" for character in deploy_receipt_sha
+):
+    raise SystemExit("backfill receipt has no immutable Job deploy receipt provenance")
 environment = contract.get("environment") or {}
 expected_environment = {
     "MONITOR_PROJECT_ID": project,
@@ -580,111 +592,177 @@ ACTIVATION_JOB_CONTRACT="$(JOB_DESCRIPTION_JSON="${ACTIVATION_JOB_JSON}" \
     --timeout-minutes "$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_timeout_minutes)')")"
 echo "backfill_receipt=verified image=${BACKFILL_IMAGE}"
 
-ACTIVATION_STARTED_AT="$(python3 - "${SNAPSHOT_OUTPUT}" "${NEW_STATE}" <<'PY'
-import json
-import os
-import sys
-from datetime import datetime, timezone
+ACTIVATION_STATE_ARGS=(
+  --path "${ACTIVATION_RECEIPT_OUTPUT}"
+  --snapshot "${SNAPSHOT_OUTPUT}"
+  --backfill-receipt "${BACKFILL_RECEIPT}"
+  --project "${PROJECT_ID}"
+  --region "${REGION}"
+  --dataset "${DATASET_ID}"
+  --location "${LOCATION}"
+  --source-service "${SOURCE_SERVICE}"
+  --job "${JOB_NAME}"
+  --old-scheduler "${OLD_SCHEDULER}"
+  --new-scheduler "${NEW_SCHEDULER}"
+  --expected-job-service-account "${EXPECTED_JOB_SERVICE_ACCOUNT}"
+  --expected-old-scheduler-service-account "${EXPECTED_OLD_SCHEDULER_SERVICE_ACCOUNT}"
+  --expected-new-scheduler-service-account "${EXPECTED_NEW_SCHEDULER_SERVICE_ACCOUNT}"
+  --image "${BACKFILL_IMAGE}"
+)
 
-path, new_state = sys.argv[1:]
-with open(path, encoding="utf-8") as handle:
-    payload = json.load(handle)
-started_at = payload.get("activation_started_at")
-if started_at:
-    print(started_at)
-    raise SystemExit(0)
-if new_state == "ENABLED":
-    raise SystemExit("new scheduler is already enabled but the snapshot has no activation timestamp")
-started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-payload["activation_started_at"] = started_at
-temporary = f"{path}.tmp"
-with open(temporary, "w", encoding="utf-8") as handle:
-    json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-    handle.write("\n")
-os.replace(temporary, path)
-print(started_at)
+ACTIVATION_STATE_OLD_JSON="${OLD_JSON}"
+ACTIVATION_STATE_NEW_JSON="${NEW_JSON}"
+ACTIVATION_STATE_JOB_JSON="${ACTIVATION_JOB_JSON}"
+ACTIVATION_STATE_JOB_CONTRACT="${ACTIVATION_JOB_CONTRACT}"
+ACTIVATION_GATE_JSON=""
+
+run_activation_state() {
+  CURRENT_OLD_SCHEDULER_JSON="${ACTIVATION_STATE_OLD_JSON}" \
+  CURRENT_NEW_SCHEDULER_JSON="${ACTIVATION_STATE_NEW_JSON}" \
+  CURRENT_JOB_JSON="${ACTIVATION_STATE_JOB_JSON}" \
+  CURRENT_JOB_CONTRACT="${ACTIVATION_STATE_JOB_CONTRACT}" \
+  ACTIVATION_PIPELINE_GATE_JSON="${ACTIVATION_GATE_JSON}" \
+    python3 "${ROOT_DIR}/scripts/scheduler_activation_receipt_state.py" \
+      "$@" "${ACTIVATION_STATE_ARGS[@]}"
+}
+
+# Publish and fsync the exact intent before any resume mutation. If the live
+# Scheduler is already ENABLED, only an existing exact intent/final may own it.
+if [[ ! -e "${ACTIVATION_RECEIPT_OUTPUT}" && "${NEW_STATE}" == "PAUSED" ]]; then
+  ACTIVATION_GATE_JSON="$(query_pipeline_gate)"
+  validate_pipeline_gate "${ACTIVATION_GATE_JSON}" "activate" >/dev/null
+fi
+ACTIVATION_PREPARED="$(run_activation_state prepare)"
+ACTIVATION_STATE="$(ACTIVATION_PREPARED="${ACTIVATION_PREPARED}" python3 -c \
+  'import json,os; print(json.loads(os.environ["ACTIVATION_PREPARED"])["state"])')"
+ACTIVATION_STARTED_AT="$(ACTIVATION_PREPARED="${ACTIVATION_PREPARED}" python3 -c \
+  'import json,os; print(json.loads(os.environ["ACTIVATION_PREPARED"])["canonical_start_at"])')"
+
+IFS=$'\t' read -r ACTIVATION_LOCK_INTENT ACTIVATION_LOCK_STATIC ACTIVATION_LOCK_TARGET <<< "$(python3 - "${ACTIVATION_RECEIPT_OUTPUT}" <<'PY'
+import hashlib
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    state = json.load(handle)
+intent = state.get("lock_intent_payload_sha256") or state.get("state_payload_sha256")
+if not isinstance(intent, str) or len(intent) != 64:
+    raise SystemExit("scheduler activation receipt has no stable lock intent")
+static = {
+    key: state.get(key)
+    for key in (
+        "project", "region", "job", "old_scheduler", "new_scheduler", "image",
+        "backfill_receipt_sha256", "expected_job_service_account",
+        "expected_new_scheduler_service_account",
+    )
+}
+canonical = json.dumps(static, separators=(",", ":"), sort_keys=True)
+print("\t".join((
+    intent,
+    hashlib.sha256(canonical.encode()).hexdigest(),
+    f'{state["job"]}|{state["old_scheduler"]}|{state["new_scheduler"]}',
+)))
 PY
 )"
+ACTIVATION_LOCK_ARGS=(
+  --project "${PROJECT_ID}"
+  --region "${REGION}"
+  --resource-key "refresh-chain:${JOB_NAME}:${OLD_SCHEDULER}:${NEW_SCHEDULER}"
+  --operation-kind scheduler-activation
+  --target-key "${ACTIVATION_LOCK_TARGET}"
+  --intent-payload-sha256 "${ACTIVATION_LOCK_INTENT}"
+  --static-contract-sha256 "${ACTIVATION_LOCK_STATIC}"
+  --firestore-database lcs-user-data
+  --release-lock-collection monitor_release_locks
+)
+python3 "${ROOT_DIR}/scripts/release_operation_lock.py" acquire \
+  --credential-file "${CREDENTIAL_FILE}" \
+  "${ACTIVATION_LOCK_ARGS[@]}" >/dev/null
 
-if [[ "${NEW_STATE}" == "PAUSED" ]]; then
+# The local intent is not authority. Once the global CAS is held, re-read every
+# live contract that can make the resume unsafe and reclassify the exact intent.
+ACTIVATION_STATE_OLD_JSON="$(describe_scheduler "${OLD_SCHEDULER}")"
+ACTIVATION_STATE_NEW_JSON="$(describe_scheduler "${NEW_SCHEDULER}")"
+ACTIVATION_STATE_JOB_JSON="$(gcloud --project="${PROJECT_ID}" run jobs describe "${JOB_NAME}" \
+  --region="${REGION}" --format=json)"
+ACTIVATION_STATE_JOB_CONTRACT="$(JOB_DESCRIPTION_JSON="${ACTIVATION_STATE_JOB_JSON}" \
+  python3 "${ROOT_DIR}/scripts/validate_refresh_job.py" \
+    --expected-image "${BACKFILL_IMAGE}" \
+    --expected-service-account "${EXPECTED_JOB_SERVICE_ACCOUNT}" \
+    --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" \
+    --source-service "${SOURCE_SERVICE}" \
+    --timeout-minutes "$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_timeout_minutes)')")"
+ACTIVATION_GATE_JSON="$(query_pipeline_gate)"
+validate_pipeline_gate "${ACTIVATION_GATE_JSON}" "activate" >/dev/null
+ACTIVATION_PREPARED="$(run_activation_state prepare)"
+ACTIVATION_STATE="$(ACTIVATION_PREPARED="${ACTIVATION_PREPARED}" python3 -c \
+  'import json,os; print(json.loads(os.environ["ACTIVATION_PREPARED"])["state"])')"
+
+if [[ "${ACTIVATION_STATE}" == "final" ]]; then
+  python3 "${ROOT_DIR}/scripts/release_operation_lock.py" release \
+    --credential-file "${CREDENTIAL_FILE}" \
+    "${ACTIVATION_LOCK_ARGS[@]}" >/dev/null
+  echo "scheduler_activation=already_complete old=PAUSED new=ENABLED"
+  echo "canonical_start_at=${ACTIVATION_STARTED_AT}"
+  echo "activation_receipt=${ACTIVATION_RECEIPT_OUTPUT}"
+  echo "next_gate=wait for three distinct canonical executions before pausing legacy BigQuery DTS"
+  exit 0
+fi
+
+RESUME_RETURN_CODE=""
+if [[ "${ACTIVATION_STATE}" == "pre" ]]; then
+  # Re-read the gate immediately before mutation. A previously published intent
+  # is resumable only while its pre-state remains safe.
+  ACTIVATION_GATE_JSON="$(query_pipeline_gate)"
+  GATE_SUMMARY="$(validate_pipeline_gate "${ACTIVATION_GATE_JSON}" "activate")"
+  echo "pre_cutover_gate=${GATE_SUMMARY}"
+  set +e
   gcloud --project="${PROJECT_ID}" scheduler jobs resume "${NEW_SCHEDULER}" --location="${REGION}"
-  echo "new_scheduler_state=ENABLED"
+  RESUME_RETURN_CODE="$?"
+  set -e
+  echo "resume_command_return_code=${RESUME_RETURN_CODE}"
 else
-  echo "new_scheduler_state=already_ENABLED"
+  [[ "${ACTIVATION_STATE}" == "post" ]] || {
+    echo "unexpected activation receipt state: ${ACTIVATION_STATE}" >&2; exit 2;
+  }
+  echo "new_scheduler_state=recovering_ENABLED_from_exact_intent"
 fi
 
 OLD_AFTER="$(describe_scheduler "${OLD_SCHEDULER}")"
 NEW_AFTER="$(describe_scheduler "${NEW_SCHEDULER}")"
 AFTER_STATES="$(validate_schedulers "${OLD_AFTER}" "${NEW_AFTER}")"
 [[ "${AFTER_STATES}" == "PAUSED,ENABLED" ]] || {
-  echo "scheduler activation readback failed: ${AFTER_STATES}" >&2; exit 2;
+  echo "scheduler activation readback failed: ${AFTER_STATES} resume_rc=${RESUME_RETURN_CODE:-not_observed}" >&2
+  exit 2
 }
 
-ACTIVATION_OLD_JSON="${OLD_AFTER}" ACTIVATION_NEW_JSON="${NEW_AFTER}" \
-ACTIVATION_JOB_JSON="${ACTIVATION_JOB_JSON}" \
-ACTIVATION_JOB_CONTRACT="${ACTIVATION_JOB_CONTRACT}" \
-  python3 - "${ACTIVATION_RECEIPT_OUTPUT}" "${SNAPSHOT_OUTPUT}" \
-    "${BACKFILL_RECEIPT}" "${PROJECT_ID}" "${REGION}" "${DATASET_ID}" \
-    "${LOCATION}" "${SOURCE_SERVICE}" "${JOB_NAME}" "${OLD_SCHEDULER}" \
-    "${NEW_SCHEDULER}" "${EXPECTED_JOB_SERVICE_ACCOUNT}" \
-    "${EXPECTED_OLD_SCHEDULER_SERVICE_ACCOUNT}" \
-    "${EXPECTED_NEW_SCHEDULER_SERVICE_ACCOUNT}" "${BACKFILL_IMAGE}" \
-    "${ACTIVATION_STARTED_AT}" <<'PY'
-import hashlib
-import json
-import os
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
+# Re-read Job and gate after the mutation as well. Finalization is forbidden if
+# a sibling deployment or refresh changed either contract during the resume.
+ACTIVATION_JOB_AFTER="$(gcloud --project="${PROJECT_ID}" run jobs describe "${JOB_NAME}" \
+  --region="${REGION}" --format=json)"
+ACTIVATION_JOB_CONTRACT_AFTER="$(JOB_DESCRIPTION_JSON="${ACTIVATION_JOB_AFTER}" \
+  python3 "${ROOT_DIR}/scripts/validate_refresh_job.py" \
+    --expected-image "${BACKFILL_IMAGE}" \
+    --expected-service-account "${EXPECTED_JOB_SERVICE_ACCOUNT}" \
+    --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" \
+    --source-service "${SOURCE_SERVICE}" \
+    --timeout-minutes "$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_timeout_minutes)')")"
+ACTIVATION_GATE_AFTER="$(query_pipeline_gate)"
+validate_pipeline_gate "${ACTIVATION_GATE_AFTER}" "activate" >/dev/null
 
-(
-    output,
-    snapshot_path,
-    backfill_path,
-    project,
-    region,
-    dataset,
-    location,
-    source_service,
-    job_name,
-    old_scheduler,
-    new_scheduler,
-    job_service_account,
-    old_scheduler_service_account,
-    new_scheduler_service_account,
-    image,
-    canonical_start_at,
-) = sys.argv[1:]
-
-def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-payload = {
-    "project": project,
-    "region": region,
-    "dataset": dataset,
-    "location": location,
-    "source_service": source_service,
-    "job": job_name,
-    "old_scheduler": old_scheduler,
-    "new_scheduler": new_scheduler,
-    "expected_job_service_account": job_service_account,
-    "expected_old_scheduler_service_account": old_scheduler_service_account,
-    "expected_new_scheduler_service_account": new_scheduler_service_account,
-    "image": image,
-    "canonical_start_at": canonical_start_at,
-    "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    "freeze_snapshot_sha256": digest(snapshot_path),
-    "backfill_receipt_sha256": digest(backfill_path),
-    "validated_job_contract": json.loads(os.environ["ACTIVATION_JOB_CONTRACT"]),
-    "job_readback": json.loads(os.environ["ACTIVATION_JOB_JSON"]),
-    "old_scheduler_readback": json.loads(os.environ["ACTIVATION_OLD_JSON"]),
-    "new_scheduler_readback": json.loads(os.environ["ACTIVATION_NEW_JSON"]),
-}
-with open(output, "x", encoding="utf-8") as handle:
-    json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-    handle.write("\n")
-PY
+ACTIVATION_STATE_OLD_JSON="${OLD_AFTER}"
+ACTIVATION_STATE_NEW_JSON="${NEW_AFTER}"
+ACTIVATION_STATE_JOB_JSON="${ACTIVATION_JOB_AFTER}"
+ACTIVATION_STATE_JOB_CONTRACT="${ACTIVATION_JOB_CONTRACT_AFTER}"
+ACTIVATION_GATE_JSON="${ACTIVATION_GATE_AFTER}"
+FINALIZE_ARGUMENTS=(finalize)
+if [[ -n "${RESUME_RETURN_CODE}" ]]; then
+  FINALIZE_ARGUMENTS+=(--resume-command-return-code "${RESUME_RETURN_CODE}")
+fi
+run_activation_state "${FINALIZE_ARGUMENTS[@]}" >/dev/null
+python3 "${ROOT_DIR}/scripts/release_operation_lock.py" release \
+  --credential-file "${CREDENTIAL_FILE}" \
+  "${ACTIVATION_LOCK_ARGS[@]}" >/dev/null
 
 echo "scheduler_activation=complete old=PAUSED new=ENABLED"
 echo "canonical_start_at=${ACTIVATION_STARTED_AT}"

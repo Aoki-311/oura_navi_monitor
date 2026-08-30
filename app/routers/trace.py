@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.contracts.analytics import ConversationsResponse
 from app.contracts.trace import TraceMessagesResponse
 from app.dependencies import get_conversation_history_repository, get_user_directory_repository
-from app.domain.analysis_scopes import AnalysisScope, Department, membership_for
+from app.domain.analysis_scopes import AnalysisScope
+from app.domain.roster_records import read_canonical_roster_collection
 from app.repositories.conversation_history import ConversationHistoryRepository
 from app.repositories.user_directory import UserDirectoryRepository
 from app.security.auth import AdminIdentity, require_admin
@@ -14,13 +15,22 @@ router = APIRouter(prefix="/api/trace", tags=["conversation"])
 
 
 def _trace_user(directory: UserDirectoryRepository, roster_id: str) -> dict:
-    user = directory.get_user(roster_id)
-    if user is None or not membership_for(
-        Department(str(user["department"])),
-        is_active=bool(user["is_active"]),
-    ).includes(AnalysisScope.USER_MAP):
+    records = read_canonical_roster_collection(
+        directory.list_users(include_inactive=True)
+    )
+    matches = [
+        record
+        for record in records
+        if str(record.value.get("roster_id") or "").strip() == roster_id
+    ]
+    if (
+        len(matches) != 1
+        or not matches[0].identity_eligible
+        or not matches[0].evaluation.membership.includes(AnalysisScope.USER_MAP)
+    ):
         raise HTTPException(status_code=404, detail="user not found")
-    return user
+    record = matches[0]
+    return record.value
 
 
 @router.get("/conversations", response_model=ConversationsResponse)

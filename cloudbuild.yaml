@@ -113,18 +113,45 @@ steps:
           echo 'docker push receipt did not produce the expected immutable image URI' >&2
           exit 2
         }
+        build_id="${BUILD_ID}"
+        build_token="$${build_id%%-*}"
+        [[ "$${build_token}" =~ ^[0-9a-f]{8}$ ]] || {
+          echo 'Cloud Build ID did not produce a safe revision token' >&2
+          exit 2
+        }
+        revision_suffix="${SHORT_SHA}-$${build_token}"
+        candidate_revision="${_SERVICE_NAME}-$${revision_suffix}"
+        current_runtime_service_account="$$(
+          gcloud run services describe "${_SERVICE_NAME}" \
+            --project "${PROJECT_ID}" \
+            --region "${_REGION}" \
+            --format='value(spec.template.spec.serviceAccountName)'
+        )"
+        [[ "$${current_runtime_service_account}" == "${_RUNTIME_SERVICE_ACCOUNT}" ]] || {
+          echo 'current Monitor runtime service account does not match the frozen release contract' >&2
+          exit 2
+        }
+        printf '%s\n' "$${current_runtime_service_account}" \
+          > /workspace/monitor-predeploy-runtime-service-account.txt
+        gcloud run services describe "${_SERVICE_NAME}" \
+          --project "${PROJECT_ID}" --region "${_REGION}" --format=json \
+          > /workspace/monitor-predeploy-service.json
+        gcloud run services get-iam-policy "${_SERVICE_NAME}" \
+          --project "${PROJECT_ID}" --region "${_REGION}" --format=json \
+          > /workspace/monitor-predeploy-iam.json
         gcloud run deploy "${_SERVICE_NAME}" \
+          --project "${PROJECT_ID}" \
           --image "$${immutable_image}" \
           --region "${_REGION}" \
           --platform managed \
           --service-account "${_RUNTIME_SERVICE_ACCOUNT}" \
-          --no-allow-unauthenticated \
           --no-traffic \
           --tag candidate \
-          --revision-suffix "${SHORT_SHA}" \
+          --revision-suffix "$${revision_suffix}" \
           --env-vars-file deploy/cloudrun.env.yaml \
           --remove-secrets=MONITOR_IDENTITY_HMAC_KEY \
           --labels "managed-by=cloud-build,repo=oura-navi-monitor,git-sha=${COMMIT_SHA}"
+        printf '%s\n' "$${candidate_revision}" > /workspace/monitor-candidate-revision.txt
         printf 'candidate_image=%s\n' "$${immutable_image}"
 
   - id: verify-candidate
@@ -135,46 +162,45 @@ steps:
       - |
         set -euo pipefail
         immutable_image="$$(cat /workspace/monitor-image-digest.txt)"
-        service_json="$$(gcloud run services describe "${_SERVICE_NAME}" --region "${_REGION}" --format=json)"
-        revision="$$(SERVICE_JSON="$${service_json}" python3 -c 'import json,os; print((json.loads(os.environ["SERVICE_JSON"]).get("status") or {}).get("latestCreatedRevisionName") or "")')"
-        [[ -n "$${revision}" && "$${revision}" == *"-${SHORT_SHA}" ]] || {
-          echo 'candidate revision does not carry the requested Git suffix' >&2
+        revision="$$(cat /workspace/monitor-candidate-revision.txt)"
+        [[ "$${revision}" =~ ^${_SERVICE_NAME}-${SHORT_SHA}-[0-9a-f]{8}$ ]] || {
+          echo 'candidate revision receipt is invalid' >&2
           exit 2
         }
-        revision_json="$$(gcloud run revisions describe "$${revision}" --region "${_REGION}" --format=json)"
-        SERVICE_JSON="$${service_json}" REVISION_JSON="$${revision_json}" \
-        IMMUTABLE_IMAGE="$${immutable_image}" EXPECTED_REVISION="$${revision}" \
-        EXPECTED_SERVICE_ACCOUNT="${_RUNTIME_SERVICE_ACCOUNT}" \
-        EXPECTED_GIT_SHA="${COMMIT_SHA}" python3 - <<'PY'
-        import json
-        import os
-
-        service = json.loads(os.environ["SERVICE_JSON"])
-        revision = json.loads(os.environ["REVISION_JSON"])
-        expected_revision = os.environ["EXPECTED_REVISION"]
-        spec = revision.get("spec") or {}
-        containers = spec.get("containers") or []
-        if len(containers) != 1 or containers[0].get("image") != os.environ["IMMUTABLE_IMAGE"]:
-            raise SystemExit("candidate revision image digest readback failed")
-        if spec.get("serviceAccountName") != os.environ["EXPECTED_SERVICE_ACCOUNT"]:
-            raise SystemExit("candidate revision service account readback failed")
-        labels = (revision.get("metadata") or {}).get("labels") or {}
-        if labels.get("git-sha") != os.environ["EXPECTED_GIT_SHA"]:
-            raise SystemExit("candidate revision full Git SHA label is missing")
-        conditions = (revision.get("status") or {}).get("conditions") or []
-        if not any(item.get("type") == "Ready" and str(item.get("status")).lower() == "true" for item in conditions):
-            raise SystemExit("candidate revision is not Ready")
-        traffic = (service.get("status") or {}).get("traffic") or []
-        if any(item.get("revisionName") == expected_revision and int(item.get("percent") or 0) > 0 for item in traffic):
-            raise SystemExit("candidate revision unexpectedly has production traffic")
-        print(json.dumps({
-            "candidateRevision": expected_revision,
-            "gitSha": os.environ["EXPECTED_GIT_SHA"],
-            "image": os.environ["IMMUTABLE_IMAGE"],
-            "ready": True,
-            "trafficPercent": 0,
-        }, sort_keys=True))
-        PY
+        predeploy_runtime_service_account="$$(
+          cat /workspace/monitor-predeploy-runtime-service-account.txt
+        )"
+        [[ "$${predeploy_runtime_service_account}" == "${_RUNTIME_SERVICE_ACCOUNT}" ]] || {
+          echo 'predeploy runtime identity receipt is invalid' >&2
+          exit 2
+        }
+        service_json=/workspace/monitor-candidate-service.json
+        revision_json=/workspace/monitor-candidate-revision.json
+        gcloud run services describe "${_SERVICE_NAME}" \
+          --project "${PROJECT_ID}" \
+          --region "${_REGION}" --format=json > "$${service_json}"
+        gcloud run services get-iam-policy "${_SERVICE_NAME}" \
+          --project "${PROJECT_ID}" --region "${_REGION}" --format=json \
+          > /workspace/monitor-candidate-iam.json
+        python3 scripts/verify_service_access_contract.py \
+          --before-service /workspace/monitor-predeploy-service.json \
+          --after-service "$${service_json}" \
+          --before-iam /workspace/monitor-predeploy-iam.json \
+          --after-iam /workspace/monitor-candidate-iam.json
+        gcloud run revisions describe "$${revision}" \
+          --project "${PROJECT_ID}" \
+          --region "${_REGION}" --format=json > "$${revision_json}"
+        python3 scripts/verify_candidate_service.py \
+          --service-json "$${service_json}" \
+          --revision-json "$${revision_json}" \
+          --expected-project "${PROJECT_ID}" \
+          --expected-region "${_REGION}" \
+          --expected-service "${_SERVICE_NAME}" \
+          --expected-image "$${immutable_image}" \
+          --expected-revision "$${revision}" \
+          --expected-service-account "${_RUNTIME_SERVICE_ACCOUNT}" \
+          --expected-git-sha "${COMMIT_SHA}" \
+          --candidate-tag candidate
 
 substitutions:
   _SERVICE_NAME: oura-navi-monitor

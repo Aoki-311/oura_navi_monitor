@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -49,6 +50,9 @@ class _Client:
         columns = {
             "pipeline_state": {
                 "source", "data_through", "published_run_id", "status",
+                "scope_policy_version", "global_roster_fingerprint",
+                "global_content_fingerprint", "user_map_roster_fingerprint",
+                "user_map_content_fingerprint",
                 "lease_run_id", "lease_acquired_at", "lease_expires_at", "updated_at",
             },
             "pipeline_runs": {
@@ -77,7 +81,14 @@ class _Client:
                 "record_origin", "measurement_profile", "measurement_available",
                 "complete_delivery",
             },
-            "user_scope": {"roster_id", "global_scope_enabled", "user_map_scope_enabled"},
+            "user_scope": {
+                "snapshot_run_id", "snapshot_created_at", "roster_id", "name",
+                "email", "area", "area_key", "workplace", "role", "department",
+                "mr_experience", "label_ids_json", "labels_json",
+                "global_scope_enabled", "user_map_scope_enabled",
+                "roster_diagnostic_fingerprint", "global_label_catalog_status",
+                "user_map_label_catalog_status",
+            },
         }
         selected = set(columns.get(name, set()))
         selected.discard(self.missing_column)
@@ -103,14 +114,54 @@ class _Client:
                         status="succeeded",
                         published_run_id="run-1",
                         data_through="2026-08-29T00:00:00Z",
+                        scope_policy_version="summary_role_v1",
+                        global_roster_fingerprint="global-roster",
+                        global_content_fingerprint="global-content",
+                        user_map_roster_fingerprint="user-map-roster",
+                        user_map_content_fingerprint="user-map-content",
                         lease_run_id=None,
                         lease_expires_at=None,
                     )
                 ]
             )
-        for routine_name, columns in REQUIRED_API_OUTPUT_COLUMNS.items():
+        if "FROM `test-project.oura_navi_monitor.user_scope`" in sql:
+            parameters = {
+                parameter.name: parameter
+                for parameter in job_config.query_parameters
+            }
+            assert parameters["published_run_id"].value == "run-1"
+            return _Query([_Row(
+                scope_row_count=2,
+                wrong_run_count=0,
+                missing_created_at_count=0,
+                missing_diagnostic_count=0,
+            )])
+        for routine_name in (
+            "dashboard_events_v2",
+            "dashboard_user_list_v2",
+            "dashboard_events",
+            "dashboard_user_list",
+        ):
+            columns = REQUIRED_API_OUTPUT_COLUMNS[routine_name]
             if routine_name in sql:
                 assert job_config.maximum_bytes_billed == API_READ_MAXIMUM_BYTES
+                if routine_name.startswith("dashboard_user_list"):
+                    parameters = {
+                        parameter.name: parameter
+                        for parameter in job_config.query_parameters
+                    }
+                    expected = {"history_start_date", "as_of"}
+                    if routine_name.endswith("_v2"):
+                        expected.add("published_run_id")
+                    assert set(parameters) == expected
+                    assert parameters["as_of"].type_ == "TIMESTAMP"
+                    assert parameters["as_of"].value == datetime(
+                        2026, 8, 29, tzinfo=timezone.utc
+                    )
+                elif routine_name == "dashboard_events_v2":
+                    assert {
+                        parameter.name for parameter in job_config.query_parameters
+                    } == {"start_date", "end_date", "published_run_id"}
                 selected = set(columns)
                 selected.discard(self.missing_api_output_column)
                 return _Query([_Row()], selected)
@@ -141,6 +192,10 @@ def test_data_contract_receipt_requires_tables_views_routines_and_publication() 
     assert receipt["apiReadMaximumBytes"] == API_READ_MAXIMUM_BYTES
     assert receipt["apiRoutineReads"]["dashboard_events"]["readable"] is True
     assert receipt["apiRoutineReads"]["dashboard_user_list"]["readable"] is True
+    assert receipt["apiRoutineReads"]["dashboard_events_v2"]["readable"] is True
+    assert receipt["apiRoutineReads"]["dashboard_user_list_v2"]["readable"] is True
+    assert receipt["scopePolicyVersion"] == "summary_role_v1"
+    assert receipt["scopeProjectionRowCount"] == 2
     assert any("dashboard_events" in sql for sql in client.queries)
     assert any("dashboard_user_list" in sql for sql in client.queries)
 

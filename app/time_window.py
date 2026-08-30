@@ -100,10 +100,26 @@ def resolve_time_window(
     preset: str | None,
     start: str | None,
     end: str | None,
+    as_of: str | None = None,
+    require_current_as_of: bool = True,
 ) -> MetricsTimeWindow:
     tz_name = str(settings.monitor_timezone or "Asia/Tokyo")
     tz = ZoneInfo(tz_name)
-    now_utc = datetime.now(timezone.utc)
+    wall_now_utc = datetime.now(timezone.utc)
+    raw_as_of = str(as_of or "").strip()
+    if raw_as_of:
+        try:
+            now_utc = _parse_iso_datetime(raw_as_of, tz=tz)
+        except Exception as exc:
+            raise TimeWindowValidationError(f"invalid as_of datetime: {exc}") from exc
+        # A small skew allowance lets a browser clock own one cross-request
+        # transaction anchor without silently turning a current preset into an
+        # arbitrary historical or future window. Trusted server-side replay of
+        # an already-issued receipt can explicitly opt out below.
+        if require_current_as_of and abs((now_utc - wall_now_utc).total_seconds()) > 300:
+            raise TimeWindowValidationError("as_of must be near the current time")
+    else:
+        now_utc = wall_now_utc
     now_local = now_utc.astimezone(tz)
 
     cleaned_preset = str(preset or "").strip().lower()

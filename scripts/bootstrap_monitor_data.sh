@@ -6,6 +6,7 @@ DATASET_ID="oura_navi_monitor"
 LOCATION="US"
 APPLY="false"
 PYTHON_BIN="python3"
+CREDENTIAL_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -13,6 +14,7 @@ while [[ $# -gt 0 ]]; do
     --dataset) DATASET_ID="$2"; shift 2 ;;
     --location) LOCATION="$2"; shift 2 ;;
     --python) PYTHON_BIN="$2"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="$2"; shift 2 ;;
     --apply) APPLY="true"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -27,14 +29,11 @@ echo "project=${PROJECT_ID} location=${LOCATION} dataset=${DATASET_ID}"
 printf 'sql=%s\n' "${SQL_FILES[@]}"
 if [[ "${APPLY}" != "true" ]]; then exit 0; fi
 
-[[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || {
-  echo "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE must point to the approved credential" >&2; exit 2;
-}
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && "${GOOGLE_APPLICATION_CREDENTIALS}" != "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]]; then
-  echo "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential" >&2; exit 2
-fi
-export GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}"
+python3 "${ROOT_DIR}/scripts/credential_preflight.py" \
+  --credential-file "${CREDENTIAL_FILE}"
 command -v bq >/dev/null 2>&1 || { echo "bq not found" >&2; exit 2; }
+source "${ROOT_DIR}/scripts/credential_shell.sh"
+monitor_install_google_credential_wrappers "${CREDENTIAL_FILE}"
 
 TMP_SQL="$(mktemp)"
 trap 'rm -f "${TMP_SQL}"' EXIT

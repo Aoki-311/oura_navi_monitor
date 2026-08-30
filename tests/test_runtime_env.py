@@ -37,12 +37,46 @@ def test_cloud_build_gates_the_candidate_with_browser_contract_and_immutable_dig
     assert "gcloud artifacts docker images describe" not in cloudbuild
     assert "@$$\u007bdigest}" in cloudbuild
     assert "--no-traffic" in cloudbuild
+    assert "--no-allow-unauthenticated" not in cloudbuild
+    assert "run services get-iam-policy" in cloudbuild
+    assert "scripts/verify_service_access_contract.py" in cloudbuild
     assert "--revision-suffix" in cloudbuild
+    assert "monitor-candidate-revision.txt" in cloudbuild
+    assert "monitor-predeploy-runtime-service-account.txt" in cloudbuild
+    assert "current Monitor runtime service account does not match" in cloudbuild
+    assert "scripts/verify_candidate_service.py" in cloudbuild
+    assert "--candidate-tag candidate" in cloudbuild
+    assert '--expected-project "${PROJECT_ID}"' in cloudbuild
+    assert '--expected-region "${_REGION}"' in cloudbuild
+    assert 'build_id="${BUILD_ID}"' in cloudbuild
+    assert cloudbuild.count('--project "${PROJECT_ID}"') == cloudbuild.count(
+        "gcloud run"
+    )
+    assert cloudbuild.count('--region "${_REGION}"') == cloudbuild.count("gcloud run")
+    assert "latestCreatedRevisionName" not in cloudbuild
     assert dockerignore.startswith("*\n")
     for allowed in ("!Dockerfile", "!requirements.txt", "!app/**", "!frontend/**", "!sql/**"):
         assert allowed in dockerignore
+    for build_only in ("!cloudbuild.yaml", "!requirements-dev.txt", "!deploy/**", "!scripts/**", "!tests/**", "!e2e/**"):
+        assert build_only not in dockerignore
+    assert gcloudignore.startswith("*\n")
+    for required_upload in (
+        "!cloudbuild.yaml",
+        "!requirements-dev.txt",
+        "!deploy/**",
+        "!scripts/**",
+        "!tests/**",
+        "!e2e/**",
+        "!.dockerignore",
+    ):
+        assert required_upload in gcloudignore
     assert "**/credentials/**" in gcloudignore
     assert "**/*service-account*.json" in gcloudignore
+    assert "e2e/node_modules/**" in gcloudignore
+    credential_wrapper = root / "scripts" / "credential_shell.sh"
+    assert credential_wrapper.is_file()
+    assert "!scripts/**" in gcloudignore
+    assert not credential_wrapper.name.endswith(".json")
 
 
 def test_docker_push_receipt_extracts_one_exact_commit_digest(tmp_path: Path) -> None:
@@ -99,6 +133,10 @@ def test_trigger_preserves_the_existing_monitor_runtime_contract() -> None:
 
     assert 'BUILD_SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT##*/}"' in trigger
     assert '--service-account="${SERVICE_ACCOUNT}"' in trigger
+    assert 'BRANCH_PATTERN="^main$"' in trigger
+    assert '--build-config="cloudbuild.yaml"' in trigger
+    assert "--require-approval" in trigger
+    assert "cloudbuild.app.yaml" not in trigger
     assert "_WEB_RUNTIME_SERVICE_ACCOUNT" not in trigger
     assert "required-web-reader@invalid.invalid" not in cloudbuild
     assert (

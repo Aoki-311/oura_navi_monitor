@@ -5,8 +5,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.domain.analysis_scopes import AnalysisScope, SCOPE_POLICY_VERSION
+from app.jobs.project_firestore import FirestoreProjector
 from app.services.analytics_service import (
-    AnalyticsService,
+    AnalyticsService as _ProductionAnalyticsService,
+    AnalyticsSnapshotConflictError,
     _activity_level,
     _published_hour_axis,
 )
@@ -69,6 +72,7 @@ class _UnavailablePublicationStatePipeline:
 
 class _Directory:
     def __init__(self) -> None:
+        self.labels = []
         self.users = [
             {
                 "roster_id": "field_1",
@@ -104,15 +108,23 @@ class _Directory:
     def get_user(self, roster_id: str):
         return next((item for item in self.users if item["roster_id"] == roster_id), None)
 
-    @staticmethod
-    def list_labels(*, include_inactive: bool = True):
-        return []
+    def list_labels(self, *, include_inactive: bool = True):
+        return list(self.labels)
 
 
 class _Analytics:
     def __init__(self, rows, metrics=None):
         self.rows = rows
         self.metrics = list(metrics or [])
+        self.metric_windows = []
+        self.published_roster_rows = []
+
+    def published_roster_snapshot(self, *, published_run_id):
+        return [
+            dict(item)
+            for item in self.published_roster_rows
+            if str(item.get("snapshot_run_id") or "") == published_run_id
+        ]
 
     def overview_events(self, **_kwargs):
         return list(self.rows)
@@ -120,11 +132,77 @@ class _Analytics:
     def activity_events(self, **_kwargs):
         return list(self.rows)
 
-    def user_metrics(self):
+    def user_metrics(self, *, window, **_kwargs):
+        self.metric_windows.append(window)
         return list(self.metrics)
 
     def user_detail_events(self, **_kwargs):
         return list(self.rows)
+
+
+class _PublishedScopePipeline:
+    """Test adapter for one atomically published BQ roster projection."""
+
+    def __init__(self, source, *, run_id: str, fingerprints: dict[str, str]):
+        self._source = source
+        self._run_id = run_id
+        self._fingerprints = dict(fingerprints)
+
+    def publication_snapshot(self):
+        reader = getattr(self._source, "publication_snapshot", None)
+        if callable(reader):
+            snapshot = dict(reader() or {})
+        else:
+            snapshot = {"data_through": self._source.data_through()}
+        if snapshot.get("publication_state_available") is False:
+            return snapshot
+        snapshot.update(
+            {
+                "publication_state_available": True,
+                "published_run_id": str(snapshot.get("published_run_id") or self._run_id),
+                "scope_policy_version": SCOPE_POLICY_VERSION,
+                **self._fingerprints,
+            }
+        )
+        return snapshot
+
+
+def AnalyticsService(*, analytics, pipeline, directory, settings):
+    """Build production service tests around a frozen published projection.
+
+    This deliberately snapshots the directory once. Mutating the Firestore
+    double after construction must not alter an analytics response.
+    """
+
+    projector = object.__new__(FirestoreProjector)
+    projector._directory = directory
+    projection = projector.user_scope_rows()
+    base_snapshot_reader = getattr(pipeline, "publication_snapshot", None)
+    base_snapshot = (
+        dict(base_snapshot_reader() or {})
+        if callable(base_snapshot_reader)
+        else {}
+    )
+    run_id = str(base_snapshot.get("published_run_id") or "run-1")
+    frozen_at = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    analytics.published_roster_rows = [
+        {
+            **dict(row),
+            "snapshot_run_id": run_id,
+            "snapshot_created_at": frozen_at,
+        }
+        for row in projection
+    ]
+    return _ProductionAnalyticsService(
+        analytics=analytics,
+        pipeline=_PublishedScopePipeline(
+            pipeline,
+            run_id=run_id,
+            fingerprints=projection.fingerprints,
+        ),
+        directory=directory,
+        settings=settings,
+    )
 
 
 def _window(now: datetime) -> MetricsTimeWindow:
@@ -213,12 +291,14 @@ def test_overview_publishes_representative_partial_measurement_with_coverage() -
         "measuredCount": 1,
         "totalCount": 2,
         "measurementState": "partial",
+        "measurementReason": "current_data_gap",
     }
     assert payload["kpis"]["p95Latency"] == {
         "valueMs": 2000,
         "measuredCount": 2,
         "totalCount": 2,
         "measurementState": "measured",
+        "measurementReason": "complete",
     }
 
 
@@ -238,6 +318,7 @@ def test_failure_only_historical_outcomes_do_not_publish_a_biased_success_rate()
             "mode": "internal",
             "device_class": "desktop",
             "classification_status": "not_measured",
+            "record_origin": "legacy_audit_history",
         }]),
         pipeline=_Pipeline(),
         directory=_Directory(),
@@ -250,6 +331,39 @@ def test_failure_only_historical_outcomes_do_not_publish_a_biased_success_rate()
         "measuredCount": 0,
         "totalCount": 1,
         "measurementState": "not_measured",
+        "measurementReason": "historical_unavailable",
+    }
+
+
+def test_current_terminal_failure_remains_in_the_answer_success_denominator() -> None:
+    now = datetime.now(timezone.utc)
+    service = AnalyticsService(
+        analytics=_Analytics([{
+            "question_ts": now - timedelta(hours=1),
+            "question_date": (now - timedelta(hours=1)).date().isoformat(),
+            "roster_id": "field_1",
+            "area_key": "関西",
+            "valid_question": True,
+            "measurement_available": True,
+            "complete_delivery": False,
+            "answer_measurement_profile": "complete_delivery_full",
+            "primary_failure_reason": "stream_failed",
+            "total_latency_ms": 900,
+            "mode": "internal",
+            "device_class": "desktop",
+            "primary_question_category": "product_information",
+        }]),
+        pipeline=_Pipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    assert service.overview(window=_window(now))["kpis"]["completeDelivery"] == {
+        "value": 0.0,
+        "measuredCount": 1,
+        "totalCount": 1,
+        "measurementState": "measured",
+        "measurementReason": "complete",
     }
 
 
@@ -279,6 +393,7 @@ def test_measurement_state_distinguishes_no_usage_from_unmeasured_history() -> N
             "device_class": "desktop",
             "primary_question_category": "unclassified",
             "classification_status": "not_measured",
+            "record_origin": "firestore_history",
         }]),
         pipeline=_Pipeline(),
         directory=_Directory(),
@@ -287,6 +402,7 @@ def test_measurement_state_distinguishes_no_usage_from_unmeasured_history() -> N
     historical = service.overview(window=_window(now))
     assert historical["kpis"]["completeDelivery"]["measurementState"] == "not_measured"
     assert historical["kpis"]["p95Latency"]["measurementState"] == "not_measured"
+    assert historical["kpis"]["completeDelivery"]["measurementReason"] == "historical_unavailable"
 
 
 def test_stale_pipeline_is_metadata_and_does_not_disable_available_analytics() -> None:
@@ -336,7 +452,7 @@ def test_published_run_quality_is_exposed_separately_from_visible_axis_coverage(
 
 
 def test_latest_failed_run_is_visible_without_replacing_last_published_data() -> None:
-    quality = AnalyticsService._source_pipeline_quality(
+    quality = _ProductionAnalyticsService._source_pipeline_quality(
         {
             "published_run_id": "run-success",
             "latest_run_id": "run-failed",
@@ -391,7 +507,7 @@ def test_missing_quality_diagnostics_never_erases_available_overview_facts() -> 
     assert payload["analyticsQuality"]["sourcePipeline"]["diagnosticsErrorCode"] == "schema_unavailable"
 
 
-def test_unknown_publication_metadata_uses_observed_axes_without_forging_zeroes() -> None:
+def test_missing_published_scope_receipt_fails_closed_instead_of_mixing_live_roster() -> None:
     now = datetime.now(timezone.utc)
     question_at = now - timedelta(hours=1)
     question_day = question_at.astimezone(ZoneInfo("Asia/Tokyo")).date().isoformat()
@@ -418,21 +534,10 @@ def test_unknown_publication_metadata_uses_observed_axes_without_forging_zeroes(
         settings=Settings(),
     )
 
-    overview = service.overview(window=_window(now))
-    detail = service.user_detail("field_1", window=_window(now))
-
-    assert overview["freshness"]["state"] == "unknown"
-    assert overview["usageTrend"] == [
-        {
-            "date": question_day,
-            "activeUsers": 1,
-            "questions": 1,
-            "isPartial": False,
-        }
-    ]
-    assert sum(row["count"] for row in overview["hourlyQuestions"]) == 1
-    assert detail["summary"]["questions"] == 1
-    assert [row["date"] for row in detail["trend"]] == [question_day]
+    with pytest.raises(AnalyticsSnapshotConflictError):
+        service.overview(window=_window(now))
+    with pytest.raises(AnalyticsSnapshotConflictError):
+        service.user_detail("field_1", window=_window(now))
 
 
 def test_missing_request_tasks_are_explicitly_unmeasured_without_hiding_other_metrics() -> None:
@@ -468,6 +573,7 @@ def test_missing_request_tasks_are_explicitly_unmeasured_without_hiding_other_me
         "measuredCount": 0,
         "totalCount": 1,
         "measurementState": "not_measured",
+        "measurementReason": "current_data_gap",
     }
 
 
@@ -497,6 +603,7 @@ def test_historical_question_category_never_claims_request_task_measurement() ->
         "measuredCount": 0,
         "totalCount": 1,
         "measurementState": "not_measured",
+        "measurementReason": "historical_unavailable",
     }
 
 
@@ -528,6 +635,7 @@ def test_current_multi_task_event_drives_distribution_and_product_matrix() -> No
         "measuredCount": 1,
         "totalCount": 1,
         "measurementState": "measured",
+        "measurementReason": "complete",
     }
     assert {row["key"] for row in payload["requestTasks"]} == {
         "fact_lookup",
@@ -584,11 +692,13 @@ def test_environment_dimensions_distinguish_partial_measurement_from_unknown_his
         "measuredCount": 1,
         "totalCount": 2,
         "measurementState": "partial",
+        "measurementReason": "historical_unavailable",
     }
     assert payload["deviceMeasurement"] == {
         "measuredCount": 1,
         "totalCount": 2,
         "measurementState": "partial",
+        "measurementReason": "historical_unavailable",
     }
 
 
@@ -611,7 +721,7 @@ def test_single_day_overview_does_not_define_return_rate() -> None:
     assert service.overview(window=window)["kpis"]["returnRate"] is None
 
 
-def test_regions_display_toranomon_separately_without_a_location_dictionary() -> None:
+def test_regions_exclude_non_summary_roles_even_when_their_location_is_valid() -> None:
     now = datetime.now(timezone.utc)
     service = AnalyticsService(
         analytics=_Analytics([]),
@@ -622,8 +732,377 @@ def test_regions_display_toranomon_separately_without_a_location_dictionary() ->
 
     payload = service.regions(window=_window(now))
 
-    headquarters = next(row for row in payload["regions"] if row["areaKey"] == "本社・虎ノ門")
-    assert headquarters["area"] == "本社・虎ノ門"
+    assert {row["areaKey"] for row in payload["regions"]} == {"関西"}
+
+
+def test_summary_snapshot_identity_is_stable_across_area_filters() -> None:
+    now = datetime.now(timezone.utc)
+    directory = _Directory()
+    directory.users.append(
+        {
+            "roster_id": "field_2",
+            "name": "別地域利用者",
+            "email": "field2@example.com",
+            "area": "九州",
+            "area_key": "九州",
+            "workplace": "福岡",
+            "role": "コントラクトMR",
+            "department": "DM専任",
+            "mr_experience": "5年",
+            "label_ids": [],
+            "is_active": True,
+        }
+    )
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+
+    unfiltered = service.overview(window=_window(now))
+    filtered = service.overview(window=_window(now), area_key="関西")
+    filtered_users = service.overview_users(
+        window=_window(now),
+        area_key="関西",
+    )
+    regions = service.regions(window=_window(now))
+
+    assert filtered["scopeUserCount"] == 1
+    assert filtered_users["scopeUserCount"] == 1
+    assert regions["scopeUserCount"] == 2
+    assert {
+        unfiltered["rosterFingerprint"],
+        filtered["rosterFingerprint"],
+        filtered_users["rosterFingerprint"],
+        regions["rosterFingerprint"],
+    } == {unfiltered["rosterFingerprint"]}
+
+
+def test_user_metrics_reuses_the_exact_page_window_for_list_and_detail() -> None:
+    window = _single_day_window()
+    analytics = _Analytics([])
+    service = AnalyticsService(
+        analytics=analytics,
+        pipeline=_QualityPipeline(),
+        directory=_Directory(),
+        settings=Settings(),
+    )
+
+    service.overview_users(window=window)
+    service.user_detail("field_1", window=window)
+
+    assert analytics.metric_windows == [window, window]
+
+
+def test_label_catalog_failure_cannot_erase_summary_or_region_bodies() -> None:
+    now = datetime.now(timezone.utc)
+    directory = _Directory()
+
+    def fail_labels(*, include_inactive: bool = True):
+        raise RuntimeError("label catalog unavailable")
+
+    directory.list_labels = fail_labels
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+
+    assert service.overview(window=_window(now))["scopeUserCount"] == 1
+    assert service.regions(window=_window(now))["scopeUserCount"] == 1
+
+
+def test_label_catalog_failure_preserves_user_bodies_with_explicit_diagnostics() -> None:
+    now = datetime.now(timezone.utc)
+    directory = _Directory()
+    directory.users[0]["label_ids"] = ["label_unavailable"]
+
+    def fail_labels(*, include_inactive: bool = True):
+        raise RuntimeError("label catalog unavailable")
+
+    directory.list_labels = fail_labels
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+
+    users = service.overview_users(window=_window(now))
+    detail = service.user_detail("field_1", window=_window(now))
+
+    assert users["users"][0]["name"] == "利用者"
+    assert users["users"][0]["labels"] == []
+    assert users["contentDiagnostics"] == {
+        "state": "degraded",
+        "labelCatalogStatus": "unavailable",
+        "rosterStatus": "available",
+        "rosterIsolatedCount": 0,
+        "rosterIssueCounts": {},
+        "issues": ["label_catalog_unavailable"],
+    }
+    assert detail["profile"]["name"] == "利用者"
+    assert detail["profile"]["labels"] == []
+    assert detail["summary"]["questions"] == 0
+    assert detail["contentDiagnostics"] == users["contentDiagnostics"]
+
+
+def test_unknown_and_duplicate_label_references_degrade_without_hiding_inactive_labels() -> None:
+    now = datetime.now(timezone.utc)
+    directory = _Directory()
+    directory.users[0]["label_ids"] = [
+        "label_inactive",
+        "label_unknown",
+        "label_inactive",
+    ]
+    directory.labels = [
+        {
+            "label_id": "label_inactive",
+            "name": "過去ラベル",
+            "color": "#23d28f",
+            "is_active": False,
+        }
+    ]
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+
+    payload = service.overview_users(window=_window(now))
+
+    assert payload["users"][0]["labels"] == [
+        {"labelId": "label_inactive", "name": "過去ラベル", "color": "#23d28f"}
+    ]
+    assert payload["contentDiagnostics"] == {
+        "state": "degraded",
+        "labelCatalogStatus": "partial",
+        "rosterStatus": "available",
+        "rosterIsolatedCount": 0,
+        "rosterIssueCounts": {},
+        "issues": ["unknown_label_reference", "duplicate_label_reference"],
+    }
+    directory.users[0]["label_ids"] = ["label_inactive", "label_unknown"]
+    repaired_duplicate = service.overview_users(window=_window(now))
+    assert repaired_duplicate["users"] == payload["users"]
+    assert repaired_duplicate["contentDiagnostics"] == payload["contentDiagnostics"]
+    assert repaired_duplicate["contentFingerprint"] == payload["contentFingerprint"]
+
+    next_service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+    next_published = next_service.overview_users(window=_window(now))
+    assert next_published["contentDiagnostics"]["issues"] == [
+        "unknown_label_reference"
+    ]
+    assert next_published["contentFingerprint"] != payload["contentFingerprint"]
+
+
+def test_invalid_label_row_is_isolated_without_coercing_string_false_to_active() -> None:
+    now = datetime.now(timezone.utc)
+    directory = _Directory()
+    directory.users[0]["label_ids"] = ["label_bad"]
+    directory.labels = [
+        {
+            "label_id": "label_bad",
+            "name": "不正ラベル",
+            "color": "#23d28f",
+            "is_active": "false",
+        }
+    ]
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+
+    payload = service.overview_users(window=_window(now))
+
+    assert payload["users"][0]["name"] == "利用者"
+    assert payload["users"][0]["labels"] == []
+    assert payload["contentDiagnostics"] == {
+        "state": "degraded",
+        "labelCatalogStatus": "partial",
+        "rosterStatus": "available",
+        "rosterIsolatedCount": 0,
+        "rosterIssueCounts": {},
+        "issues": ["invalid_label_is_active", "unknown_label_reference"],
+    }
+
+
+def test_one_structurally_invalid_roster_row_cannot_erase_valid_analytics() -> None:
+    now = datetime.now(timezone.utc)
+    directory = _Directory()
+    directory.users.insert(
+        0,
+        {
+            **directory.users[0],
+            "roster_id": "broken_1",
+            "name": "壊れた行",
+            "email": "broken@example.com",
+            "area_key": "",
+        },
+    )
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+
+    overview = service.overview(window=_window(now))
+    users = service.overview_users(window=_window(now))
+    regions = service.regions(window=_window(now))
+    detail = service.user_detail("field_1", window=_window(now))
+
+    assert overview["scopeUserCount"] == 1
+    assert [row["rosterId"] for row in users["users"]] == ["field_1"]
+    assert [row["areaKey"] for row in regions["regions"]] == ["関西"]
+    assert detail["profile"]["name"] == "利用者"
+    for payload in (overview, users, regions, detail):
+        diagnostics = payload["contentDiagnostics"]
+        assert diagnostics["state"] == "degraded"
+        assert diagnostics["rosterStatus"] == "partial"
+        assert diagnostics["rosterIsolatedCount"] == 1
+        assert diagnostics["rosterIssueCounts"] == {"missing_area_key": 1}
+        assert diagnostics["issues"] == ["roster_missing_area_key"]
+
+
+def test_normalized_duplicate_label_names_isolate_only_the_conflicting_labels() -> None:
+    now = datetime.now(timezone.utc)
+    directory = _Directory()
+    directory.users[0]["label_ids"] = ["label_safe"]
+    directory.labels = [
+        {
+            "label_id": "label_a",
+            "name": " ＴＥＳＴ ",
+            "color": "#23d28f",
+            "is_active": True,
+        },
+        {
+            "label_id": "label_b",
+            "name": "test",
+            "color": "#386dff",
+            "is_active": True,
+        },
+        {
+            "label_id": "label_safe",
+            "name": "安全",
+            "color": "#ffb340",
+            "is_active": True,
+        },
+    ]
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+
+    users = service.overview_users(window=_window(now))
+    detail = service.user_detail("field_1", window=_window(now))
+
+    assert users["users"][0]["labels"] == [
+        {"labelId": "label_safe", "name": "安全", "color": "#ffb340"}
+    ]
+    assert detail["profile"]["labels"] == users["users"][0]["labels"]
+    assert users["contentDiagnostics"]["state"] == "degraded"
+    assert users["contentDiagnostics"]["labelCatalogStatus"] == "partial"
+    assert users["contentDiagnostics"]["issues"] == [
+        "duplicate_label_name"
+    ]
+    assert detail["contentDiagnostics"] == users["contentDiagnostics"]
+
+
+def test_duplicate_roster_identities_are_excluded_from_global_and_user_map_scopes() -> None:
+    directory = _Directory()
+    directory.users.extend(
+        [
+            {
+                **directory.users[0],
+                "roster_id": "field_duplicate",
+                "name": "重複利用者",
+                "email": " FIELD@EXAMPLE.COM ",
+            },
+            {
+                **directory.users[0],
+                "roster_id": "safe_summary",
+                "name": "安全な利用者",
+                "email": "safe-summary@example.com",
+            },
+        ]
+    )
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+
+    publication = service._publication_snapshot()
+    global_roster = service._roster_snapshot(
+        AnalysisScope.GLOBAL,
+        publication=publication,
+    ).rows
+    user_map_roster = service._roster_snapshot(
+        AnalysisScope.USER_MAP,
+        publication=publication,
+    ).rows
+
+    assert [row["roster_id"] for row in global_roster] == ["safe_summary"]
+    assert [row["roster_id"] for row in user_map_roster] == ["hq_1", "safe_summary"]
+
+
+def test_visible_label_definition_is_part_of_analytics_snapshot_identity() -> None:
+    now = datetime.now(timezone.utc)
+    directory = _Directory()
+    directory.users[0]["updated_at"] = "2026-08-29T00:00:00Z"
+    directory.users[0]["label_ids"] = ["label_1"]
+    directory.labels = [
+        {
+            "label_id": "label_1",
+            "name": "重点",
+            "color": "#23d28f",
+            "is_active": True,
+            "updated_at": "2026-08-29T00:00:00Z",
+        }
+    ]
+    service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+
+    before = service.overview_users(window=_window(now))
+    directory.labels[0] = {
+        **directory.labels[0],
+        "name": "最重点",
+        "updated_at": "2026-08-29T01:00:00Z",
+    }
+    after = service.overview_users(window=_window(now))
+
+    assert before["users"][0]["labels"][0]["name"] == "重点"
+    assert after["users"] == before["users"]
+    assert after["contentFingerprint"] == before["contentFingerprint"]
+
+    next_service = AnalyticsService(
+        analytics=_Analytics([]),
+        pipeline=_QualityPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+    next_published = next_service.overview_users(window=_window(now))
+    assert next_published["users"][0]["labels"][0]["name"] == "最重点"
+    assert before["rosterFingerprint"] == next_published["rosterFingerprint"]
+    assert before["contentFingerprint"] != next_published["contentFingerprint"]
 
 
 def test_product_ranking_discloses_unresolved_governed_product_candidates() -> None:
@@ -667,6 +1146,7 @@ def test_product_ranking_discloses_unresolved_governed_product_candidates() -> N
         "measuredCount": 1,
         "totalCount": 1,
         "measurementState": "measured",
+        "measurementReason": "complete",
     }
 
 
@@ -706,7 +1186,7 @@ def test_peer_comparison_excludes_the_selected_user_and_discloses_coverage() -> 
         {"roster_id": "one", "area": "関西"},
         {"roster_id": "two", "area": "関西"},
     ]
-    comparison = AnalyticsService._peer_comparison(
+    comparison = _ProductionAnalyticsService._peer_comparison(
         user=roster[0],
         roster=roster,
         field="area",
@@ -723,6 +1203,7 @@ def test_peer_comparison_excludes_the_selected_user_and_discloses_coverage() -> 
         "measuredCount": 0,
         "totalCount": 1,
         "measurementState": "not_measured",
+        "measurementReason": "current_data_gap",
     }
 
 

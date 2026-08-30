@@ -6,6 +6,7 @@ BUILD_REGION="us-central1"
 BUILD_ID=""
 ACTION="approve"
 APPLY="false"
+CREDENTIAL_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -13,6 +14,7 @@ while [[ $# -gt 0 ]]; do
     --region) BUILD_REGION="$2"; shift 2 ;;
     --build-id) BUILD_ID="$2"; shift 2 ;;
     --action) ACTION="$2"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="$2"; shift 2 ;;
     --apply) APPLY="true"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -33,21 +35,14 @@ if [[ "${APPLY}" != "true" ]]; then
   exit 0
 fi
 
-[[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || {
-  echo "approved credential is required" >&2
-  exit 2
-}
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && "${GOOGLE_APPLICATION_CREDENTIALS}" != "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]]; then
-  echo "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential" >&2
-  exit 2
-fi
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python3 "${ROOT_DIR}/scripts/credential_preflight.py" \
+  --credential-file "${CREDENTIAL_FILE}"
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
 [[ -x "${PYTHON_BIN}" ]] || { echo "repository Python runtime not found" >&2; exit 2; }
 
-GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" \
-  "${PYTHON_BIN}" "${ROOT_DIR}/scripts/cloud_build_approval.py" \
+"${PYTHON_BIN}" "${ROOT_DIR}/scripts/cloud_build_approval.py" \
+  --credential-file "${CREDENTIAL_FILE}" \
   --project "${PROJECT_ID}" \
   --region "${BUILD_REGION}" \
   --build-id "${BUILD_ID}" \

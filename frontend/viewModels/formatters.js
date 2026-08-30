@@ -44,19 +44,35 @@ export function measurementStateLabel(value) {
   const state = value?.measurementState;
   if (state === "measured") return "計測済み";
   if (state === "partial") return "一部計測";
-  if (state === "not_measured") return "履歴未計測";
+  if (state === "not_measured") {
+    if (value?.measurementReason === "historical_unavailable") return "過去データ未記録";
+    if (["current_data_gap", "mixed_history_and_current_gap", "mixed_no_usage_and_data_gap"].includes(value?.measurementReason)) return "記録欠落";
+    if (value?.measurementReason === "population_without_usage") return "期間内利用なし";
+    return "未計測";
+  }
   if (state === "no_usage") return "対象データなし";
   return "計測状態不明";
 }
 
+export function measurementReasonLabel(value) {
+  const reason = value?.measurementReason;
+  if (reason === "population_without_usage") return "期間内に利用がない対象者を含みます";
+  if (reason === "historical_unavailable") return "過去データにはこの項目が保存されていません";
+  if (reason === "current_data_gap") return "現行データの記録欠落を検知しています";
+  if (reason === "mixed_history_and_current_gap") return "過去データ未記録と現行データの欠落が混在しています";
+  if (reason === "mixed_no_usage_and_data_gap") return "期間内未利用とデータ記録欠落が混在しています";
+  if (reason === "compatibility_unavailable") return "旧形式のため計測できない理由を確認できません";
+  return "";
+}
+
 export function displayMeasuredRate(value) {
-  if (value?.measurementState === "not_measured") return "履歴未計測";
+  if (value?.measurementState === "not_measured") return measurementStateLabel(value);
   if (value?.measurementState === "no_usage") return "-";
   return displayRate(value?.value);
 }
 
 export function displayMeasuredDuration(value) {
-  if (value?.measurementState === "not_measured") return "履歴未計測";
+  if (value?.measurementState === "not_measured") return measurementStateLabel(value);
   if (value?.measurementState === "no_usage") return "-";
   return displayDuration(value?.valueMs);
 }

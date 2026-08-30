@@ -15,13 +15,15 @@ from zoneinfo import ZoneInfo
 
 from google.cloud import bigquery, firestore
 from google.api_core.exceptions import NotFound
+from google.oauth2 import service_account
 
 from app.contracts.admin import normalize_email
-from app.domain.analysis_scopes import AnalysisScope, department_in_scope
+from app.domain.analysis_scopes import AnalysisScope, membership_for
 from app.domain.question_categories import (
     QuestionCategory,
     migrate_legacy_question_category,
 )
+from app.domain.roster_records import read_canonical_roster_collection
 from app.jobs.project_firestore import (
     CITATION_SCHEMA,
     CONVERSATION_SCHEMA,
@@ -32,6 +34,7 @@ from app.jobs.project_firestore import (
     project_conversation,
     struct_array_parameter,
 )
+from scripts.credential_preflight import approved_credential_path
 from app.repositories.user_directory import UserDirectoryRepository
 from app.settings import Settings, get_settings
 
@@ -581,9 +584,14 @@ class HistoryRebuildJob:
                     candidates = [
                         item
                         for item in email_candidates
-                        if department_in_scope(
-                            str(item.get("department") or ""), AnalysisScope.USER_MAP
-                        )
+                        if membership_for(
+                            role=item.get("role"),
+                            department=str(item.get("department") or ""),
+                            # Historical facts remain reconstructable after a
+                            # roster member is later deactivated. Current
+                            # denominators apply is_active in the API roster.
+                            is_active=True,
+                        ).includes(AnalysisScope.USER_MAP)
                     ]
                     all_candidates = email_candidates
             if len(candidates) != 1:
@@ -755,17 +763,26 @@ class HistoryRebuildJob:
         if progress is not None:
             progress("legacy_audits_deduplicated", len(legacy_audits))
 
-        all_users = self.directory.list_users(include_inactive=True)
-        users = []
-        for user in all_users:
-            try:
-                eligible = department_in_scope(
-                    str(user.get("department") or ""), AnalysisScope.USER_MAP
-                )
-            except ValueError:
-                # The roster importer owns the allowed department vocabulary.
-                # A malformed stored row is omitted and reported, never guessed.
-                eligible = False
+        roster_records = read_canonical_roster_collection(
+            self.directory.list_users(include_inactive=True)
+        )
+        roster_issues: Counter[str] = Counter()
+        canonical_users: list[dict[str, Any]] = []
+        users: list[dict[str, Any]] = []
+        for record in roster_records:
+            for issue in record.issues:
+                roster_issues[f"roster_{issue}"] += 1
+            if not record.projection_eligible or not record.identity_eligible:
+                continue
+            user = record.value
+            canonical_users.append(user)
+            eligible = membership_for(
+                role=user.get("role"),
+                department=str(user.get("department") or ""),
+                # Preserve already-produced history for structurally eligible
+                # users; active-state filtering belongs to current analytics.
+                is_active=True,
+            ).includes(AnalysisScope.USER_MAP)
             if eligible:
                 users.append(user)
         if progress is not None:
@@ -773,6 +790,7 @@ class HistoryRebuildJob:
 
         chat_snapshot = self.chat_reader.full_snapshot(progress=progress)
         rows = HistoryRows(issues=Counter(chat_snapshot.issues))
+        rows.issues.update(roster_issues)
         eligible_roster_ids = {
             str(user.get("roster_id") or "").strip() for user in users
         }
@@ -795,7 +813,7 @@ class HistoryRebuildJob:
             ):
                 target[key].append(user)
 
-        for user in all_users:
+        for user in canonical_users:
             roster_id = str(user.get("roster_id") or "").strip()
             add_identity(
                 all_identity_candidates,
@@ -808,10 +826,7 @@ class HistoryRebuildJob:
                     str(user.get("user_id") or ""),
                     user,
                 )
-            try:
-                users_by_email[normalize_email(str(user.get("email") or ""))].append(user)
-            except ValueError:
-                rows.issues["roster_user_invalid_email"] += 1
+            users_by_email[str(user["email"])].append(user)
         roots_by_id: dict[str, Any] = {}
         roots_by_email: dict[str, list[Any]] = defaultdict(list)
         for root in chat_snapshot.roots:
@@ -833,12 +848,7 @@ class HistoryRebuildJob:
         processed_users = 0
         for user in users:
             processed_users += 1
-            try:
-                user_email = normalize_email(str(user.get("email") or ""))
-            except ValueError:
-                rows.issues["roster_user_invalid_email"] += 1
-                rows.unmatched_users.append(str(user.get("roster_id") or ""))
-                continue
+            user_email = str(user["email"])
             bound_root_id = str(user.get("chat_user_id") or "").strip()
             root_record = roots_by_id.get(bound_root_id) if bound_root_id else None
             if root_record is not None:
@@ -1105,28 +1115,35 @@ class HistoryRebuildJob:
         ).result()
 
 
-def _credential_guard() -> None:
-    path = str(os.environ.get("CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE") or "").strip()
-    if not path or not Path(path).is_file():
-        raise SystemExit("approved CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE is required")
-    configured = str(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
-    if configured and Path(configured).resolve() != Path(path).resolve():
-        raise SystemExit("GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential")
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Plan or run the one-time canonical Monitor history rebuild")
     parser.add_argument("--apply", action="store_true", help="write the compiled rows into the canonical fact tables")
     parser.add_argument("--confirm", default="")
+    parser.add_argument("--credential-file", required=True)
     args = parser.parse_args()
-    _credential_guard()
+    credentials = service_account.Credentials.from_service_account_file(
+        str(approved_credential_path(args.credential_file))
+    )
     settings = get_settings()
     start = _timestamp(settings.monitor_analytics_start_at)
     if start is None:
         raise SystemExit("MONITOR_ANALYTICS_START_AT is required")
     end = datetime.now(timezone.utc)
-    job = HistoryRebuildJob(settings)
+    firestore_database = str(
+        settings.monitor_firestore_database or "(default)"
+    ).strip()
+    job = HistoryRebuildJob(
+        settings,
+        bigquery_client=bigquery.Client(
+            project=settings.monitor_project_id,
+            credentials=credentials,
+        ),
+        firestore_client=firestore.Client(
+            project=settings.monitor_project_id,
+            database=firestore_database,
+            credentials=credentials,
+        ),
+    )
     started_at = monotonic()
 
     def progress(stage: str, count: int) -> None:

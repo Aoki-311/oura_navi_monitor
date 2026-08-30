@@ -1,7 +1,7 @@
 # OurA Navi Monitor 字段白话辞典
 
 本辞典回答“这个字段对非技术人员到底意味着什么”。字段按业务用途分组，不按
-日志文件分组。所有“已实现”均指 2026-08-29 当前本地候选工作树；线上尚未部署，不能
+日志文件分组。所有“已实现”均指 2026-08-30 当前本地候选工作树；线上尚未部署，不能
 把它理解为生产已经有数据。
 
 状态说明：
@@ -29,7 +29,7 @@ Monitor 专用 Firestore 与受 IAP 保护的 API 中出现，不进入分析日
 | `area_key` | SVG 联动使用的内部地区键 | 后端由 area/workplace 生成 | 地图着色和点击，不展示给用户 |
 | `workplace` | Excel 的 `勤務地` | 名单，页面现用 | 个人工作地点 |
 | `role` | Excel 的角色 | 名单，页面现用 | 同角色比较、活性度堆叠图 |
-| `department` | `DM専任`、`ヘルスケア本社`、`DM本社` 或 `管理者` | 名单，页面现用 | 唯一决定 69/80 范围 |
+| `department` | `DM専任`、`ヘルスケア本社`、`DM本社` 或 `管理者` | 名单，页面现用 | 决定用户分析/地图的非管理员资格；不能单独决定 Summary |
 | `mr_experience` | MR 经历；本社人员显示 `-` | 名单，页面现用 | 个人画像和后续分组 |
 | `label_ids` | 这名员工在 Monitor 使用的标签 | 用户管理，页面现用 | Chip 展示；不能改变 scope/权限 |
 | `is_active` | 当前是否仍计入有效名单 | 用户管理，页面现用 | 分母、休眠用户、停用保留历史 |
@@ -38,13 +38,14 @@ Monitor 专用 Firestore 与受 IAP 保护的 API 中出现，不进入分析日
 
 名单范围机械派生：
 
-- `global_scope_enabled`：是否进入 69 人全局指标；
-- `user_map_scope_enabled`：是否进入 80 人用户/地图/详细；
+- `global_scope_enabled`：是否为有效名单且角色精确为 `本社MR` 或 `コントラクトMR`，从而进入全体 Summary；
+- `user_map_scope_enabled`：是否为有效的非管理员名单用户，从而进入用户分析/地图/详细；
 - `is_admin`：部门是否为名单中的 `管理者`，只用于排除分析，不代表 IAP 权限。
 
-这三项只存在 BigQuery 小型 `user_scope` 投影，不在前端提供编辑开关。范围 flag
-表达部门对应的结构性资格，`is_active` 单独决定当前页面和分母；这样停用用户的
-既有事实仍可重建，但不会继续显示在当前 69/80 名单里。
+这三项只存在 BigQuery 小型 `user_scope` 投影，不在前端提供编辑开关。Summary flag
+由规范化角色、用户分析资格和 `is_active` 共同派生；部门只拥有用户分析/地图的结构性
+资格。这样停用用户的既有事实仍可重建，但不会继续显示在当前分析名单里。分析标签永远
+不能授予或移除这两个范围。
 
 ---
 
@@ -259,7 +260,6 @@ Web Writer 的机器注释如果缺失、格式错误或 demand ID 不完整，�
 | `questionCount7` | 最近 7 日用户消息/问题数 |
 | `activity` | high、middle、low、dormant |
 | `dataThrough` | 最后一个完整发布批次处理到的时间 |
-| `nextPlannedRefreshAt` | 按三小时策略推算的下一计划时点；不是对 live Scheduler 启停状态的承诺 |
 | `usageTrend[].isPartial` | 该日只统计到 `dataThrough`，当天柱形不能当作完整日 |
 | `analyticsQuality.sourcePipeline.publishedRunId` | 页面当前数据所属的最后一次成功发布 |
 | `analyticsQuality.sourcePipeline.latestRunStatus` | 最新一次刷新实际是 running、succeeded 还是 failed |
@@ -270,9 +270,18 @@ Web Writer 的机器注释如果缺失、格式错误或 demand ID 不完整，�
 | `batchBlockingFailureCount` | 会阻止新事实与水位发布的质量问题数量 |
 | `productResolution` | 产品候选数、解析成功数、未完全解析问题数和解析率；只解释产品图覆盖范围 |
 
-页面只读 `dashboard_events(start,end)` 和 `dashboard_user_list(start,today)` 两个
-带日期参数的语义函数。不存在 `user_daily`、snapshot、overview/detail mega view；
-地区、回访、用户列表和产品矩阵都来自同一正式问题事实。
+当前 Monitor revision 只读
+`dashboard_events_v2(start,end,published_run_id)` 和
+`dashboard_user_list_v2(history_start,as_of,published_run_id)`：两个函数都以
+`pipeline_state` 最后切换成功的 `published_run_id` 精确读取同一份 run-bound
+`user_scope` 名单投影。名单投影先完整写入新 run，质量通过后才原子切换发布指针，
+所以刷新中间态仍完整读取旧 snapshot，不会把实时 Firestore 名单和已发布分析事实混用。
+
+旧两参数 `dashboard_events(start,end)` / `dashboard_user_list(history_start,as_of)`
+只是在旧 revision 排空期间保留的兼容 wrapper，不是当前 owner，也不是 v2 失败后的
+fallback。只有旧 revision 流量归零、最长请求排空、依赖清单确认和观察门通过后，才可
+通过独立授权退役。不存在 `user_daily` 或 overview/detail mega view 第二 owner；地区、
+回访、用户列表和产品矩阵都来自同一 published run 的正式问题事实与名单投影。
 
 历史 `record_origin` 只有 `firestore_history` 与 `legacy_audit_history`。旧审计表只
 迁移身份、时间、精确旧分类等可证明字段；旧 `answer_success_flag`、raw payload、

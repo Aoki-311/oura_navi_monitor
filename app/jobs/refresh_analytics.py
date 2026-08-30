@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from google.cloud import bigquery
 
+from app.domain.analysis_scopes import SCOPE_POLICY_VERSION
 from app.jobs.project_firestore import (
     CITATION_SCHEMA,
     CONVERSATION_SCHEMA,
@@ -19,6 +20,7 @@ from app.jobs.project_firestore import (
     struct_array_parameter,
 )
 from app.settings import Settings, get_settings
+from app.refresh_policy import REFRESH_POLICY
 
 SQL_DIR = Path(__file__).resolve().parents[2] / "sql"
 _UNSET = object()
@@ -146,6 +148,11 @@ ELSE
   UPDATE {state}
   SET data_through = @window_end,
       published_run_id = @run_id,
+      scope_policy_version = @scope_policy_version,
+      global_roster_fingerprint = @global_roster_fingerprint,
+      global_content_fingerprint = @global_content_fingerprint,
+      user_map_roster_fingerprint = @user_map_roster_fingerprint,
+      user_map_content_fingerprint = @user_map_content_fingerprint,
       status = 'succeeded',
       updated_at = CURRENT_TIMESTAMP(),
       lease_run_id = NULL,
@@ -351,18 +358,18 @@ class AnalyticsRefreshJob:
         watermark: datetime | None | object = _UNSET,
     ) -> tuple[datetime, datetime]:
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        target_end = current - timedelta(minutes=self._settings.monitor_refresh_delay_minutes)
+        target_end = current - timedelta(minutes=REFRESH_POLICY.expected_delay_minutes)
         resolved_watermark = self._read_watermark() if watermark is _UNSET else _as_utc_datetime(watermark)
         analytics_start = _parse_start(self._settings.monitor_analytics_start_at)
         base = resolved_watermark or analytics_start
         window_start = max(
             analytics_start,
-            base - timedelta(minutes=self._settings.monitor_refresh_overlap_minutes),
+            base - timedelta(minutes=REFRESH_POLICY.overlap_minutes),
         )
         window_end = min(
             target_end,
             window_start
-            + timedelta(hours=max(1, int(self._settings.monitor_refresh_max_window_hours))),
+            + timedelta(hours=REFRESH_POLICY.max_window_hours),
         )
         if window_end <= window_start:
             raise ValueError("refresh window is empty")
@@ -404,7 +411,7 @@ WHERE source = 'published';
                     bigquery.ScalarQueryParameter(
                         "lease_ttl_minutes",
                         "INT64",
-                        max(1, int(self._settings.monitor_refresh_lease_ttl_minutes)),
+                        REFRESH_POLICY.lease_ttl_minutes,
                     ),
                 ],
             )
@@ -430,7 +437,7 @@ WHERE source = 'published';
                     bigquery.ScalarQueryParameter(
                         "lease_ttl_minutes",
                         "INT64",
-                        max(1, int(self._settings.monitor_refresh_lease_ttl_minutes)),
+                        REFRESH_POLICY.lease_ttl_minutes,
                     ),
                 ],
             )
@@ -582,7 +589,7 @@ ORDER BY check_name
         try:
             watermark = _as_utc_datetime(lease.get("data_through"))
             target_end = frozen_now - timedelta(
-                minutes=self._settings.monitor_refresh_delay_minutes
+                minutes=REFRESH_POLICY.expected_delay_minutes
             )
             if watermark is not None and watermark >= target_end:
                 no_op_run_id = self._run_id(
@@ -624,6 +631,23 @@ ORDER BY check_name
             scope_rows = self._projector.user_scope_rows()
             if not scope_rows:
                 raise RuntimeError("canonical user scope is empty")
+            scope_fingerprints = getattr(scope_rows, "fingerprints", None)
+            required_scope_fingerprints = {
+                "global_roster_fingerprint",
+                "global_content_fingerprint",
+                "user_map_roster_fingerprint",
+                "user_map_content_fingerprint",
+            }
+            if not isinstance(scope_fingerprints, dict) or any(
+                not str(scope_fingerprints.get(name) or "").strip()
+                for name in required_scope_fingerprints
+            ):
+                raise RuntimeError(
+                    "canonical user scope publication receipts are missing"
+                )
+            for scope_row in scope_rows:
+                scope_row["snapshot_run_id"] = run_id
+                scope_row["snapshot_created_at"] = frozen_now
             conversation_rows, citation_rows, projection_issues = (
                 self._projector.changed_conversation_rows(
                     window_start=window_start,
@@ -639,6 +663,17 @@ ORDER BY check_name
                 bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
                 bigquery.ScalarQueryParameter("lease_id", "STRING", lease_id),
                 bigquery.ScalarQueryParameter("expected_watermark", "TIMESTAMP", watermark),
+                bigquery.ScalarQueryParameter(
+                    "scope_policy_version", "STRING", SCOPE_POLICY_VERSION
+                ),
+                *[
+                    bigquery.ScalarQueryParameter(
+                        name,
+                        "STRING",
+                        str(scope_fingerprints[name]),
+                    )
+                    for name in sorted(required_scope_fingerprints)
+                ],
                 bigquery.ScalarQueryParameter(
                     "conversation_partition_start",
                     "DATE",
@@ -677,7 +712,7 @@ ORDER BY check_name
                     max(
                         0,
                         int(
-                            self._settings.monitor_event_future_tolerance_minutes
+                            REFRESH_POLICY.event_future_tolerance_minutes
                         ),
                     ),
                 ),
@@ -758,7 +793,7 @@ ORDER BY check_name
     ) -> dict[str, Any]:
         frozen_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         target_end = frozen_now - timedelta(
-            minutes=self._settings.monitor_refresh_delay_minutes
+            minutes=REFRESH_POLICY.expected_delay_minutes
         )
         runs: list[dict[str, Any]] = []
         for sequence in range(max(1, int(max_runs))):

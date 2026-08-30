@@ -4,11 +4,9 @@ import { displayCount, displayDateTime } from "../viewModels/formatters.js";
 export function renderFreshnessBanner(target, freshness, quality = null, metadataIssues = []) {
   if (!target) return;
   const resolvedFreshness = freshness && typeof freshness === "object" ? freshness : null;
-  const cadenceHours = resolvedFreshness ? resolvedFreshness.refreshCadenceMinutes / 60 : null;
   const through = resolvedFreshness?.dataThrough ? displayDateTime(resolvedFreshness.dataThrough) : "未取得";
-  const next = resolvedFreshness ? displayDateTime(resolvedFreshness.nextPlannedRefreshAt) : "";
-  const schedule = resolvedFreshness
-    ? `データは${cadenceHours}時間ごとに更新します（処理待ち ${resolvedFreshness.expectedDelayMinutes}分）。反映済み: ${through}／次回予定: ${next}`
+  const reflection = resolvedFreshness
+    ? `反映済み: ${through}`
     : "更新情報を確認できません。表示中の集計値は保持しています。";
   const stale = resolvedFreshness?.state === "stale"
     ? `更新が遅れています。データは ${through} までです。これ以降の 0 や空欄は「利用なし」を意味しません。`
@@ -38,5 +36,5 @@ export function renderFreshnessBanner(target, freshness, quality = null, metadat
     : "";
   target.dataset.state = resolvedFreshness?.state || "unknown";
   target.dataset.qualityState = source?.state || "not_applicable";
-  target.innerHTML = `<strong>${escapeHtml(schedule)}</strong>${metadataNotice ? `<span>${escapeHtml(metadataNotice)}</span>` : ""}${stale ? `<span>${escapeHtml(stale)}</span>` : ""}${sourceIssue ? `<span>${escapeHtml(sourceIssue)}</span>` : ""}${repaired ? `<span>${escapeHtml(repaired)}</span>` : ""}${isolated ? `<span>${escapeHtml(isolated)}</span>` : ""}`;
+  target.innerHTML = `<strong>${escapeHtml(reflection)}</strong>${metadataNotice ? `<span>${escapeHtml(metadataNotice)}</span>` : ""}${stale ? `<span>${escapeHtml(stale)}</span>` : ""}${sourceIssue ? `<span>${escapeHtml(sourceIssue)}</span>` : ""}${repaired ? `<span>${escapeHtml(repaired)}</span>` : ""}${isolated ? `<span>${escapeHtml(isolated)}</span>` : ""}`;
 }

@@ -18,6 +18,10 @@ class _Snapshot:
     def exists(self) -> bool:
         return self._reference.document_id in self._reference.store
 
+    @property
+    def id(self) -> str:
+        return self._reference.document_id
+
     def to_dict(self) -> dict[str, Any] | None:
         value = self._reference.store.get(self._reference.document_id)
         return dict(value) if value is not None else None
@@ -109,6 +113,11 @@ class _Transaction:
     def delete(self, reference: _DocumentReference) -> None:
         reference.store.pop(reference.document_id, None)
 
+    def update(self, reference: _DocumentReference, payload: dict[str, Any]) -> None:
+        if reference.document_id not in reference.store:
+            raise ValueError("document not found")
+        reference.store[reference.document_id].update(dict(payload))
+
     def get(self, query: _Query) -> list[_Snapshot]:
         return query.stream()
 
@@ -168,6 +177,7 @@ def _change(change_id: str, action: str, target_id: str) -> dict[str, Any]:
         "target_type": "user",
         "target_id": target_id,
         "updated_at": datetime(2026, 8, 24, tzinfo=timezone.utc),
+        "updated_by": "system@example.com",
     }
 
 
@@ -211,6 +221,63 @@ def test_user_document_keeps_only_the_canonical_directory_contract() -> None:
     assert "global_scope_enabled" not in stored
 
 
+def test_repository_read_preserves_firestore_document_id_for_roster_repair() -> None:
+    repository, client = _repository()
+    client.data.setdefault("monitor_users", {})["firestore_doc"] = {
+        "name": "repair me",
+        "email": "repair@example.com",
+        "is_active": True,
+    }
+
+    payload = repository.get_user("firestore_doc")
+
+    assert payload is not None
+    assert payload["_document_id"] == "firestore_doc"
+    assert "roster_id" not in payload
+
+
+def test_find_user_by_email_normalizes_the_collection_and_rejects_ambiguity() -> None:
+    repository, client = _repository()
+    client.data.setdefault("monitor_users", {}).update(
+        {
+            "roster_a": _user("roster_a", " Same@Example.com "),
+            "roster_b": _user("roster_b", "same@example.COM"),
+        }
+    )
+
+    with pytest.raises(ManagementError) as captured:
+        repository.find_user_by_email("same@example.com")
+
+    assert captured.value.code == "duplicate_email"
+    del client.data["monitor_users"]["roster_b"]
+    match = repository.find_user_by_email(" SAME@example.com ")
+    assert match is not None
+    assert match["_document_id"] == "roster_a"
+
+
+def test_label_read_preserves_document_id_without_persisting_internal_fields() -> None:
+    repository, client = _repository()
+    now = datetime(2026, 8, 24, tzinfo=timezone.utc)
+    repository.put_label(
+        {
+            "label_id": "label_a",
+            "name": "重点",
+            "color": "#23d28f",
+            "is_active": True,
+            "usage_count": 99,
+            "updated_at": now,
+        }
+    )
+
+    payload = repository.get_label("label_a")
+
+    assert payload is not None
+    assert payload["_document_id"] == "label_a"
+    stored = client.data["monitor_labels"]["label_a"]
+    assert "_document_id" not in stored
+    assert "usage_count" not in stored
+
+
 def test_user_claim_rejects_a_second_roster_even_if_service_precheck_races() -> None:
     repository, _client = _repository()
     repository.put_user(_user("roster_a", "same@example.com", "subject_same"))
@@ -245,6 +312,153 @@ def test_verified_user_id_claim_stays_reserved_after_email_change() -> None:
         if value["claim_type"] == "email"
     ]
     assert len(email_claims) == 1
+
+
+def test_identity_binding_patches_only_identity_fields_and_preserves_a_racing_admin_edit() -> None:
+    repository, client = _repository()
+    original = _user("roster_a", "a@example.com")
+    original["role"] = "本社MR"
+    repository.put_user(original)
+
+    racing_revision = datetime(2026, 8, 25, tzinfo=timezone.utc)
+    client.data["monitor_users"]["roster_a"].update({
+        "role": "コントラクトMR",
+        "label_ids": ["label_new"],
+        "updated_at": racing_revision,
+        "updated_by": "admin@example.com",
+    })
+    bound_at = datetime(2026, 8, 25, 1, tzinfo=timezone.utc)
+    result = repository.bind_user_identity(
+        "roster_a",
+        chat_user_id="chat_a",
+        user_id="subject_a",
+        bound_at=bound_at,
+        change=_change("identity_change", "identity_bind", "roster_a"),
+    )
+
+    assert result["role"] == "コントラクトMR"
+    assert result["label_ids"] == ["label_new"]
+    stored = client.data["monitor_users"]["roster_a"]
+    assert stored["role"] == "コントラクトMR"
+    assert stored["label_ids"] == ["label_new"]
+    assert stored["updated_at"] == bound_at
+    assert stored["updated_by"] == "system@example.com"
+    assert stored["chat_user_id"] == "chat_a"
+    assert stored["user_id"] == "subject_a"
+    assert client.data["monitor_admin_changes"]["identity_change"]["action"] == "identity_bind"
+
+
+def test_stale_admin_update_after_identity_bind_conflicts_without_losing_identity_claims() -> None:
+    repository, client = _repository()
+    original = _user("roster_a", "a@example.com")
+    repository.put_user(original)
+    stale_admin_payload = {
+        **original,
+        "name": "stale admin edit",
+        "updated_at": datetime(2026, 8, 25, 2, tzinfo=timezone.utc),
+        "updated_by": "admin@example.com",
+    }
+    bound_at = datetime(2026, 8, 25, 1, tzinfo=timezone.utc)
+
+    repository.bind_user_identity(
+        "roster_a",
+        chat_user_id="chat_a",
+        user_id="subject_a",
+        bound_at=bound_at,
+        change=_change("identity_first", "identity_bind", "roster_a"),
+    )
+
+    with pytest.raises(ManagementError) as captured:
+        repository.put_user_and_change(
+            stale_admin_payload,
+            _change("stale_admin", "update", "roster_a"),
+            expected_updated_at=revision_text(original["updated_at"]),
+        )
+
+    assert captured.value.code == "update_conflict"
+    stored = client.data["monitor_users"]["roster_a"]
+    assert stored["name"] == "roster_a"
+    assert stored["chat_user_id"] == "chat_a"
+    assert stored["user_id"] == "subject_a"
+    assert stored["updated_at"] == bound_at
+    identity_claims = {
+        (value["claim_type"], value["target_id"])
+        for value in client.data["monitor_unique_claims"].values()
+        if value["claim_type"] in {"chat_user_id", "user_id"}
+    }
+    assert identity_claims == {
+        ("chat_user_id", "roster_a"),
+        ("user_id", "roster_a"),
+    }
+    assert "stale_admin" not in client.data.get("monitor_admin_changes", {})
+
+
+def test_admin_transaction_preserves_current_identity_and_rechecks_bound_email() -> None:
+    repository, client = _repository()
+    original = _user("roster_a", "a@example.com")
+    repository.put_user(original)
+    bound_at = datetime(2026, 8, 25, 1, tzinfo=timezone.utc)
+    repository.bind_user_identity(
+        "roster_a",
+        chat_user_id="chat_a",
+        user_id="subject_a",
+        bound_at=bound_at,
+        change=_change("identity_owner", "identity_bind", "roster_a"),
+    )
+
+    stale_identity_payload = {
+        **original,
+        "name": "safe admin edit",
+        "updated_at": datetime(2026, 8, 25, 2, tzinfo=timezone.utc),
+        "updated_by": "admin@example.com",
+    }
+    result = repository.put_user_and_change(
+        stale_identity_payload,
+        _change("safe_admin", "update", "roster_a"),
+        expected_updated_at=revision_text(bound_at),
+    )
+    assert result["chat_user_id"] == "chat_a"
+    assert result["user_id"] == "subject_a"
+
+    bound_revision = result["updated_at"]
+    with pytest.raises(ManagementError) as captured:
+        repository.put_user_and_change(
+            {
+                **result,
+                "email": "changed@example.com",
+                "updated_at": datetime(2026, 8, 25, 3, tzinfo=timezone.utc),
+            },
+            _change("bound_email", "update", "roster_a"),
+            expected_updated_at=revision_text(bound_revision),
+        )
+
+    assert captured.value.code == "bound_email"
+    stored = client.data["monitor_users"]["roster_a"]
+    assert stored["email"] == "a@example.com"
+    assert stored["chat_user_id"] == "chat_a"
+    assert stored["user_id"] == "subject_a"
+    assert "bound_email" not in client.data.get("monitor_admin_changes", {})
+
+
+def test_identity_binding_rejects_a_legacy_duplicate_even_without_a_claim_document() -> None:
+    repository, client = _repository()
+    repository.put_user(_user("roster_a", "a@example.com"))
+    legacy = _user("roster_legacy", "legacy@example.com", "subject_legacy")
+    legacy["chat_user_id"] = "chat_legacy"
+    client.data.setdefault("monitor_users", {})["roster_legacy"] = legacy
+
+    with pytest.raises(ManagementError) as captured:
+        repository.bind_user_identity(
+            "roster_a",
+            chat_user_id="chat_legacy",
+            user_id="subject_new",
+            bound_at=datetime(2026, 8, 25, tzinfo=timezone.utc),
+            change=_change("identity_duplicate", "identity_bind", "roster_a"),
+        )
+
+    assert captured.value.code == "duplicate_identity"
+    assert client.data["monitor_users"]["roster_a"]["chat_user_id"] == ""
+    assert "identity_duplicate" not in client.data.get("monitor_admin_changes", {})
 
 
 def test_user_update_revision_is_checked_inside_transaction() -> None:

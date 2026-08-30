@@ -6,17 +6,28 @@ REGION="us-central1"
 SERVICE_NAME="oura-navi-monitor"
 DATASET_ID="oura_navi_monitor"
 LOCATION="US"
+SOURCE_SERVICE="lcs-rag-app"
+FIRESTORE_DATABASE="lcs-user-data"
+RELEASE_LOCK_COLLECTION="monitor_release_locks"
 REVISION=""
 EXPECTED_IMAGE=""
 EXPECTED_GIT_SHA=""
+EXPECTED_BUILD_ID=""
 EXPECTED_SERVICE_ACCOUNT=""
+EXPECTED_JOB_SERVICE_ACCOUNT=""
+LEGACY_TRANSFER_RESOURCE=""
 SCHEMA_RECEIPT=""
 API_RECEIPT=""
 BACKFILL_RECEIPT=""
 ACCEPTANCE_RECEIPT=""
+ACTIVATION_RECEIPT=""
+DTS_PAUSE_SNAPSHOT=""
+DTS_45M_RECEIPT=""
+DTS_72H_RECEIPT=""
 SNAPSHOT_OUTPUT=""
 CONFIRM_PROMOTION=""
 APPLY="false"
+CREDENTIAL_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -25,17 +36,28 @@ while [[ $# -gt 0 ]]; do
     --service) SERVICE_NAME="$2"; shift 2 ;;
     --dataset) DATASET_ID="$2"; shift 2 ;;
     --location) LOCATION="$2"; shift 2 ;;
+    --source-service) SOURCE_SERVICE="$2"; shift 2 ;;
+    --firestore-database) FIRESTORE_DATABASE="$2"; shift 2 ;;
+    --release-lock-collection) RELEASE_LOCK_COLLECTION="$2"; shift 2 ;;
     --revision) REVISION="$2"; shift 2 ;;
     --expected-image) EXPECTED_IMAGE="$2"; shift 2 ;;
     --expected-git-sha) EXPECTED_GIT_SHA="$2"; shift 2 ;;
+    --expected-build-id) EXPECTED_BUILD_ID="$2"; shift 2 ;;
     --expected-service-account) EXPECTED_SERVICE_ACCOUNT="$2"; shift 2 ;;
+    --expected-job-service-account) EXPECTED_JOB_SERVICE_ACCOUNT="$2"; shift 2 ;;
+    --legacy-transfer-resource) LEGACY_TRANSFER_RESOURCE="$2"; shift 2 ;;
     --schema-receipt) SCHEMA_RECEIPT="$2"; shift 2 ;;
     --api-receipt) API_RECEIPT="$2"; shift 2 ;;
     --backfill-receipt) BACKFILL_RECEIPT="$2"; shift 2 ;;
     --acceptance-receipt) ACCEPTANCE_RECEIPT="$2"; shift 2 ;;
+    --activation-receipt) ACTIVATION_RECEIPT="$2"; shift 2 ;;
+    --dts-pause-snapshot) DTS_PAUSE_SNAPSHOT="$2"; shift 2 ;;
+    --dts-45m-receipt) DTS_45M_RECEIPT="$2"; shift 2 ;;
+    --dts-72h-receipt) DTS_72H_RECEIPT="$2"; shift 2 ;;
     --snapshot-output) SNAPSHOT_OUTPUT="$2"; shift 2 ;;
     --confirm-promotion) CONFIRM_PROMOTION="$2"; shift 2 ;;
     --apply) APPLY="true"; shift ;;
+    --credential-file) CREDENTIAL_FILE="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -66,8 +88,28 @@ fi
   echo "--expected-git-sha must be the full candidate Git SHA" >&2
   exit 2
 }
+[[ "${EXPECTED_BUILD_ID}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || {
+  echo "--expected-build-id must be the exact Cloud Build UUID" >&2
+  exit 2
+}
 [[ "${EXPECTED_SERVICE_ACCOUNT}" =~ ^[a-z0-9-]+@${PROJECT_ID}\.iam\.gserviceaccount\.com$ ]] || {
   echo "--expected-service-account must be the exact runtime identity" >&2
+  exit 2
+}
+[[ "${EXPECTED_JOB_SERVICE_ACCOUNT}" =~ ^[a-z0-9-]+@${PROJECT_ID}\.iam\.gserviceaccount\.com$ ]] || {
+  echo "--expected-job-service-account must be the exact refresh Job identity" >&2
+  exit 2
+}
+[[ "${LEGACY_TRANSFER_RESOURCE}" =~ ^projects/${PROJECT_ID}/locations/[^/[:space:]]+/transferConfigs/[^/[:space:]]+$ ]] || {
+  echo "--legacy-transfer-resource must be one exact transfer config in the selected project" >&2
+  exit 2
+}
+[[ "${FIRESTORE_DATABASE}" == "lcs-user-data" ]] || {
+  echo "--firestore-database must equal the governed named database lcs-user-data" >&2
+  exit 2
+}
+[[ "${RELEASE_LOCK_COLLECTION}" == "monitor_release_locks" ]] || {
+  echo "--release-lock-collection must equal the governed collection monitor_release_locks" >&2
   exit 2
 }
 [[ -n "${SCHEMA_RECEIPT}" && -f "${SCHEMA_RECEIPT}" ]] || {
@@ -86,288 +128,250 @@ fi
   echo "--acceptance-receipt is required on apply" >&2
   exit 2
 }
-[[ -n "${SNAPSHOT_OUTPUT}" && ! -e "${SNAPSHOT_OUTPUT}" && -d "$(dirname "${SNAPSHOT_OUTPUT}")" ]] || {
-  echo "--snapshot-output must be a new file in an existing directory" >&2
+[[ -n "${ACTIVATION_RECEIPT}" && -f "${ACTIVATION_RECEIPT}" ]] || {
+  echo "--activation-receipt is required on apply" >&2
   exit 2
 }
-[[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || {
-  echo "approved credential is required" >&2
+[[ -n "${DTS_PAUSE_SNAPSHOT}" && -f "${DTS_PAUSE_SNAPSHOT}" ]] || {
+  echo "--dts-pause-snapshot is required on apply" >&2
   exit 2
 }
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && "${GOOGLE_APPLICATION_CREDENTIALS}" != "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]]; then
-  echo "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential" >&2
+[[ -n "${DTS_45M_RECEIPT}" && -f "${DTS_45M_RECEIPT}" ]] || {
+  echo "--dts-45m-receipt is required on apply" >&2
+  exit 2
+}
+[[ -n "${DTS_72H_RECEIPT}" && -f "${DTS_72H_RECEIPT}" ]] || {
+  echo "--dts-72h-receipt is required on apply" >&2
+  exit 2
+}
+[[ -n "${SNAPSHOT_OUTPUT}" && -d "$(dirname "${SNAPSHOT_OUTPUT}")" ]] || {
+  echo "--snapshot-output must be a file in an existing directory" >&2
+  exit 2
+}
+python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/credential_preflight.py" \
+  --credential-file "${CREDENTIAL_FILE}"
+command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
+command -v bq >/dev/null 2>&1 || { echo "bq not found" >&2; exit 2; }
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT_DIR}/scripts/credential_shell.sh"
+monitor_install_google_credential_wrappers "${CREDENTIAL_FILE}"
+JOB_NAME="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_name)')"
+SCHEDULER_NAME="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_name)')"
+JOB_TIMEOUT_MINUTES="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_timeout_minutes)')"
+
+validate_fresh_candidate_receipts() {
+  env "${STATE_ENV[@]}" SERVICE_JSON="${SERVICE_CURRENT}" \
+    REVISION_JSON="${REVISION_CURRENT}" \
+    python3 "${ROOT_DIR}/scripts/promotion_receipt_state.py" freshness \
+    "${PROMOTION_STATE_ARGS[@]}" >/dev/null
+}
+
+CURRENT_SCHEDULER_JSON="$(gcloud --project="${PROJECT_ID}" scheduler jobs describe \
+  "${SCHEDULER_NAME}" --location="${REGION}" --format=json)"
+CURRENT_JOB_JSON="$(gcloud --project="${PROJECT_ID}" run jobs describe "${JOB_NAME}" \
+  --region="${REGION}" --format=json)"
+JOB_DESCRIPTION_JSON="${CURRENT_JOB_JSON}" python3 \
+  "${ROOT_DIR}/scripts/validate_refresh_job.py" \
+  --expected-image "${EXPECTED_IMAGE}" \
+  --expected-service-account "${EXPECTED_JOB_SERVICE_ACCOUNT}" \
+  --project "${PROJECT_ID}" --dataset "${DATASET_ID}" \
+  --location "${LOCATION}" --source-service "${SOURCE_SERVICE}" \
+  --timeout-minutes "${JOB_TIMEOUT_MINUTES}" >/dev/null
+
+CURRENT_TRANSFER_JSON="$(bq --project_id="${PROJECT_ID}" --location="${LOCATION}" show \
+  --transfer_config --format=prettyjson "${LEGACY_TRANSFER_RESOURCE}")"
+
+
+SERVICE_CURRENT="$(gcloud --project="${PROJECT_ID}" run services describe "${SERVICE_NAME}" \
+  --region="${REGION}" --format=json)"
+REVISION_CURRENT="$(gcloud --project="${PROJECT_ID}" run revisions describe "${REVISION}" \
+  --region="${REGION}" --format=json)"
+PROMOTION_STATE_ARGS=(
+  --path "${SNAPSHOT_OUTPUT}"
+  --project "${PROJECT_ID}"
+  --region "${REGION}"
+  --service "${SERVICE_NAME}"
+  --revision "${REVISION}"
+  --image "${EXPECTED_IMAGE}"
+  --git-sha "${EXPECTED_GIT_SHA}"
+  --build-id "${EXPECTED_BUILD_ID}"
+  --service-account "${EXPECTED_SERVICE_ACCOUNT}"
+  --expected-job-service-account "${EXPECTED_JOB_SERVICE_ACCOUNT}"
+  --legacy-transfer-resource "${LEGACY_TRANSFER_RESOURCE}"
+  --dataset "${DATASET_ID}"
+  --location "${LOCATION}"
+  --source-service "${SOURCE_SERVICE}"
+  --job "${JOB_NAME}"
+  --scheduler "${SCHEDULER_NAME}"
+  --job-timeout-minutes "${JOB_TIMEOUT_MINUTES}"
+  --firestore-database "${FIRESTORE_DATABASE}"
+  --release-lock-collection "${RELEASE_LOCK_COLLECTION}"
+  --schema-receipt "${SCHEMA_RECEIPT}"
+  --api-receipt "${API_RECEIPT}"
+  --backfill-receipt "${BACKFILL_RECEIPT}"
+  --acceptance-receipt "${ACCEPTANCE_RECEIPT}"
+  --activation-receipt "${ACTIVATION_RECEIPT}"
+  --dts-pause-snapshot "${DTS_PAUSE_SNAPSHOT}"
+  --dts-45m-receipt "${DTS_45M_RECEIPT}"
+  --dts-72h-receipt "${DTS_72H_RECEIPT}"
+)
+
+STATE_ENV=(
+  "CURRENT_SCHEDULER_JSON=${CURRENT_SCHEDULER_JSON}"
+  "CURRENT_JOB_JSON=${CURRENT_JOB_JSON}"
+  "CURRENT_TRANSFER_JSON=${CURRENT_TRANSFER_JSON}"
+)
+
+env "${STATE_ENV[@]}" SERVICE_JSON="${SERVICE_CURRENT}" REVISION_JSON="${REVISION_CURRENT}" \
+  python3 "${ROOT_DIR}/scripts/promotion_receipt_state.py" prepare \
+  "${PROMOTION_STATE_ARGS[@]}" >/dev/null
+
+# Classify the read-only pre-lock state so stale evidence is rejected before a
+# new traffic mutation acquires the shared cloud lock. Post/final states do not
+# authorize a new traffic mutation, so they skip this gate; post can continue
+# only after a separately audited lock release, while exact final may recover.
+PRELOCK_PROMOTION_STATE="$(env "${STATE_ENV[@]}" SERVICE_JSON="${SERVICE_CURRENT}" \
+  REVISION_JSON="${REVISION_CURRENT}" \
+  python3 "${ROOT_DIR}/scripts/promotion_receipt_state.py" classify \
+  "${PROMOTION_STATE_ARGS[@]}")"
+if [[ "${PRELOCK_PROMOTION_STATE}" == "pre" ]]; then
+  validate_fresh_candidate_receipts
+elif [[ "${PRELOCK_PROMOTION_STATE}" != "post" && "${PRELOCK_PROMOTION_STATE}" != "final" ]]; then
+  echo "promotion_state_invalid: unexpected pre-lock live state" >&2
   exit 2
 fi
-export GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}"
-command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
 
-python3 - "${SCHEMA_RECEIPT}" "${API_RECEIPT}" "${BACKFILL_RECEIPT}" \
-  "${ACCEPTANCE_RECEIPT}" "${PROJECT_ID}" "${REGION}" "${SERVICE_NAME}" \
-  "${DATASET_ID}" "${LOCATION}" \
-  "${REVISION}" "${EXPECTED_IMAGE}" "${EXPECTED_GIT_SHA}" \
-  "${EXPECTED_SERVICE_ACCOUNT}" <<'PY'
-import json
-import sys
-
-schema_path, api_path, backfill_path, acceptance_path, project, region, service, dataset, location, revision, image, git_sha, service_account = sys.argv[1:]
-
-def read(path):
-    with open(path, encoding="utf-8") as handle:
-        payload = json.load(handle)
-    if not isinstance(payload, dict):
-        raise SystemExit(f"receipt is not a JSON object: {path}")
-    return payload
-
-schema = read(schema_path)
-schema_expected = {
-    "receiptType": "monitor_data_contract_v1",
-    "project": project,
-    "dataset": dataset,
-    "location": location,
-    "gitSha": git_sha,
-    "image": image,
-}
-if any(schema.get(key) != value for key, value in schema_expected.items()):
-    raise SystemExit("schema receipt does not match this exact candidate and dataset")
-for key in (
-    "schemaReady",
-    "sourceViewsReady",
-    "apiRoutinesReady",
-    "apiRoutinesReadable",
-    "publishedStateReadable",
-):
-    if schema.get(key) is not True:
-        raise SystemExit(f"schema receipt is missing {key}")
-routine_reads = schema.get("apiRoutineReads") or {}
-for routine_name in ("dashboard_events", "dashboard_user_list"):
-    if (routine_reads.get(routine_name) or {}).get("readable") is not True:
-        raise SystemExit(f"schema receipt has no real read for {routine_name}")
-if not schema.get("capturedAt"):
-    raise SystemExit("schema receipt has no capture time")
-
-api = read(api_path)
-api_expected = {
-    "receiptType": "monitor_candidate_api_v1",
-    "project": project,
-    "region": region,
-    "service": service,
-    "revision": revision,
-    "image": image,
-    "gitSha": git_sha,
-    "serviceAccount": service_account,
-}
-if any(api.get(key) != value for key, value in api_expected.items()):
-    raise SystemExit("API receipt does not match this exact candidate")
-if api.get("authenticatedApiAcceptance") is not True:
-    raise SystemExit("authenticated candidate API acceptance is missing")
-statuses = api.get("endpointStatus") or {}
-for endpoint in ("overview", "regions", "users", "userDetail"):
-    if statuses.get(endpoint) != 200:
-        raise SystemExit(f"candidate API receipt is missing a 200 readback for {endpoint}")
-for key in ("overviewHistoryVisible", "userHistoryVisible", "sourceDiagnosticsExplicit"):
-    if api.get(key) is not True:
-        raise SystemExit(f"candidate API receipt is missing {key}")
-if not api.get("capturedAt") or not api.get("verifiedBy"):
-    raise SystemExit("candidate API receipt has no verifier or capture time")
-
-backfill = read(backfill_path)
-backfill_expected = {
-    "project": project,
-    "region": region,
-    "dataset": dataset,
-    "location": location,
-    "expected_image": image,
-}
-if any(backfill.get(key) != value for key, value in backfill_expected.items()):
-    raise SystemExit("backfill receipt does not match this release target")
-execution = backfill.get("execution") or {}
-execution_status = execution.get("status") if isinstance(execution.get("status"), dict) else execution
-execution_name = str(
-    execution.get("name")
-    or (execution.get("metadata") or {}).get("name")
-    or ""
+# This Firestore transaction is the cross-host CAS owner for the service.
+# A pre/post intent never auto-recovers an existing lock: without a provider
+# fencing token, the script cannot prove that the original holder has stopped.
+# A completed receipt may recover only to perform final readback and release;
+# that branch never calls update-traffic.
+PROMOTION_LOCK_ARGS=(
+  acquire
+  --credential-file "${CREDENTIAL_FILE}"
+  --promotion-state "${SNAPSHOT_OUTPUT}"
 )
-if not execution_name or int(execution_status.get("succeededCount") or 0) != 1 or int(execution_status.get("failedCount") or 0) != 0:
-    raise SystemExit("backfill receipt has no terminal successful execution")
-completed = next(
-    (
-        item
-        for item in execution_status.get("conditions", [])
-        if isinstance(item, dict) and item.get("type") == "Completed"
-    ),
-    None,
+if [[ "${PRELOCK_PROMOTION_STATE}" == "final" ]]; then
+  PROMOTION_LOCK_ARGS+=(--allow-final-recovery)
+elif [[ "${PRELOCK_PROMOTION_STATE}" == "post" ]]; then
+  PROMOTION_LOCK_ARGS+=(--allow-post-recovery)
+fi
+PROMOTION_LOCK_STATE="$(PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${ROOT_DIR}" python3 \
+  "${ROOT_DIR}/scripts/promotion_release_lock.py" \
+  "${PROMOTION_LOCK_ARGS[@]}")"
+echo "promotion_lock=${PROMOTION_LOCK_STATE}"
+
+# Re-read all promotion and refresh authorities after the cloud CAS is held.
+# The pre-lock reads only create/recover the durable intent; they never
+# authorize traffic mutation across a TOCTOU window.
+CURRENT_SCHEDULER_JSON="$(gcloud --project="${PROJECT_ID}" scheduler jobs describe \
+  "${SCHEDULER_NAME}" --location="${REGION}" --format=json)"
+CURRENT_JOB_JSON="$(gcloud --project="${PROJECT_ID}" run jobs describe "${JOB_NAME}" \
+  --region="${REGION}" --format=json)"
+JOB_DESCRIPTION_JSON="${CURRENT_JOB_JSON}" python3 \
+  "${ROOT_DIR}/scripts/validate_refresh_job.py" \
+  --expected-image "${EXPECTED_IMAGE}" \
+  --expected-service-account "${EXPECTED_JOB_SERVICE_ACCOUNT}" \
+  --project "${PROJECT_ID}" --dataset "${DATASET_ID}" \
+  --location "${LOCATION}" --source-service "${SOURCE_SERVICE}" \
+  --timeout-minutes "${JOB_TIMEOUT_MINUTES}" >/dev/null
+CURRENT_TRANSFER_JSON="$(bq --project_id="${PROJECT_ID}" --location="${LOCATION}" show \
+  --transfer_config --format=prettyjson "${LEGACY_TRANSFER_RESOURCE}")"
+SERVICE_CURRENT="$(gcloud --project="${PROJECT_ID}" run services describe "${SERVICE_NAME}" \
+  --region="${REGION}" --format=json)"
+REVISION_CURRENT="$(gcloud --project="${PROJECT_ID}" run revisions describe "${REVISION}" \
+  --region="${REGION}" --format=json)"
+STATE_ENV=(
+  "CURRENT_SCHEDULER_JSON=${CURRENT_SCHEDULER_JSON}"
+  "CURRENT_JOB_JSON=${CURRENT_JOB_JSON}"
+  "CURRENT_TRANSFER_JSON=${CURRENT_TRANSFER_JSON}"
 )
-if completed is not None and str(completed.get("status") or "").lower() != "true":
-    raise SystemExit("backfill receipt execution is not terminal-successful")
-job_contract = backfill.get("validated_job_contract") or {}
-if job_contract.get("image") != image:
-    raise SystemExit("backfill Job did not use the candidate image digest")
-if not backfill.get("target_at"):
-    raise SystemExit("backfill receipt has no frozen target watermark")
-pipeline_after = backfill.get("pipeline_after") or []
-if not isinstance(pipeline_after, list) or len(pipeline_after) != 1:
-    raise SystemExit("backfill receipt has no single published readback")
-published = pipeline_after[0]
-lease_active = str(published.get("lease_active") or "").strip().lower()
-if (
-    published.get("source") != "published"
-    or published.get("status") != "succeeded"
-    or not published.get("published_run_id")
-    or not published.get("data_through")
-    or lease_active not in {"false", "0"}
-):
-    raise SystemExit("backfill receipt does not contain a released successful publication")
-reconciliation = backfill.get("reconciliation") or []
-if not isinstance(reconciliation, list) or len(reconciliation) != 1:
-    raise SystemExit("backfill receipt has no reconciliation readback")
-row = reconciliation[0]
-def count(name):
-    try:
-        return int(row.get(name) or 0)
-    except (TypeError, ValueError) as error:
-        raise SystemExit(f"backfill receipt has invalid {name}") from error
-if count("successful_run_count") < 1 or count("blocking_failure_count") != 0:
-    raise SystemExit("backfill receipt has no clean successful canonical run")
-for family in ("question", "answer", "action"):
-    if count(f"canonical_{family}_count") != count(f"matched_{family}_count"):
-        raise SystemExit(f"backfill receipt does not reconcile {family} facts")
 
-receipt = read(acceptance_path)
-expected = {
-    "project": project,
-    "region": region,
-    "service": service,
-    "revision": revision,
-    "image": image,
-    "gitSha": git_sha,
-    "serviceAccount": service_account,
-}
-if any(receipt.get(key) != value for key, value in expected.items()):
-    raise SystemExit("acceptance receipt does not match this exact candidate")
-if receipt.get("authenticatedAcceptance") is not True:
-    raise SystemExit("authenticated candidate acceptance is missing")
-if receipt.get("loggedInBrowserAcceptance") is not True:
-    raise SystemExit("logged-in browser candidate acceptance is missing")
-if receipt.get("historicalDataAcceptance") is not True:
-    raise SystemExit("historical data candidate acceptance is missing")
-if receipt.get("businessAcceptance") is not True:
-    raise SystemExit("business candidate acceptance is missing")
-if not receipt.get("capturedAt") or not receipt.get("acceptedBy"):
-    raise SystemExit("acceptance receipt has no operator or capture time")
-PY
+PROMOTION_STATE="$(env "${STATE_ENV[@]}" SERVICE_JSON="${SERVICE_CURRENT}" \
+  REVISION_JSON="${REVISION_CURRENT}" \
+  python3 "${ROOT_DIR}/scripts/promotion_receipt_state.py" classify \
+  "${PROMOTION_STATE_ARGS[@]}")"
 
-SERVICE_BEFORE="$(gcloud --project="${PROJECT_ID}" run services describe "${SERVICE_NAME}" \
+# Freeze the action authorized by the pre-lock readback. A post/final recovery
+# is a readback/finalization operation and can never be reinterpreted as a new
+# traffic mutation if the service changes while the lock is being acquired.
+if [[ "${PROMOTION_STATE}" != "${PRELOCK_PROMOTION_STATE}" ]]; then
+  echo "promotion_state_invalid: live state changed while acquiring the promotion lock" >&2
+  exit 2
+fi
+
+if [[ "${PROMOTION_STATE}" == "final" ]]; then
+  PROMOTION_LOCK_RELEASE="$(PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${ROOT_DIR}" python3 \
+    "${ROOT_DIR}/scripts/promotion_release_lock.py" release \
+    --credential-file "${CREDENTIAL_FILE}" \
+    --promotion-state "${SNAPSHOT_OUTPUT}")"
+  echo "promotion_lock=${PROMOTION_LOCK_RELEASE}"
+  echo "promotion=already-complete revision=${REVISION} traffic=100 snapshot=${SNAPSHOT_OUTPUT}"
+  exit 0
+fi
+
+UPDATE_RETURN_CODE=-1
+if [[ "${PROMOTION_STATE}" == "pre" ]]; then
+  # This is the actual traffic authorization point. Recompute freshness from
+  # the exact receipt bytes bound into the durable intent after every slow
+  # lock-held readback and immediately before update-traffic. Failure retains
+  # the lock so no concurrent execution can delete another holder's authority.
+  validate_fresh_candidate_receipts
+  set +e
+  gcloud --project="${PROJECT_ID}" run services update-traffic "${SERVICE_NAME}" \
+    --region="${REGION}" \
+    --to-revisions="${REVISION}=100"
+  UPDATE_RETURN_CODE=$?
+  set -e
+elif [[ "${PROMOTION_STATE}" != "post" ]]; then
+  echo "promotion_state_invalid: unexpected live state" >&2
+  exit 2
+fi
+
+# Re-read the refresh authorities as well as both Cloud Run resources after the
+# possible state change. The global promotion lock remains held, and a sibling
+# refresh drift must not be hidden by a successful traffic update.
+CURRENT_SCHEDULER_JSON="$(gcloud --project="${PROJECT_ID}" scheduler jobs describe \
+  "${SCHEDULER_NAME}" --location="${REGION}" --format=json)"
+CURRENT_JOB_JSON="$(gcloud --project="${PROJECT_ID}" run jobs describe "${JOB_NAME}" \
   --region="${REGION}" --format=json)"
-REVISION_BEFORE="$(gcloud --project="${PROJECT_ID}" run revisions describe "${REVISION}" \
-  --region="${REGION}" --format=json)"
-SERVICE_JSON="${SERVICE_BEFORE}" REVISION_JSON="${REVISION_BEFORE}" python3 - \
-  "${SERVICE_NAME}" "${REVISION}" "${EXPECTED_IMAGE}" "${EXPECTED_GIT_SHA}" \
-  "${EXPECTED_SERVICE_ACCOUNT}" <<'PY'
-import json
-import os
-import sys
-
-service_name, revision_name, image, git_sha, service_account = sys.argv[1:]
-service = json.loads(os.environ["SERVICE_JSON"])
-revision = json.loads(os.environ["REVISION_JSON"])
-actual_service = str((service.get("metadata") or {}).get("name") or service.get("name") or "")
-if actual_service and actual_service != service_name:
-    raise SystemExit("service readback returned another service")
-actual_name = str((revision.get("metadata") or {}).get("name") or revision.get("name") or "")
-if actual_name and actual_name != revision_name:
-    raise SystemExit("candidate revision readback returned another revision")
-spec = revision.get("spec") or {}
-containers = spec.get("containers") or []
-if len(containers) != 1 or containers[0].get("image") != image:
-    raise SystemExit("candidate image digest readback failed")
-if spec.get("serviceAccountName") != service_account:
-    raise SystemExit("candidate runtime identity readback failed")
-labels = (revision.get("metadata") or {}).get("labels") or {}
-if labels.get("git-sha") != git_sha:
-    raise SystemExit("candidate full Git SHA label readback failed")
-conditions = (revision.get("status") or {}).get("conditions") or []
-if not any(item.get("type") == "Ready" and str(item.get("status")).lower() == "true" for item in conditions):
-    raise SystemExit("candidate revision is not Ready")
-traffic = (service.get("status") or {}).get("traffic") or []
-if any(item.get("revisionName") == revision_name and int(item.get("percent") or 0) > 0 for item in traffic):
-    raise SystemExit("candidate already has production traffic; refresh the release plan")
-PY
-
-SERVICE_JSON="${SERVICE_BEFORE}" REVISION_JSON="${REVISION_BEFORE}" python3 - \
-  "${SNAPSHOT_OUTPUT}" "${PROJECT_ID}" "${REGION}" "${SERVICE_NAME}" \
-  "${REVISION}" "${EXPECTED_IMAGE}" "${EXPECTED_GIT_SHA}" \
-  "${EXPECTED_SERVICE_ACCOUNT}" "${SCHEMA_RECEIPT}" "${API_RECEIPT}" \
-  "${BACKFILL_RECEIPT}" "${ACCEPTANCE_RECEIPT}" <<'PY'
-import hashlib
-import json
-import os
-import sys
-from datetime import datetime, timezone
-
-path, project, region, service, revision, image, git_sha, service_account, schema_path, api_path, backfill_path, acceptance_path = sys.argv[1:]
-def digest(receipt_path):
-    with open(receipt_path, "rb") as handle:
-        return hashlib.sha256(handle.read()).hexdigest()
-payload = {
-    "project": project,
-    "region": region,
-    "service": service,
-    "targetRevision": revision,
-    "image": image,
-    "gitSha": git_sha,
-    "serviceAccount": service_account,
-    "capturedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    "schemaReceiptSha256": digest(schema_path),
-    "apiReceiptSha256": digest(api_path),
-    "backfillReceiptSha256": digest(backfill_path),
-    "acceptanceReceiptSha256": digest(acceptance_path),
-    "serviceBefore": json.loads(os.environ["SERVICE_JSON"]),
-    "revisionBefore": json.loads(os.environ["REVISION_JSON"]),
-}
-with open(path, "x", encoding="utf-8") as handle:
-    json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-    handle.write("\n")
-PY
-
-gcloud --project="${PROJECT_ID}" run services update-traffic "${SERVICE_NAME}" \
-  --region="${REGION}" \
-  --to-revisions="${REVISION}=100"
-
+JOB_DESCRIPTION_JSON="${CURRENT_JOB_JSON}" python3 \
+  "${ROOT_DIR}/scripts/validate_refresh_job.py" \
+  --expected-image "${EXPECTED_IMAGE}" \
+  --expected-service-account "${EXPECTED_JOB_SERVICE_ACCOUNT}" \
+  --project "${PROJECT_ID}" --dataset "${DATASET_ID}" \
+  --location "${LOCATION}" --source-service "${SOURCE_SERVICE}" \
+  --timeout-minutes "${JOB_TIMEOUT_MINUTES}" >/dev/null
+CURRENT_TRANSFER_JSON="$(bq --project_id="${PROJECT_ID}" --location="${LOCATION}" show \
+  --transfer_config --format=prettyjson "${LEGACY_TRANSFER_RESOURCE}")"
+STATE_ENV=(
+  "CURRENT_SCHEDULER_JSON=${CURRENT_SCHEDULER_JSON}"
+  "CURRENT_JOB_JSON=${CURRENT_JOB_JSON}"
+  "CURRENT_TRANSFER_JSON=${CURRENT_TRANSFER_JSON}"
+)
 SERVICE_AFTER="$(gcloud --project="${PROJECT_ID}" run services describe "${SERVICE_NAME}" \
   --region="${REGION}" --format=json)"
-SERVICE_JSON="${SERVICE_AFTER}" python3 - "${REVISION}" <<'PY'
-import json
-import os
-import sys
+REVISION_AFTER="$(gcloud --project="${PROJECT_ID}" run revisions describe "${REVISION}" \
+  --region="${REGION}" --format=json)"
+POST_STATE="$(env "${STATE_ENV[@]}" SERVICE_JSON="${SERVICE_AFTER}" \
+  REVISION_JSON="${REVISION_AFTER}" \
+  python3 "${ROOT_DIR}/scripts/promotion_receipt_state.py" classify \
+  "${PROMOTION_STATE_ARGS[@]}")"
+if [[ "${POST_STATE}" != "post" ]]; then
+  echo "promotion_state_invalid: traffic update did not reach exact target=100; intent retained" >&2
+  exit 2
+fi
 
-target = sys.argv[1]
-service = json.loads(os.environ["SERVICE_JSON"])
-traffic = (service.get("status") or {}).get("traffic") or []
-positive = [
-    (str(item.get("revisionName") or ""), int(item.get("percent") or 0))
-    for item in traffic
-    if int(item.get("percent") or 0) > 0
-]
-if not positive or any(name != target for name, _ in positive) or sum(percent for _, percent in positive) != 100:
-    raise SystemExit(f"production traffic readback is not exactly {target}=100: {positive}")
-PY
+env "${STATE_ENV[@]}" SERVICE_JSON="${SERVICE_AFTER}" REVISION_JSON="${REVISION_AFTER}" \
+  python3 "${ROOT_DIR}/scripts/promotion_receipt_state.py" finalize \
+  "${PROMOTION_STATE_ARGS[@]}" \
+  --update-return-code "${UPDATE_RETURN_CODE}"
 
-SERVICE_JSON="${SERVICE_AFTER}" python3 - "${SNAPSHOT_OUTPUT}" <<'PY'
-import json
-import os
-import sys
-from datetime import datetime, timezone
-
-path = sys.argv[1]
-with open(path, encoding="utf-8") as handle:
-    payload = json.load(handle)
-payload["promotedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-payload["serviceAfter"] = json.loads(os.environ["SERVICE_JSON"])
-temporary = path + ".tmp"
-with open(temporary, "w", encoding="utf-8") as handle:
-    json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-    handle.write("\n")
-os.replace(temporary, path)
-PY
+PROMOTION_LOCK_RELEASE="$(PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${ROOT_DIR}" python3 \
+  "${ROOT_DIR}/scripts/promotion_release_lock.py" release \
+  --credential-file "${CREDENTIAL_FILE}" \
+  --promotion-state "${SNAPSHOT_OUTPUT}")"
+echo "promotion_lock=${PROMOTION_LOCK_RELEASE}"
 
 echo "promotion=complete revision=${REVISION} traffic=100 snapshot=${SNAPSHOT_OUTPUT}"

@@ -5,6 +5,7 @@ PROJECT_ID=""
 SOURCE_SERVICE="lcs-rag-app"
 CHANNEL=""
 APPLY="false"
+CREDENTIAL_FILE=""
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WARNING_MINUTES="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.no_success_warning_minutes)')"
 CRITICAL_MINUTES="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.no_success_critical_minutes)')"
@@ -14,6 +15,7 @@ while [[ $# -gt 0 ]]; do
     --project) PROJECT_ID="$2"; shift 2 ;;
     --source-service) SOURCE_SERVICE="$2"; shift 2 ;;
     --notification-channel) CHANNEL="$2"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="$2"; shift 2 ;;
     --apply) APPLY="true"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -24,12 +26,11 @@ echo "metrics=lcs_rag_app_5xx_count,lcs_rag_app_answer_failed,lcs_rag_app_monito
 echo "policies=HTTP 5xx,answer failure spike,analytics event emission failure,pipeline refresh failure,lease contention,row quarantine,producer axis issue,pipeline stale warning,pipeline stale critical"
 if [[ "${APPLY}" != "true" ]]; then exit 0; fi
 [[ "${CHANNEL}" == projects/*/notificationChannels/* ]] || { echo "--notification-channel must be an existing exact resource" >&2; exit 2; }
-[[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || { echo "approved credential is required" >&2; exit 2; }
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && "${GOOGLE_APPLICATION_CREDENTIALS}" != "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]]; then
-  echo "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential" >&2; exit 2
-fi
-export GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}"
+python3 "${ROOT_DIR}/scripts/credential_preflight.py" \
+  --credential-file "${CREDENTIAL_FILE}"
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
+source "${ROOT_DIR}/scripts/credential_shell.sh"
+monitor_install_google_credential_wrappers "${CREDENTIAL_FILE}"
 
 upsert_metric() {
   local name="$1" filter="$2"

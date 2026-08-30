@@ -124,6 +124,46 @@ class TimeWindowResolveTest(unittest.TestCase):
         self.assertEqual((local_start.hour, local_start.minute, local_start.second), (0, 0, 0))
         self.assertEqual(local_start.date(), (before - timedelta(days=6)).date())
 
+    def test_shared_as_of_anchor_makes_separate_preset_windows_identical(self) -> None:
+        settings = _FakeSettings()
+        expected_anchor = datetime.now(timezone.utc).replace(microsecond=123456)
+        anchor = expected_anchor.isoformat().replace("+00:00", "Z")
+
+        first = resolve_time_window(
+            settings=settings,
+            days=7,
+            preset="last_7d",
+            start="",
+            end="",
+            as_of=anchor,
+        )
+        second = resolve_time_window(
+            settings=settings,
+            days=30,
+            preset="last_7d",
+            start="",
+            end="",
+            as_of=anchor,
+        )
+
+        self.assertEqual(first.start_utc, second.start_utc)
+        self.assertEqual(first.end_utc, second.end_utc)
+        self.assertEqual(first.end_utc, expected_anchor)
+
+    def test_invalid_or_stale_or_far_future_as_of_is_rejected(self) -> None:
+        settings = _FakeSettings()
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=6)).isoformat()
+        for anchor in ("not-a-date", stale, "2999-01-01T00:00:00Z"):
+            with self.subTest(anchor=anchor), self.assertRaises(TimeWindowValidationError):
+                resolve_time_window(
+                    settings=settings,
+                    days=7,
+                    preset="last_7d",
+                    start="",
+                    end="",
+                    as_of=anchor,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -55,10 +55,43 @@ class AnalyticsRepository:
             ),
         ]
 
-    def overview_events(self, *, window: MetricsTimeWindow, area_key: str = "") -> list[dict[str, Any]]:
+    def published_roster_snapshot(self, *, published_run_id: str) -> list[dict[str, Any]]:
+        run_id = str(published_run_id or "").strip()
+        if not run_id:
+            raise ValueError("published_run_id is required")
+        return self._run(
+            f"""
+            SELECT
+              snapshot_run_id, snapshot_created_at,
+              roster_id, user_id, name, email, area, area_key, workplace,
+              role, department, mr_experience, label_ids_json, labels_json,
+              is_active, global_scope_enabled, user_map_scope_enabled,
+              is_admin, updated_at, roster_isolated_count,
+              roster_issue_counts_json, roster_diagnostic_fingerprint,
+              global_label_catalog_status, global_label_catalog_issues_json,
+              user_map_label_catalog_status,
+              user_map_label_catalog_issues_json
+            FROM {self._view('user_scope')}
+            WHERE snapshot_run_id = @published_run_id
+            ORDER BY roster_id
+            """,
+            [
+                bigquery.ScalarQueryParameter(
+                    "published_run_id", "STRING", run_id
+                )
+            ],
+        )
+
+    def overview_events(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        published_run_id: str,
+        area_key: str = "",
+    ) -> list[dict[str, Any]]:
         sql = f"""
         SELECT *
-        FROM {self._view('dashboard_events')}(@start_date, @end_date)
+        FROM {self._view('dashboard_events_v2')}(@start_date, @end_date, @published_run_id)
         WHERE question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts
           AND question_ts < @end_ts
@@ -72,14 +105,23 @@ class AnalyticsRepository:
                 bigquery.ScalarQueryParameter("start_ts", "TIMESTAMP", window.start_utc),
                 bigquery.ScalarQueryParameter("end_ts", "TIMESTAMP", window.end_utc),
                 bigquery.ScalarQueryParameter("area_key", "STRING", area_key),
+                bigquery.ScalarQueryParameter(
+                    "published_run_id", "STRING", published_run_id
+                ),
                 *self._partition_parameters(window),
             ],
         )
 
-    def activity_events(self, *, end: datetime, area_key: str = "") -> list[dict[str, Any]]:
+    def activity_events(
+        self,
+        *,
+        end: datetime,
+        published_run_id: str,
+        area_key: str = "",
+    ) -> list[dict[str, Any]]:
         sql = f"""
         SELECT roster_id, question_ts, question_date, area_key, area, role
-        FROM {self._view('dashboard_events')}(@start_date, @end_date)
+        FROM {self._view('dashboard_events_v2')}(@start_date, @end_date, @published_run_id)
         WHERE question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts
           AND question_ts < @end_ts
@@ -101,28 +143,47 @@ class AnalyticsRepository:
                 bigquery.ScalarQueryParameter("start_ts", "TIMESTAMP", window.start_utc),
                 bigquery.ScalarQueryParameter("end_ts", "TIMESTAMP", end),
                 bigquery.ScalarQueryParameter("area_key", "STRING", area_key),
+                bigquery.ScalarQueryParameter(
+                    "published_run_id", "STRING", published_run_id
+                ),
                 *self._partition_parameters(window),
             ],
         )
 
-    def user_metrics(self) -> list[dict[str, Any]]:
-        today = datetime.now(timezone.utc).astimezone(
-            ZoneInfo(self._settings.monitor_timezone)
-        ).date()
+    def user_metrics(
+        self,
+        *,
+        window: MetricsTimeWindow,
+        published_run_id: str,
+    ) -> list[dict[str, Any]]:
+        # ``dashboard_user_list`` contains rolling seven-day fields. Bind its
+        # exact exclusive cutoff to the same immutable window receipt as the
+        # rest of the page; a delayed CSV replay must never include later
+        # events from the same local date.
+        as_of = window.end_utc.astimezone(timezone.utc)
         return self._run(
-            f"SELECT * FROM {self._view('dashboard_user_list')}(@history_start_date, @today) ORDER BY last_active_at DESC",
+            f"SELECT * FROM {self._view('dashboard_user_list_v2')}(@history_start_date, @as_of, @published_run_id) ORDER BY last_active_at DESC",
             [
                 bigquery.ScalarQueryParameter(
                     "history_start_date", "DATE", self._history_start_date()
                 ),
-                bigquery.ScalarQueryParameter("today", "DATE", today),
+                bigquery.ScalarQueryParameter("as_of", "TIMESTAMP", as_of),
+                bigquery.ScalarQueryParameter(
+                    "published_run_id", "STRING", published_run_id
+                ),
             ],
         )
 
-    def user_detail_events(self, *, roster_id: str, window: MetricsTimeWindow) -> list[dict[str, Any]]:
+    def user_detail_events(
+        self,
+        *,
+        roster_id: str,
+        window: MetricsTimeWindow,
+        published_run_id: str,
+    ) -> list[dict[str, Any]]:
         sql = f"""
         SELECT *
-        FROM {self._view('dashboard_events')}(@start_date, @end_date)
+        FROM {self._view('dashboard_events_v2')}(@start_date, @end_date, @published_run_id)
         WHERE roster_id = @roster_id
           AND question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts
@@ -136,6 +197,9 @@ class AnalyticsRepository:
                 bigquery.ScalarQueryParameter("roster_id", "STRING", roster_id),
                 bigquery.ScalarQueryParameter("start_ts", "TIMESTAMP", window.start_utc),
                 bigquery.ScalarQueryParameter("end_ts", "TIMESTAMP", window.end_utc),
+                bigquery.ScalarQueryParameter(
+                    "published_run_id", "STRING", published_run_id
+                ),
                 *self._partition_parameters(window),
             ],
         )

@@ -34,6 +34,26 @@ class _Directory:
                 return dict(user)
         raise AssertionError("unknown roster user")
 
+    def bind_user_identity(
+        self,
+        roster_id: str,
+        *,
+        chat_user_id: str,
+        user_id: str,
+        bound_at,
+        change: dict,
+    ) -> dict:
+        del change
+        current = self.get_user(roster_id)
+        if current is None:
+            raise ValueError("user not found")
+        current.update({
+            "chat_user_id": chat_user_id,
+            "user_id": user_id,
+            "identity_bound_at": bound_at,
+        })
+        return dict(current)
+
 
 class _RootDocument:
     def __init__(self, document_id: str, payload: dict) -> None:
@@ -265,6 +285,182 @@ def test_only_verified_firestore_root_binds_subject_to_roster_email() -> None:
     assert users[0]["user_id"] == "subject-1"
     assert users[0]["chat_user_id"] == "chat-subject-1"
     assert users[1]["user_id"] == ""
+
+
+def test_identity_resolution_isolates_invalid_and_duplicate_roster_rows() -> None:
+    valid = {
+        "roster_id": "roster_valid",
+        "email": "valid@example.com",
+        "user_id": "",
+        "chat_user_id": "",
+        "is_active": True,
+    }
+    users = [
+        valid,
+        {
+            "roster_id": "roster_invalid",
+            "email": "invalid-email",
+            "user_id": "",
+            "chat_user_id": "",
+            "is_active": True,
+        },
+        {
+            "roster_id": "roster_duplicate_a",
+            "email": "duplicate@example.com",
+            "user_id": "",
+            "chat_user_id": "",
+            "is_active": True,
+        },
+        {
+            "roster_id": "roster_duplicate_b",
+            "email": "DUPLICATE@example.com",
+            "user_id": "",
+            "chat_user_id": "",
+            "is_active": True,
+        },
+    ]
+    directory = _Directory(users)
+    projector = FirestoreProjector.__new__(FirestoreProjector)
+    projector._settings = SimpleNamespace(
+        monitor_firestore_chat_collection="chat_users",
+        monitor_firestore_read_timeout_seconds=120,
+    )
+    projector._firestore = _FirestoreRoots(
+        [
+            _RootDocument(
+                "chat-valid",
+                {
+                    "identityVerified": True,
+                    "userEmail": "valid@example.com",
+                    "subject": "subject-valid",
+                },
+            ),
+            _RootDocument(
+                "chat-duplicate",
+                {
+                    "identityVerified": True,
+                    "userEmail": "duplicate@example.com",
+                    "subject": "subject-duplicate",
+                },
+            ),
+        ]
+    )
+    projector._directory = directory
+    projector._manager = UserManagementService(directory=directory)
+
+    assert projector.resolve_chat_identities() == 1
+    assert valid["chat_user_id"] == "chat-valid"
+    assert users[2]["chat_user_id"] == ""
+    assert users[3]["chat_user_id"] == ""
+
+
+def test_scope_projection_skips_one_structurally_invalid_row_without_losing_valid_rows() -> None:
+    valid = {
+        "roster_id": "roster_valid",
+        "user_id": "subject_valid",
+        "name": "有効利用者",
+        "email": "valid@example.com",
+        "area": "関西",
+        "area_key": "関西",
+        "workplace": "大阪",
+        "role": "本社MR",
+        "department": "DM専任",
+        "mr_experience": "8年",
+        "is_active": True,
+    }
+    invalid = {
+        **valid,
+        "roster_id": "roster_invalid",
+        "user_id": "subject_invalid",
+        "email": "invalid@example.com",
+        "area_key": "",
+    }
+    projector = FirestoreProjector.__new__(FirestoreProjector)
+    projector._directory = _Directory([invalid, valid])
+
+    rows = projector.user_scope_rows()
+
+    assert [row["roster_id"] for row in rows] == ["roster_valid"]
+
+
+def test_scope_projection_isolates_normalized_duplicate_email_and_identity_rows() -> None:
+    base = {
+        "user_id": "",
+        "chat_user_id": "",
+        "name": "利用者",
+        "area": "関西",
+        "area_key": "関西",
+        "workplace": "大阪",
+        "role": "本社MR",
+        "department": "DM専任",
+        "mr_experience": "8年",
+        "is_active": True,
+    }
+    users = [
+        {**base, "roster_id": "email_a", "email": " Same@Example.com "},
+        {**base, "roster_id": "email_b", "email": "same@example.COM"},
+        {
+            **base,
+            "roster_id": "identity_a",
+            "email": "identity-a@example.com",
+            "user_id": "shared-subject",
+        },
+        {
+            **base,
+            "roster_id": "identity_b",
+            "email": "identity-b@example.com",
+            "user_id": "shared-subject",
+        },
+        {**base, "roster_id": "safe", "email": "safe@example.com"},
+    ]
+    projector = FirestoreProjector.__new__(FirestoreProjector)
+    projector._directory = _Directory(users)
+
+    rows = projector.user_scope_rows()
+
+    assert [row["roster_id"] for row in rows] == ["safe"]
+
+
+def test_incremental_conversation_projection_isolates_collection_identity_conflicts() -> None:
+    base = {
+        "user_id": "shared-subject",
+        "chat_user_id": "shared-chat-root",
+        "name": "利用者",
+        "area": "関西",
+        "area_key": "関西",
+        "workplace": "大阪",
+        "role": "本社MR",
+        "department": "DM専任",
+        "mr_experience": "8年",
+        "is_active": True,
+    }
+    users = [
+        {**base, "roster_id": "active", "email": "active@example.com"},
+        {
+            **base,
+            "roster_id": "inactive_duplicate",
+            "email": "inactive@example.com",
+            "is_active": False,
+        },
+    ]
+    projector = FirestoreProjector.__new__(FirestoreProjector)
+    projector._directory = _Directory(users)
+
+    class _NoFirestoreRead:
+        def collection(self, _name):
+            raise AssertionError("ambiguous identities must not reach Firestore")
+
+    projector._firestore = _NoFirestoreRead()
+    projector._settings = Settings()
+
+    conversations, citations, issues = projector.changed_conversation_rows(
+        window_start=datetime(2026, 8, 23, tzinfo=timezone.utc),
+        window_end=datetime(2026, 8, 24, tzinfo=timezone.utc),
+    )
+
+    assert conversations == []
+    assert citations == []
+    assert issues == {"roster_duplicate_identity": 1}
 
 
 class _Reference:

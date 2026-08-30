@@ -25,7 +25,10 @@ ANALYTICS_START_AT=""
 FIRESTORE_DATABASE="lcs-user-data"
 ADMIN_CHANGE_COLLECTION="monitor_admin_changes"
 EXPORT_COLLECTION="monitor_export_jobs"
+DEPLOY_RECEIPT_OUTPUT=""
+CONFIRM_ACTIVATE=""
 APPLY="false"
+CREDENTIAL_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,6 +45,9 @@ while [[ $# -gt 0 ]]; do
     --firestore-database) FIRESTORE_DATABASE="$2"; shift 2 ;;
     --admin-change-collection) ADMIN_CHANGE_COLLECTION="$2"; shift 2 ;;
     --export-collection) EXPORT_COLLECTION="$2"; shift 2 ;;
+    --deploy-receipt-output) DEPLOY_RECEIPT_OUTPUT="$2"; shift 2 ;;
+    --confirm-activate) CONFIRM_ACTIVATE="$2"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="$2"; shift 2 ;;
     --apply) APPLY="true"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -66,6 +72,7 @@ if [[ "${STAGE}" == "activate" ]]; then
     exit 2
   }
 fi
+REQUIRED_ACTIVATE_CONFIRM="projects/${PROJECT_ID}/locations/${REGION}/jobs/${JOB_NAME}:deploy:${IMAGE:-<immutable-image>}:${RUNTIME_SERVICE_ACCOUNT:-<refresh-writer-sa>}:${SCHEDULER_INVOKER_SERVICE_ACCOUNT:-<scheduler-invoker-sa>}"
 echo "mode=$([[ "${APPLY}" == "true" ]] && echo apply || echo plan) stage=${STAGE}"
 echo "dataset=${PROJECT_ID}.${DATASET_ID} sink=${SINK_NAME} job=${JOB_NAME}"
 echo "scheduler=${SCHEDULER_REFRESH} schedule=${SCHEDULER_CRON} ttl_collections=${ADMIN_CHANGE_COLLECTION},${EXPORT_COLLECTION}"
@@ -75,16 +82,31 @@ if [[ "${APPLY}" != "true" ]]; then
     "${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}"
   else
     echo "activate=verified_source_views,refresh_job,scheduler analytics_start_at=${ANALYTICS_START_AT}"
+    echo "required_confirmation=${REQUIRED_ACTIVATE_CONFIRM}"
+    echo "deploy_receipt=${DEPLOY_RECEIPT_OUTPUT:-required-on-apply}"
   fi
   exit 0
 fi
-[[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || { echo "approved credential is required" >&2; exit 2; }
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && "${GOOGLE_APPLICATION_CREDENTIALS}" != "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]]; then
-  echo "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential" >&2; exit 2
-fi
-export GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}"
+python3 "${ROOT_DIR}/scripts/credential_preflight.py" \
+  --credential-file "${CREDENTIAL_FILE}"
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
 command -v bq >/dev/null 2>&1 || { echo "bq not found" >&2; exit 2; }
+source "${ROOT_DIR}/scripts/credential_shell.sh"
+monitor_install_google_credential_wrappers "${CREDENTIAL_FILE}"
+if [[ "${STAGE}" == "activate" ]]; then
+  [[ "${CONFIRM_ACTIVATE}" == "${REQUIRED_ACTIVATE_CONFIRM}" ]] || {
+    echo "--confirm-activate must equal ${REQUIRED_ACTIVATE_CONFIRM}" >&2; exit 2;
+  }
+  [[ -n "${DEPLOY_RECEIPT_OUTPUT}" ]] || {
+    echo "--deploy-receipt-output is required on activate apply" >&2; exit 2;
+  }
+  [[ ! -e "${DEPLOY_RECEIPT_OUTPUT}" ]] || {
+    echo "deploy receipt output already exists" >&2; exit 2;
+  }
+  [[ -d "$(dirname "${DEPLOY_RECEIPT_OUTPUT}")" ]] || {
+    echo "deploy receipt output parent does not exist" >&2; exit 2;
+  }
+fi
 if [[ "${STAGE}" == "prepare" ]]; then
   for collection_group in "${ADMIN_CHANGE_COLLECTION}" "${EXPORT_COLLECTION}"; do
     gcloud --project="${PROJECT_ID}" firestore fields ttls update expires_at \
@@ -94,7 +116,7 @@ if [[ "${STAGE}" == "prepare" ]]; then
       --quiet
   done
 
-  "${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${ROOT_DIR}/.venv/bin/python" --apply
+  "${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${ROOT_DIR}/.venv/bin/python" --credential-file "${CREDENTIAL_FILE}" --apply
 
   DESTINATION="bigquery.googleapis.com/projects/${PROJECT_ID}/datasets/${DATASET_ID}"
   FILTER="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${SOURCE_SERVICE}\" AND (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Frequests\" OR (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstdout\" AND (jsonPayload.monitor_event=true OR textPayload=~\"(request_user_metric_json|stream_terminal_json)=\")) OR (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstderr\" AND textPayload=~\"tmcs_stage_latency_json[ =]\"))"
@@ -111,7 +133,12 @@ if [[ "${STAGE}" == "prepare" ]]; then
   exit 0
 fi
 
-for object in monitor_event_source http_request_source pipeline_state pipeline_runs; do
+for object in \
+  monitor_event_source \
+  http_request_source \
+  pipeline_state \
+  pipeline_runs \
+  monitor_contract_revision_ledger; do
   bq --project_id="${PROJECT_ID}" --location="${LOCATION}" show "${PROJECT_ID}:${DATASET_ID}.${object}" >/dev/null || {
     echo "canonical activation prerequisite missing: ${PROJECT_ID}.${DATASET_ID}.${object}" >&2; exit 2;
   }
@@ -161,7 +188,7 @@ gcloud --project="${PROJECT_ID}" run jobs deploy "${JOB_NAME}" \
   --task-timeout="${JOB_TIMEOUT_MINUTES}m"
 
 DEPLOYED_JOB_JSON="$(gcloud --project="${PROJECT_ID}" run jobs describe "${JOB_NAME}" --region="${REGION}" --format=json)"
-JOB_DESCRIPTION_JSON="${DEPLOYED_JOB_JSON}" \
+DEPLOYED_JOB_CONTRACT="$(JOB_DESCRIPTION_JSON="${DEPLOYED_JOB_JSON}" \
   python3 "${ROOT_DIR}/scripts/validate_refresh_job.py" \
     --expected-image "${IMAGE}" \
     --expected-service-account "${RUNTIME_SERVICE_ACCOUNT}" \
@@ -169,7 +196,7 @@ JOB_DESCRIPTION_JSON="${DEPLOYED_JOB_JSON}" \
     --dataset "${DATASET_ID}" \
     --location "${LOCATION}" \
     --source-service "${SOURCE_SERVICE}" \
-    --timeout-minutes "${JOB_TIMEOUT_MINUTES}" >/dev/null
+    --timeout-minutes "${JOB_TIMEOUT_MINUTES}")"
 
 JOB_URI="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${JOB_NAME}:run"
 upsert_scheduler() {
@@ -220,5 +247,54 @@ expected = {
 if actual != expected:
     raise SystemExit(f"three-hour scheduler readback does not match governed policy: {actual}")
 PY
+DEPLOYED_JOB_JSON="${DEPLOYED_JOB_JSON}" \
+DEPLOYED_JOB_CONTRACT="${DEPLOYED_JOB_CONTRACT}" \
+SCHEDULER_READBACK="${SCHEDULER_READBACK}" \
+  python3 - "${DEPLOY_RECEIPT_OUTPUT}" "${PROJECT_ID}" "${REGION}" \
+    "${DATASET_ID}" "${LOCATION}" "${SOURCE_SERVICE}" "${JOB_NAME}" \
+    "${SCHEDULER_REFRESH}" "${IMAGE}" "${RUNTIME_SERVICE_ACCOUNT}" \
+    "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" "${ANALYTICS_START_AT}" <<'PY'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+(
+    output,
+    project,
+    region,
+    dataset,
+    location,
+    source_service,
+    job,
+    scheduler,
+    image,
+    job_service_account,
+    scheduler_service_account,
+    analytics_start_at,
+) = sys.argv[1:]
+payload = {
+    "receipt_type": "monitor_refresh_job_deploy_v1",
+    "project": project,
+    "region": region,
+    "dataset": dataset,
+    "location": location,
+    "source_service": source_service,
+    "job": job,
+    "scheduler": scheduler,
+    "image": image,
+    "expected_job_service_account": job_service_account,
+    "expected_scheduler_service_account": scheduler_service_account,
+    "analytics_start_at": analytics_start_at,
+    "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    "validated_job_contract": json.loads(os.environ["DEPLOYED_JOB_CONTRACT"]),
+    "job_readback": json.loads(os.environ["DEPLOYED_JOB_JSON"]),
+    "scheduler_readback": json.loads(os.environ["SCHEDULER_READBACK"]),
+}
+with open(output, "x", encoding="utf-8") as handle:
+    json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
 echo "refresh_job_candidate=ready image=${IMAGE}"
 echo "three_hour_scheduler=PAUSED schedule=${SCHEDULER_CRON} timezone=${SCHEDULER_TIMEZONE}"
+echo "refresh_job_deploy_receipt=${DEPLOY_RECEIPT_OUTPUT}"

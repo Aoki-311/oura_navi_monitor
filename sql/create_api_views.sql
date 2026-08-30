@@ -1,9 +1,10 @@
 -- One partition-bounded semantic owner for both the overview and user detail.
 -- The answer CTE guarantees at most one answer row per request, so a retry or
 -- duplicate terminal event can never multiply a user's question count.
-CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events`(
+CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events_v2`(
   p_start_date DATE,
-  p_end_date DATE
+  p_end_date DATE,
+  p_run_id STRING
 ) AS (
   WITH canonical_answers AS (
     SELECT *
@@ -17,8 +18,11 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events`(
   ), versioned_questions AS (
     SELECT
       q.*,
-      COALESCE(NULLIF(q.analytics_contract_version, ''), 'request_spec_analytics_v1')
-        AS effective_analytics_contract_version,
+      CASE
+        WHEN q.record_origin IN ('firestore_history', 'legacy_audit_history')
+          THEN COALESCE(NULLIF(q.analytics_contract_version, ''), 'request_spec_analytics_v1')
+        ELSE NULLIF(q.analytics_contract_version, '')
+      END AS effective_analytics_contract_version,
       COALESCE(
         NULLIF(q.product_resolution_status, ''),
         CASE
@@ -32,6 +36,7 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events`(
       ) AS effective_product_resolution_status
     FROM `${PROJECT_ID}.${DATASET_ID}.question_events` q
     WHERE q.question_date BETWEEN p_start_date AND p_end_date
+      AND q.endpoint_class IN ('ask', 'ask_stream')
   ), classification_owned AS (
     SELECT
       q.*,
@@ -212,30 +217,48 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events`(
       AND DATE_ADD(q.question_date, INTERVAL 1 DAY)
   LEFT JOIN `${PROJECT_ID}.${DATASET_ID}.user_scope` scope
     ON q.roster_id = scope.roster_id
+    AND (
+      scope.snapshot_run_id = p_run_id
+      OR (
+        p_run_id IS NULL
+        AND scope.snapshot_run_id IS NULL
+      )
+    )
 );
 
--- The current 80-person user list reads the same question fact owner directly.
+-- The current USER_MAP roster reads the same question fact owner directly.
 -- No user_daily copy is maintained, so a stale aggregate cannot disagree with
 -- the overview or hide historical last-use timestamps.
-CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_user_list`(
+CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_user_list_v2`(
   p_history_start DATE,
-  p_today DATE
+  p_as_of TIMESTAMP,
+  p_run_id STRING
 ) AS (
   WITH current_scope AS (
     SELECT *
     FROM `${PROJECT_ID}.${DATASET_ID}.user_scope`
-    WHERE is_active = TRUE AND user_map_scope_enabled = TRUE
+    WHERE (
+        snapshot_run_id = p_run_id
+        OR (
+          p_run_id IS NULL
+          AND snapshot_run_id IS NULL
+        )
+      )
+      AND is_active = TRUE AND user_map_scope_enabled = TRUE
   ), question_facts AS (
     SELECT roster_id, question_date, question_ts
     FROM `${PROJECT_ID}.${DATASET_ID}.question_events`
-    WHERE question_date BETWEEN p_history_start AND p_today
+    WHERE question_date BETWEEN p_history_start
+      AND DATE(p_as_of, '${MONITOR_TIMEZONE}')
+      AND question_ts < p_as_of
       AND valid_question = TRUE
+      AND endpoint_class IN ('ask', 'ask_stream')
   ), metrics AS (
     SELECT
       roster_id,
       MAX(question_ts) AS last_active_at,
-      COUNT(DISTINCT IF(question_date >= DATE_SUB(p_today, INTERVAL 6 DAY), question_date, NULL)) AS active_days_7,
-      COUNTIF(question_date >= DATE_SUB(p_today, INTERVAL 6 DAY)) AS user_message_count_7
+      COUNT(DISTINCT IF(question_date >= DATE_SUB(DATE(p_as_of, '${MONITOR_TIMEZONE}'), INTERVAL 6 DAY), question_date, NULL)) AS active_days_7,
+      COUNTIF(question_date >= DATE_SUB(DATE(p_as_of, '${MONITOR_TIMEZONE}'), INTERVAL 6 DAY)) AS user_message_count_7
     FROM question_facts
     GROUP BY roster_id
   )
@@ -250,4 +273,72 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_user_lis
     COALESCE(metrics.user_message_count_7, 0) AS user_message_count_7
   FROM current_scope scope
   LEFT JOIN metrics USING (roster_id)
+);
+
+-- Compatibility owners for revisions that still call the original
+-- two-parameter routines. They resolve the current published pointer and may
+-- be retired only after those revisions have drained. New code calls the v2
+-- routines with an already captured run id and never relies on this lookup.
+CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events`(
+  p_start_date DATE,
+  p_end_date DATE
+) AS (
+  SELECT *
+  FROM `${PROJECT_ID}.${DATASET_ID}.dashboard_events_v2`(
+    p_start_date,
+    p_end_date,
+    IF(
+      EXISTS (
+        SELECT 1
+        FROM `${PROJECT_ID}.${DATASET_ID}.user_scope` versioned_scope
+        WHERE versioned_scope.snapshot_run_id = (
+          SELECT published_run_id
+          FROM `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
+          WHERE source = 'published' AND status = 'succeeded'
+          ORDER BY updated_at DESC
+          LIMIT 1
+        )
+      ),
+      (
+        SELECT published_run_id
+        FROM `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
+        WHERE source = 'published' AND status = 'succeeded'
+        ORDER BY updated_at DESC
+        LIMIT 1
+      ),
+      CAST(NULL AS STRING)
+    )
+  )
+);
+
+CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_user_list`(
+  p_history_start DATE,
+  p_as_of TIMESTAMP
+) AS (
+  SELECT *
+  FROM `${PROJECT_ID}.${DATASET_ID}.dashboard_user_list_v2`(
+    p_history_start,
+    p_as_of,
+    IF(
+      EXISTS (
+        SELECT 1
+        FROM `${PROJECT_ID}.${DATASET_ID}.user_scope` versioned_scope
+        WHERE versioned_scope.snapshot_run_id = (
+          SELECT published_run_id
+          FROM `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
+          WHERE source = 'published' AND status = 'succeeded'
+          ORDER BY updated_at DESC
+          LIMIT 1
+        )
+      ),
+      (
+        SELECT published_run_id
+        FROM `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
+        WHERE source = 'published' AND status = 'succeeded'
+        ORDER BY updated_at DESC
+        LIMIT 1
+      ),
+      CAST(NULL AS STRING)
+    )
+  )
 );

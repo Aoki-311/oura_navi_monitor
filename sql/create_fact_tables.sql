@@ -249,21 +249,48 @@ ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.conversation_events`
 SET OPTIONS (partition_expiration_days = NULL);
 
 CREATE TABLE IF NOT EXISTS `${PROJECT_ID}.${DATASET_ID}.user_scope` (
+  snapshot_run_id STRING NOT NULL,
+  snapshot_created_at TIMESTAMP NOT NULL,
   roster_id STRING NOT NULL,
   user_id STRING,
+  name STRING,
+  email STRING,
   area STRING,
   area_key STRING,
   workplace STRING,
   role STRING,
   department STRING,
   mr_experience STRING,
+  label_ids_json STRING,
+  labels_json STRING,
   is_active BOOL,
   global_scope_enabled BOOL,
   user_map_scope_enabled BOOL,
   is_admin BOOL,
-  updated_at TIMESTAMP NOT NULL
+  updated_at TIMESTAMP NOT NULL,
+  roster_isolated_count INT64,
+  roster_issue_counts_json STRING,
+  roster_diagnostic_fingerprint STRING,
+  global_label_catalog_status STRING,
+  global_label_catalog_issues_json STRING,
+  user_map_label_catalog_status STRING,
+  user_map_label_catalog_issues_json STRING
 )
-CLUSTER BY roster_id, user_id, area_key, department;
+CLUSTER BY snapshot_run_id, roster_id, area_key, department;
+ALTER TABLE `${PROJECT_ID}.${DATASET_ID}.user_scope`
+ADD COLUMN IF NOT EXISTS snapshot_run_id STRING,
+ADD COLUMN IF NOT EXISTS snapshot_created_at TIMESTAMP,
+ADD COLUMN IF NOT EXISTS name STRING,
+ADD COLUMN IF NOT EXISTS email STRING,
+ADD COLUMN IF NOT EXISTS label_ids_json STRING,
+ADD COLUMN IF NOT EXISTS labels_json STRING,
+ADD COLUMN IF NOT EXISTS roster_isolated_count INT64,
+ADD COLUMN IF NOT EXISTS roster_issue_counts_json STRING,
+ADD COLUMN IF NOT EXISTS roster_diagnostic_fingerprint STRING,
+ADD COLUMN IF NOT EXISTS global_label_catalog_status STRING,
+ADD COLUMN IF NOT EXISTS global_label_catalog_issues_json STRING,
+ADD COLUMN IF NOT EXISTS user_map_label_catalog_status STRING,
+ADD COLUMN IF NOT EXISTS user_map_label_catalog_issues_json STRING;
 
 -- Privacy-safe, row-level disposition ledger. It stores only hashes and
 -- closed operational codes: never raw event ids, user ids, payloads or text.

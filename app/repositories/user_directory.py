@@ -8,6 +8,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.domain.management_errors import ManagementError, revision_text
+from app.domain.roster_records import normalize_roster_email
 from app.settings import Settings
 
 
@@ -26,6 +27,20 @@ _USER_DOCUMENT_FIELDS = frozenset(
         "department",
         "mr_experience",
         "label_ids",
+        "is_active",
+        "created_at",
+        "updated_at",
+        "updated_by",
+    }
+)
+
+_IDENTITY_FIELDS = ("chat_user_id", "user_id", "identity_bound_at")
+_DOCUMENT_ID_FIELD = "_document_id"
+_LABEL_DOCUMENT_FIELDS = frozenset(
+    {
+        "label_id",
+        "name",
+        "color",
         "is_active",
         "created_at",
         "updated_at",
@@ -63,7 +78,10 @@ class UserDirectoryRepository:
     @staticmethod
     def _user_claim_values(payload: dict[str, Any]) -> set[tuple[str, str]]:
         values: set[tuple[str, str]] = set()
-        email = str(payload.get("email") or "").strip().lower()
+        try:
+            email = normalize_roster_email(payload.get("email"))
+        except ValueError:
+            email = ""
         if email:
             values.add(("email", email))
         for kind, field in (
@@ -82,25 +100,48 @@ class UserDirectoryRepository:
         ).strip().casefold()
 
     @staticmethod
-    def _payload(document: Any) -> dict[str, Any]:
+    def _payload(
+        document: Any,
+        *,
+        preserve_document_id: bool = False,
+    ) -> dict[str, Any]:
         payload = dict(document.to_dict() or {})
+        document_id = str(getattr(document, "id", "") or "").strip()
+        if preserve_document_id and document_id:
+            payload[_DOCUMENT_ID_FIELD] = document_id
         return payload
 
     def list_users(self, *, include_inactive: bool = True) -> list[dict[str, Any]]:
         query = self._user_collection()
         if not include_inactive:
             query = query.where(filter=FieldFilter("is_active", "==", True))
-        users = [self._payload(document) for document in query.stream()]
+        users = [
+            self._payload(document, preserve_document_id=True)
+            for document in query.stream()
+        ]
         return sorted(users, key=lambda item: (str(item.get("area") or ""), str(item.get("name") or "")))
 
     def get_user(self, roster_id: str) -> dict[str, Any] | None:
         document = self._user_collection().document(str(roster_id)).get()
-        return self._payload(document) if document.exists else None
+        return (
+            self._payload(document, preserve_document_id=True)
+            if document.exists
+            else None
+        )
 
     def find_user_by_email(self, email: str) -> dict[str, Any] | None:
-        query = self._user_collection().where(filter=FieldFilter("email", "==", str(email))).limit(1)
-        document = next(iter(query.stream()), None)
-        return self._payload(document) if document is not None else None
+        normalized = normalize_roster_email(email)
+        matches = []
+        for user in self.list_users(include_inactive=True):
+            try:
+                candidate = normalize_roster_email(user.get("email"))
+            except ValueError:
+                continue
+            if candidate == normalized:
+                matches.append(user)
+        if len(matches) > 1:
+            raise ManagementError("duplicate_email", "email identity is ambiguous")
+        return matches[0] if matches else None
 
     def put_user(self, user: dict[str, Any]) -> dict[str, Any]:
         return self._put_user_transaction(user, change=None)
@@ -125,17 +166,45 @@ class UserDirectoryRepository:
         action = str((change or {}).get("action") or "").strip()
         if change is not None and not change_id:
             raise ValueError("change_id is required")
-        new_claim_refs = {
-            (kind, value): self._claim_collection().document(
-                self._claim_document_id(kind, value)
-            )
-            for kind, value in self._user_claim_values(payload)
-        }
 
         @firestore.transactional
-        def commit(transaction: Any) -> None:
+        def commit(transaction: Any) -> dict[str, Any]:
             current = user_ref.get(transaction=transaction)
             current_payload = dict(current.to_dict() or {}) if current.exists else {}
+            if action == "create" and current.exists:
+                raise ValueError("user already exists")
+            if action == "update" and not current.exists:
+                raise ValueError("user not found")
+            if action == "update" and revision_text(current_payload.get("updated_at")) != str(
+                expected_updated_at or ""
+            ).strip():
+                raise ManagementError("update_conflict", "user update conflict")
+
+            effective_payload = dict(payload)
+            if action == "update":
+                current_email = normalize_roster_email(current_payload.get("email"))
+                requested_email = normalize_roster_email(effective_payload.get("email"))
+                identity_is_bound = any(
+                    str(current_payload.get(field) or "").strip()
+                    for field in ("chat_user_id", "user_id")
+                )
+                if identity_is_bound and requested_email != current_email:
+                    raise ManagementError("bound_email", "bound email cannot be changed")
+                # Identity binding has one writer.  An admin payload may have
+                # been assembled before a concurrent bind, so never copy its
+                # stale identity fields back over the transactional snapshot.
+                for field in _IDENTITY_FIELDS:
+                    if field in current_payload:
+                        effective_payload[field] = current_payload[field]
+                    else:
+                        effective_payload.pop(field, None)
+
+            new_claim_refs = {
+                (kind, value): self._claim_collection().document(
+                    self._claim_document_id(kind, value)
+                )
+                for kind, value in self._user_claim_values(effective_payload)
+            }
             old_claim_refs = {
                 (kind, value): self._claim_collection().document(
                     self._claim_document_id(kind, value)
@@ -151,16 +220,8 @@ class UserDirectoryRepository:
                 label_id: self._label_collection().document(label_id).get(
                     transaction=transaction
                 )
-                for label_id in list(payload.get("label_ids") or [])
+                for label_id in list(effective_payload.get("label_ids") or [])
             }
-            if action == "create" and current.exists:
-                raise ValueError("user already exists")
-            if action == "update" and not current.exists:
-                raise ValueError("user not found")
-            if action == "update" and revision_text(current_payload.get("updated_at")) != str(
-                expected_updated_at or ""
-            ).strip():
-                raise ManagementError("update_conflict", "user update conflict")
             existing_label_ids = set(current_payload.get("label_ids") or [])
             for snapshot in label_snapshots.values():
                 label = dict(snapshot.to_dict() or {}) if snapshot.exists else {}
@@ -189,18 +250,18 @@ class UserDirectoryRepository:
                     {
                         "claim_type": kind,
                         "target_id": roster_id,
-                        "updated_at": payload.get("updated_at"),
+                        "updated_at": effective_payload.get("updated_at"),
                     },
                 )
-            transaction.set(user_ref, payload)
+            transaction.set(user_ref, effective_payload)
             if change is not None:
                 transaction.set(
                     self._client.collection(self._changes).document(change_id),
                     dict(change),
                 )
+            return effective_payload
 
-        commit(self._client.transaction())
-        return payload
+        return commit(self._client.transaction())
 
     def put_user_and_change(
         self,
@@ -215,18 +276,115 @@ class UserDirectoryRepository:
             expected_updated_at=expected_updated_at,
         )
 
+    def bind_user_identity(
+        self,
+        roster_id: str,
+        *,
+        chat_user_id: str,
+        user_id: str,
+        bound_at: Any,
+        change: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically patch identity fields without replacing roster fields."""
+
+        resolved_roster_id = str(roster_id or "").strip()
+        resolved_chat_user_id = str(chat_user_id or "").strip()
+        resolved_user_id = str(user_id or "").strip()
+        change_id = str(change.get("change_id") or "").strip()
+        if not all((resolved_roster_id, resolved_chat_user_id, resolved_user_id, change_id)):
+            raise ValueError("roster identity and change_id are required")
+        user_ref = self._user_collection().document(resolved_roster_id)
+        identity_claims = {
+            ("chat_user_id", resolved_chat_user_id): self._claim_collection().document(
+                self._claim_document_id("chat_user_id", resolved_chat_user_id)
+            ),
+            ("user_id", resolved_user_id): self._claim_collection().document(
+                self._claim_document_id("user_id", resolved_user_id)
+            ),
+        }
+
+        @firestore.transactional
+        def commit(transaction: Any) -> dict[str, Any]:
+            current = user_ref.get(transaction=transaction)
+            if not current.exists:
+                raise ValueError("user not found")
+            current_payload = dict(current.to_dict() or {})
+            current_chat_user_id = str(current_payload.get("chat_user_id") or "").strip()
+            current_user_id = str(current_payload.get("user_id") or "").strip()
+            if current_chat_user_id and current_chat_user_id != resolved_chat_user_id:
+                raise ValueError("chat identity cannot be rebound")
+            if current_user_id and current_user_id != resolved_user_id:
+                raise ValueError("user identity cannot be rebound")
+            snapshots = {
+                key: ref.get(transaction=transaction)
+                for key, ref in identity_claims.items()
+            }
+            legacy_identity_snapshots = {
+                (kind, value): transaction.get(
+                    self._user_collection()
+                    .where(filter=FieldFilter(kind, "==", value))
+                    .limit(2)
+                )
+                for kind, value in identity_claims
+            }
+            for (kind, _value), snapshot in snapshots.items():
+                claim = dict(snapshot.to_dict() or {}) if snapshot.exists else {}
+                if snapshot.exists and str(claim.get("target_id") or "") != resolved_roster_id:
+                    raise ManagementError("duplicate_identity", f"{kind} already exists")
+            for (kind, _value), matches in legacy_identity_snapshots.items():
+                for match in matches:
+                    payload = dict(match.to_dict() or {})
+                    matched_roster_id = str(
+                        payload.get("roster_id") or getattr(match, "id", "")
+                    ).strip()
+                    if matched_roster_id != resolved_roster_id:
+                        raise ManagementError(
+                            "duplicate_identity", f"{kind} already exists"
+                        )
+            patch = {
+                "chat_user_id": resolved_chat_user_id,
+                "user_id": resolved_user_id,
+                "identity_bound_at": bound_at,
+                "updated_at": bound_at,
+                "updated_by": str(change.get("updated_by") or current_payload.get("updated_by") or ""),
+            }
+            transaction.update(user_ref, patch)
+            for (kind, _value), ref in identity_claims.items():
+                transaction.set(
+                    ref,
+                    {
+                        "claim_type": kind,
+                        "target_id": resolved_roster_id,
+                        "updated_at": bound_at,
+                    },
+                )
+            transaction.set(
+                self._client.collection(self._changes).document(change_id),
+                dict(change),
+            )
+            return {**current_payload, **patch}
+
+        return commit(self._client.transaction())
+
     def list_labels(self, *, include_inactive: bool = True) -> list[dict[str, Any]]:
         query = self._label_collection()
         if not include_inactive:
             query = query.where(filter=FieldFilter("is_active", "==", True))
-        labels = [self._payload(document) for document in query.stream()]
+        labels = [
+            self._payload(document, preserve_document_id=True)
+            for document in query.stream()
+        ]
         for label in labels:
             label["usage_count"] = self.label_usage_count(str(label.get("label_id") or ""))
         return sorted(labels, key=lambda item: str(item.get("name") or ""))
 
     def get_label(self, label_id: str) -> dict[str, Any] | None:
         document = self._label_collection().document(str(label_id)).get()
-        return self._payload(document) if document.exists else None
+        return (
+            self._payload(document, preserve_document_id=True)
+            if document.exists
+            else None
+        )
 
     def put_label(self, label: dict[str, Any]) -> dict[str, Any]:
         return self._put_label_transaction(label, change=None)
@@ -241,7 +399,11 @@ class UserDirectoryRepository:
         label_id = str(label.get("label_id") or "").strip()
         if not label_id:
             raise ValueError("label_id is required")
-        payload = dict(label)
+        payload = {
+            key: value
+            for key, value in dict(label).items()
+            if key in _LABEL_DOCUMENT_FIELDS
+        }
         name_claim = self._label_claim_value(payload)
         if not name_claim:
             raise ValueError("label name is required")

@@ -30,6 +30,8 @@ function localizedError(status, detail) {
     duplicate_label: "同じ名前のラベルが既に登録されています。",
     bound_email: "LCSと連携済みのメールアドレスは通常編集できません。",
     invalid_roster_value: "名簿項目の選択内容を確認してください。",
+    scope_policy_conflict: "分析対象ポリシーが更新されました。画面を再読込してから、もう一度確認してください。",
+    readback_conflict: "変更は受付済みですが、保存結果を確認できません。",
   };
   if (parsed.code && byCode[parsed.code]) return new ApiError(byCode[parsed.code], { status, code: parsed.code });
   if (status === 401 || status === 403) return new ApiError("アクセス権限を確認できませんでした。", { status, code: "unauthorized" });
@@ -101,23 +103,62 @@ async function requestJson(method, path, { params = {}, body, signal, timeoutMs 
   }
 }
 
+async function requestBlob(path, { signal, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  const url = new URL(path, window.location.origin);
+  if (url.origin !== window.location.origin || !/^\/api\/export\/jobs\/[^/]+\/download$/.test(url.pathname)) {
+    throw new ApiError("CSVのダウンロード先が不正です。", { code: "invalid_download_url" });
+  }
+  const request = requestSignal(signal, Number(timeoutMs || DEFAULT_TIMEOUT_MS));
+  try {
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      cache: "no-store",
+      credentials: "same-origin",
+      signal: request.signal,
+      headers: { Accept: "text/csv" },
+    });
+    if (!response.ok) throw localizedError(response.status, await responseDetail(response));
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.toLowerCase().includes("text/csv")) {
+      throw new ApiError("CSVではない応答を受信しました。", { code: "invalid_csv_response" });
+    }
+    const blob = await response.blob();
+    if (blob.size < 3) throw new ApiError("CSVが空でした。", { code: "empty_csv" });
+    return blob;
+  } catch (error) {
+    if (error?.name === "AbortError" && request.timedOut()) {
+      throw new ApiError("通信がタイムアウトしました。", { status: 408, code: "timeout" });
+    }
+    throw error;
+  } finally {
+    request.cleanup();
+  }
+}
+
 export function isCancellation(error) {
   return error?.name === "AbortError";
 }
 
-export function timeRangeQuery(preset) {
-  return { preset: preset || "last_7d" };
+export function timeRangeQuery(preset, asOf) {
+  return {
+    preset: preset || "last_7d",
+    ...(asOf ? { as_of: asOf } : {}),
+  };
 }
 
 export const getOverview = (params = {}, options = {}) => requestJson("GET", "/api/analytics/overview", { params, ...options });
+export const getOverviewUsers = (params = {}, options = {}) => requestJson("GET", "/api/analytics/overview/users", { params, ...options });
 export const getUsers = (params = {}, options = {}) => requestJson("GET", "/api/analytics/users", { params, ...options });
 export const getRegions = (params = {}, options = {}) => requestJson("GET", "/api/analytics/regions", { params, ...options });
 export const getUserDetail = (rosterId, params = {}, options = {}) => requestJson("GET", `/api/analytics/users/${encodeURIComponent(rosterId)}`, { params, ...options });
 export const getUserConversations = (params = {}, options = {}) => requestJson("GET", "/api/trace/conversations", { params, ...options });
 export const getTraceMessages = (params = {}, options = {}) => requestJson("GET", "/api/trace/messages", { params, ...options });
 export const createExportJob = (body = {}, options = {}) => requestJson("POST", "/api/export/jobs", { body, ...options });
+export const downloadExportJob = (downloadUrl, options = {}) => requestBlob(downloadUrl, options);
+export const deleteExportJob = (jobId, options = {}) => requestJson("DELETE", `/api/export/jobs/${encodeURIComponent(jobId)}`, options);
 export const getManagedUsers = (params = {}, options = {}) => requestJson("GET", "/api/admin/users", { params, ...options });
 export const getManagementMetadata = (options = {}) => requestJson("GET", "/api/admin/metadata", options);
+export const previewManagedUserScope = (body, options = {}) => requestJson("POST", "/api/admin/scope-preview", { body, ...options });
 export const createManagedUser = (body, options = {}) => requestJson("POST", "/api/admin/users", { body, ...options });
 export const updateManagedUser = (rosterId, body, options = {}) => requestJson("PATCH", `/api/admin/users/${encodeURIComponent(rosterId)}`, { body, ...options });
 export const getManagedLabels = (params = {}, options = {}) => requestJson("GET", "/api/admin/labels", { params, ...options });

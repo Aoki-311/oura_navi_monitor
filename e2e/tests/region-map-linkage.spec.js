@@ -78,13 +78,13 @@ test("map zoom starts at 100 percent, supports local pan and returns exactly to 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy();
 });
 
-test("map hover shows business metrics and click filters 69 and 80 scopes with one area key", async ({ page }) => {
+test("map hover shows business metrics and click filters the whole summary with one area key", async ({ page }) => {
   const requests = []; await installApiMocks(page, { requests }); await page.goto("/dashboard");
   const kansai = page.locator('[data-area-key="関西"]').first();
   await kansai.hover(); await expect(page.locator(".mapTooltip")).toContainText("利用率");
   await kansai.click(); await expect(page.locator("#areaChip")).toContainText("関西");
   await expect.poll(() => new URLSearchParams(requests.filter((row) => row.path === "/api/analytics/overview").at(-1)?.search || "").get("area_key")).toBe("関西");
-  await expect.poll(() => new URLSearchParams(requests.filter((row) => row.path === "/api/analytics/users").at(-1)?.search || "").get("area_key")).toBe("関西");
+  await expect.poll(() => new URLSearchParams(requests.filter((row) => row.path === "/api/analytics/overview/users").at(-1)?.search || "").get("area_key")).toBe("関西");
 });
 
 test("map selection works by keyboard and survives reload while browser back restores the full view", async ({ page }) => {

@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from google.cloud import bigquery
+from google.oauth2 import service_account
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -24,6 +24,8 @@ from app.jobs.project_firestore import (
 from app.jobs.rebuild_history import ANSWER_SCHEMA, QUESTION_SCHEMA
 from app.jobs.refresh_analytics import render_publish_sql, render_sql
 from app.settings import get_settings
+from app.refresh_policy import REFRESH_POLICY
+from scripts.credential_preflight import approved_credential_path
 
 
 SQL_FILES = (
@@ -37,20 +39,6 @@ SQL_FILES = (
     "merge_history.sql",
     "check_data_quality.sql",
 )
-
-
-def _credential_guard() -> None:
-    approved = str(
-        os.environ.get("CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE") or ""
-    ).strip()
-    if not approved or not Path(approved).is_file():
-        raise SystemExit("approved CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE is required")
-    configured = str(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
-    if configured and Path(configured).resolve() != Path(approved).resolve():
-        raise SystemExit(
-            "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential"
-        )
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = approved
 
 
 def _analytics_start(settings, fallback: datetime) -> datetime:
@@ -69,6 +57,21 @@ def _publish_parameters(settings) -> list[Any]:
         bigquery.ScalarQueryParameter("run_id", "STRING", "dry-run"),
         bigquery.ScalarQueryParameter("lease_id", "STRING", "dry-run-lease"),
         bigquery.ScalarQueryParameter("expected_watermark", "TIMESTAMP", None),
+        bigquery.ScalarQueryParameter(
+            "scope_policy_version", "STRING", "summary_role_v1"
+        ),
+        bigquery.ScalarQueryParameter(
+            "global_roster_fingerprint", "STRING", "dry-run-global-roster"
+        ),
+        bigquery.ScalarQueryParameter(
+            "global_content_fingerprint", "STRING", "dry-run-global-content"
+        ),
+        bigquery.ScalarQueryParameter(
+            "user_map_roster_fingerprint", "STRING", "dry-run-user-map-roster"
+        ),
+        bigquery.ScalarQueryParameter(
+            "user_map_content_fingerprint", "STRING", "dry-run-user-map-content"
+        ),
         struct_array_parameter("user_scope_rows", USER_SCOPE_SCHEMA, []),
         struct_array_parameter("conversation_rows", CONVERSATION_SCHEMA, []),
         struct_array_parameter("citation_rows", CITATION_SCHEMA, []),
@@ -86,7 +89,7 @@ def _publish_parameters(settings) -> list[Any]:
         bigquery.ScalarQueryParameter(
             "event_future_tolerance_minutes",
             "INT64",
-            int(settings.monitor_event_future_tolerance_minutes),
+            REFRESH_POLICY.event_future_tolerance_minutes,
         ),
     ]
 
@@ -95,6 +98,7 @@ def _parameters(name: str, settings) -> list[Any]:
     today = date.today()
     if name == "merge_firestore_projection.sql":
         return [
+            bigquery.ScalarQueryParameter("run_id", "STRING", "dry-run"),
             struct_array_parameter("user_scope_rows", USER_SCOPE_SCHEMA, []),
             struct_array_parameter("conversation_rows", CONVERSATION_SCHEMA, []),
             struct_array_parameter("citation_rows", CITATION_SCHEMA, []),
@@ -189,10 +193,15 @@ def main() -> int:
         description="Read-only BigQuery validation for the canonical Monitor SQL"
     )
     parser.add_argument("--file", action="append", choices=SQL_FILES)
+    parser.add_argument("--credential-file", required=True)
     args = parser.parse_args()
-    _credential_guard()
+    credentials = service_account.Credentials.from_service_account_file(
+        str(approved_credential_path(args.credential_file))
+    )
     settings = get_settings()
-    client = bigquery.Client(project=settings.monitor_project_id)
+    client = bigquery.Client(
+        project=settings.monitor_project_id, credentials=credentials
+    )
     selected = tuple(args.file or SQL_FILES)
     current_state_results = []
     atomic_publish_added = False

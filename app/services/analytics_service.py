@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import math
+import json
+import logging
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.domain.analytics_tasks import analytics_task, analytics_task_label
+from app.domain.analytics_snapshot import content_fingerprint, roster_fingerprint
 from app.domain.analysis_scopes import (
     AnalysisScope,
-    Department,
+    SCOPE_POLICY_VERSION,
     display_area,
     membership_for,
 )
@@ -17,9 +21,16 @@ from app.domain.question_categories import (
     analytics_question_category,
     question_category_label,
 )
-from app.refresh_policy import next_scheduled_refresh
+from app.domain.label_records import read_canonical_label_collection
+from app.domain.roster_records import (
+    read_canonical_roster_collection,
+)
 from app.settings import Settings
+from app.refresh_policy import REFRESH_POLICY
 from app.time_window import MetricsTimeWindow
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 _ACTIVITY_ORDER = ("high", "middle", "low", "dormant")
@@ -33,6 +44,25 @@ _REPRESENTATIVE_DELIVERY_PROFILES = {
     "complete_delivery_full",
     "runtime_truth_full",
 }
+
+
+@dataclass(frozen=True)
+class _RosterSnapshot:
+    rows: list[dict[str, Any]]
+    isolated_count: int
+    issue_counts: dict[str, int]
+    diagnostic_fingerprint: str
+    labels: list[dict[str, Any]]
+    label_catalog_status: str
+    label_catalog_issues: list[str]
+
+
+class AnalyticsSnapshotConflictError(RuntimeError):
+    """The published pointer and its run-versioned BQ projection disagree."""
+
+    code = "analytics_snapshot_conflict"
+
+
 def _as_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -68,11 +98,72 @@ def _measurement_state(measured_count: int, total_count: int) -> str:
     return "measured"
 
 
-def _measurement_coverage(measured_count: int, total_count: int) -> dict[str, Any]:
+def _historical_measurement_row(item: dict[str, Any]) -> bool:
+    origin = str(item.get("record_origin") or "").strip()
+    contract = str(item.get("analytics_contract_version") or "").strip()
+    return origin in {"firestore_history", "legacy_audit_history"} or contract == "request_spec_analytics_v1"
+
+
+def _measurement_reason(
+    measured_count: int,
+    total_count: int,
+    *,
+    unmeasured_rows: list[dict[str, Any]] | None = None,
+    unmeasured_reasons: list[str] | None = None,
+) -> str:
+    if total_count == 0:
+        return "no_usage"
+    if measured_count >= total_count:
+        return "complete"
+    historical_gap = False
+    current_gap = False
+    no_usage_gap = False
+    for item in unmeasured_rows or []:
+        if _historical_measurement_row(item):
+            historical_gap = True
+        else:
+            current_gap = True
+    for reason in unmeasured_reasons or []:
+        no_usage_gap = no_usage_gap or reason in {
+            "no_usage",
+            "population_without_usage",
+        }
+        historical_gap = historical_gap or reason in {
+            "historical_unavailable",
+            "mixed_history_and_current_gap",
+        }
+        current_gap = current_gap or reason in {
+            "current_data_gap",
+            "mixed_history_and_current_gap",
+        }
+    if no_usage_gap and (historical_gap or current_gap):
+        return "mixed_no_usage_and_data_gap"
+    if no_usage_gap:
+        return "population_without_usage"
+    if not historical_gap and not current_gap:
+        current_gap = True
+    if historical_gap and current_gap:
+        return "mixed_history_and_current_gap"
+    return "historical_unavailable" if historical_gap else "current_data_gap"
+
+
+def _measurement_coverage(
+    measured_count: int,
+    total_count: int,
+    *,
+    unmeasured_rows: list[dict[str, Any]] | None = None,
+    unmeasured_reasons: list[str] | None = None,
+) -> dict[str, Any]:
     return {
         "measuredCount": measured_count,
         "totalCount": total_count,
         "measurementState": _measurement_state(measured_count, total_count),
+        "measurementReason": _measurement_reason(
+            measured_count,
+            total_count,
+            unmeasured_rows=unmeasured_rows,
+            unmeasured_reasons=unmeasured_reasons,
+        ),
     }
 
 
@@ -89,19 +180,23 @@ def _complete_delivery_measurement(rows: list[dict[str, Any]]) -> dict[str, Any]
         )
         in _REPRESENTATIVE_DELIVERY_PROFILES
     ]
+    coverage = _measurement_coverage(
+        len(measured),
+        len(rows),
+        unmeasured_rows=[item for item in rows if item not in measured],
+    )
     return {
         "value": _rate(
             sum(item.get("complete_delivery") is True for item in measured),
             len(measured),
         ),
-        "measuredCount": len(measured),
-        "totalCount": len(rows),
-        "measurementState": _measurement_state(len(measured), len(rows)),
+        **coverage,
     }
 
 
 def _complete_latency_measurement(rows: list[dict[str, Any]]) -> dict[str, Any]:
     values: list[int] = []
+    measured_rows: list[dict[str, Any]] = []
     for item in rows:
         value = item.get("total_latency_ms")
         if value is None:
@@ -112,11 +207,14 @@ def _complete_latency_measurement(rows: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         if resolved >= 0:
             values.append(resolved)
+            measured_rows.append(item)
     return {
         "valueMs": _p95(values),
-        "measuredCount": len(values),
-        "totalCount": len(rows),
-        "measurementState": _measurement_state(len(values), len(rows)),
+        **_measurement_coverage(
+            len(values),
+            len(rows),
+            unmeasured_rows=[item for item in rows if item not in measured_rows],
+        ),
     }
 
 
@@ -321,10 +419,17 @@ def _analytics_quality(
     source_pipeline: dict[str, Any],
 ) -> dict[str, Any]:
     def axis(field: str) -> dict[str, Any]:
-        measured = sum(
-            str(item.get(field) or "").strip() == "measured" for item in rows
+        unmeasured_rows = [
+            item
+            for item in rows
+            if str(item.get(field) or "").strip() != "measured"
+        ]
+        measured = len(rows) - len(unmeasured_rows)
+        coverage = _measurement_coverage(
+            measured,
+            len(rows),
+            unmeasured_rows=unmeasured_rows,
         )
-        coverage = _measurement_coverage(measured, len(rows))
         return {
             **coverage,
             "isolatedCount": len(rows) - measured,
@@ -367,7 +472,10 @@ class AnalyticsService:
     ) -> None:
         self._analytics = analytics
         self._pipeline = pipeline
-        self._directory = directory
+        # User Management owns live Firestore. Analytics intentionally does
+        # not retain that repository: every roster/label read comes from the
+        # run-versioned BigQuery projection selected by pipeline_state.
+        del directory
         self._settings = settings
 
     def _publication_snapshot(self) -> dict[str, Any]:
@@ -451,44 +559,312 @@ class AnalyticsService:
     def _freshness(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         value = _as_datetime(snapshot.get("data_through"))
         now = datetime.now(timezone.utc)
-        common = {
-            "refreshCadenceMinutes": int(
-                self._settings.monitor_refresh_cadence_minutes
-            ),
-            "expectedDelayMinutes": int(
-                self._settings.monitor_refresh_delay_minutes
-            ),
-            "staleAfterMinutes": int(
-                self._settings.monitor_data_freshness_minutes
-            ),
-            "nextPlannedRefreshAt": next_scheduled_refresh(
-                now=now,
-                timezone_name=self._settings.monitor_timezone,
-            )
-            .isoformat()
-            .replace("+00:00", "Z"),
-        }
         if value is None:
-            return {"state": "unknown", "dataThrough": "", **common}
+            return {"state": "unknown", "dataThrough": ""}
         state = (
             "fresh"
-            if (now - value).total_seconds() <= self._settings.monitor_data_freshness_minutes * 60
+            if (now - value).total_seconds() <= REFRESH_POLICY.freshness_stale_after_minutes * 60
             else "stale"
         )
         return {
             "state": state,
             "dataThrough": value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-            **common,
         }
 
-    def _roster(self, scope: AnalysisScope, *, area_key: str = "") -> list[dict[str, Any]]:
-        users = self._directory.list_users(include_inactive=False)
-        return [
-            item
-            for item in users
-            if membership_for(Department(item["department"]), is_active=bool(item["is_active"])).includes(scope)
-            and (not area_key or str(item.get("area_key") or "") == area_key)
+    @staticmethod
+    def _roster_fingerprint(
+        roster: list[dict[str, Any]],
+        *,
+        diagnostic_fingerprint: str = "",
+    ) -> str:
+        return roster_fingerprint(
+            roster,
+            diagnostic_fingerprint=diagnostic_fingerprint,
+        )
+
+    @staticmethod
+    def _content_fingerprint(
+        *,
+        roster_fingerprint: str,
+        roster: list[dict[str, Any]],
+        labels: list[dict[str, Any]],
+        label_catalog_status: str,
+        label_catalog_issues: list[str],
+    ) -> str:
+        return content_fingerprint(
+            roster_fingerprint_value=roster_fingerprint,
+            roster=roster,
+            labels=labels,
+            label_catalog_status=label_catalog_status,
+            label_catalog_issues=label_catalog_issues,
+        )
+
+    def _scope_metadata(
+        self,
+        *,
+        scope: AnalysisScope,
+        snapshot: _RosterSnapshot,
+        publication: dict[str, Any],
+        window: MetricsTimeWindow,
+    ) -> dict[str, str]:
+        roster_fingerprint = self._roster_fingerprint(
+            snapshot.rows,
+            diagnostic_fingerprint=snapshot.diagnostic_fingerprint,
+        )
+        content_fingerprint_value = self._content_fingerprint(
+            roster_fingerprint=roster_fingerprint,
+            roster=snapshot.rows,
+            labels=snapshot.labels,
+            label_catalog_status=snapshot.label_catalog_status,
+            label_catalog_issues=snapshot.label_catalog_issues,
+        )
+        return {
+            "scope": scope.value,
+            "scopePolicyVersion": SCOPE_POLICY_VERSION,
+            "rosterFingerprint": roster_fingerprint,
+            "contentFingerprint": content_fingerprint_value,
+            "publishedRunId": str(publication.get("published_run_id") or ""),
+            "windowStart": window.start_utc.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "windowEnd": window.end_utc.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "windowTimezone": window.timezone,
+        }
+
+    def _roster_snapshot(
+        self,
+        scope: AnalysisScope,
+        *,
+        publication: dict[str, Any],
+    ) -> _RosterSnapshot:
+        published_run_id = str(publication.get("published_run_id") or "").strip()
+        if (
+            not published_run_id
+            or str(publication.get("scope_policy_version") or "").strip()
+            != SCOPE_POLICY_VERSION
+        ):
+            raise AnalyticsSnapshotConflictError(
+                "published analytics scope receipt is unavailable"
+            )
+        raw_rows = self._analytics.published_roster_snapshot(
+            published_run_id=published_run_id
+        )
+        if not isinstance(raw_rows, list) or not raw_rows:
+            raise AnalyticsSnapshotConflictError(
+                "published roster projection is unavailable"
+            )
+
+        def uniform_text(field: str) -> str:
+            values = {str(row.get(field) or "") for row in raw_rows}
+            if len(values) != 1:
+                raise AnalyticsSnapshotConflictError(
+                    f"published roster projection has mixed {field}"
+                )
+            return values.pop()
+
+        if uniform_text("snapshot_run_id") != published_run_id:
+            raise AnalyticsSnapshotConflictError(
+                "published roster projection run does not match pointer"
+            )
+
+        def json_list(value: Any, field: str) -> list[Any]:
+            try:
+                parsed = json.loads(str(value or "[]"))
+            except (TypeError, ValueError) as exc:
+                raise AnalyticsSnapshotConflictError(
+                    f"published roster projection has invalid {field}"
+                ) from exc
+            if not isinstance(parsed, list):
+                raise AnalyticsSnapshotConflictError(
+                    f"published roster projection has invalid {field}"
+                )
+            return parsed
+
+        def json_object(value: Any, field: str) -> dict[str, Any]:
+            try:
+                parsed = json.loads(str(value or "{}"))
+            except (TypeError, ValueError) as exc:
+                raise AnalyticsSnapshotConflictError(
+                    f"published roster projection has invalid {field}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise AnalyticsSnapshotConflictError(
+                    f"published roster projection has invalid {field}"
+                )
+            return parsed
+
+        projected_rows: list[dict[str, Any]] = []
+        labels_by_id: dict[str, dict[str, Any]] = {}
+        for raw in raw_rows:
+            label_ids = [
+                str(value).strip()
+                for value in json_list(raw.get("label_ids_json"), "label_ids_json")
+                if str(value).strip()
+            ]
+            projected_rows.append({**raw, "label_ids": label_ids})
+            for label in json_list(raw.get("labels_json"), "labels_json"):
+                if not isinstance(label, dict):
+                    raise AnalyticsSnapshotConflictError(
+                        "published roster projection has invalid label row"
+                    )
+                label_id = str(label.get("label_id") or "").strip()
+                if not label_id:
+                    raise AnalyticsSnapshotConflictError(
+                        "published roster projection has label without id"
+                    )
+                previous = labels_by_id.get(label_id)
+                if previous is not None and json.dumps(
+                    previous, ensure_ascii=False, sort_keys=True, default=str
+                ) != json.dumps(label, ensure_ascii=False, sort_keys=True, default=str):
+                    raise AnalyticsSnapshotConflictError(
+                        "published roster projection has conflicting label rows"
+                    )
+                labels_by_id[label_id] = label
+
+        records = read_canonical_roster_collection(projected_rows)
+        if len(records.analytics_records) != len(projected_rows):
+            raise AnalyticsSnapshotConflictError(
+                "published roster projection contains invalid rows"
+            )
+        for record in records.analytics_records:
+            value = record.value
+            structural = membership_for(
+                role=value.get("role"),
+                department=value.get("department", ""),
+                is_active=True,
+            )
+            if (
+                value.get("global_scope_enabled") is not structural.global_enabled
+                or value.get("user_map_scope_enabled") is not structural.user_map_enabled
+            ):
+                raise AnalyticsSnapshotConflictError(
+                    "published roster projection has invalid scope flags"
+                )
+
+        isolated_values = {
+            int(row.get("roster_isolated_count") or 0) for row in raw_rows
+        }
+        if len(isolated_values) != 1:
+            raise AnalyticsSnapshotConflictError(
+                "published roster projection has mixed isolation metadata"
+            )
+        isolated_count = isolated_values.pop()
+        issue_counts_raw = uniform_text("roster_issue_counts_json")
+        issue_counts = {
+            str(key): int(value)
+            for key, value in json_object(
+                issue_counts_raw, "roster_issue_counts_json"
+            ).items()
+        }
+        diagnostic_fingerprint = uniform_text("roster_diagnostic_fingerprint")
+        status_field = f"{scope.value}_label_catalog_status"
+        issues_field = f"{scope.value}_label_catalog_issues_json"
+        label_catalog_status = uniform_text(status_field)
+        label_catalog_issues = [
+            str(value)
+            for value in json_list(uniform_text(issues_field), issues_field)
         ]
+        label_records = read_canonical_label_collection(labels_by_id.values())
+        if any(not record.catalog_eligible for record in label_records):
+            raise AnalyticsSnapshotConflictError(
+                "published roster projection contains invalid labels"
+            )
+        label_rows = [record.value for record in label_records]
+        scope_rows = [
+            record.value
+            for record in records.analytics_records
+            if record.value.get("is_active") is True
+            and (
+                record.value.get("global_scope_enabled") is True
+                if scope is AnalysisScope.GLOBAL
+                else record.value.get("user_map_scope_enabled") is True
+            )
+        ]
+        try:
+            roster_receipt = self._roster_fingerprint(
+                scope_rows,
+                diagnostic_fingerprint=diagnostic_fingerprint,
+            )
+            content_receipt = self._content_fingerprint(
+                roster_fingerprint=roster_receipt,
+                roster=scope_rows,
+                labels=label_rows,
+                label_catalog_status=label_catalog_status,
+                label_catalog_issues=label_catalog_issues,
+            )
+        except ValueError as exc:
+            raise AnalyticsSnapshotConflictError(
+                "published roster projection has invalid receipt input"
+            ) from exc
+        if (
+            roster_receipt
+            != str(publication.get(f"{scope.value}_roster_fingerprint") or "")
+            or content_receipt
+            != str(publication.get(f"{scope.value}_content_fingerprint") or "")
+        ):
+            raise AnalyticsSnapshotConflictError(
+                "published roster projection fingerprint does not match pointer"
+            )
+        return _RosterSnapshot(
+            rows=scope_rows,
+            isolated_count=isolated_count,
+            issue_counts=issue_counts,
+            diagnostic_fingerprint=diagnostic_fingerprint,
+            labels=label_rows,
+            label_catalog_status=label_catalog_status,
+            label_catalog_issues=label_catalog_issues,
+        )
+
+    @staticmethod
+    def _content_diagnostics(
+        *,
+        roster: _RosterSnapshot,
+        labels: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        label_diagnostics = labels or {
+            "state": "complete",
+            "labelCatalogStatus": "not_applicable",
+            "issues": [],
+        }
+        roster_issues = [
+            f"roster_{issue}" for issue in sorted(roster.issue_counts)
+        ]
+        issues = list(
+            dict.fromkeys(
+                [*list(label_diagnostics.get("issues") or []), *roster_issues]
+            )
+        )
+        return {
+            "state": (
+                "degraded"
+                if roster.isolated_count
+                or label_diagnostics.get("state") != "complete"
+                or issues
+                else "complete"
+            ),
+            "labelCatalogStatus": str(
+                label_diagnostics.get("labelCatalogStatus") or "not_applicable"
+            ),
+            "rosterStatus": (
+                "partial" if roster.isolated_count else "available"
+            ),
+            "rosterIsolatedCount": roster.isolated_count,
+            "rosterIssueCounts": dict(roster.issue_counts),
+            "issues": issues,
+        }
+
+    @staticmethod
+    def _label_catalog(
+        *,
+        snapshot: _RosterSnapshot,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        issues = list(snapshot.label_catalog_issues)
+        status = snapshot.label_catalog_status
+        return list(snapshot.labels), {
+            "state": (
+                "complete" if status == "available" and not issues else "degraded"
+            ),
+            "labelCatalogStatus": status,
+            "issues": issues,
+        }
 
     def overview(self, *, window: MetricsTimeWindow, area_key: str = "") -> dict[str, Any]:
         publication = self._publication_snapshot()
@@ -498,14 +874,31 @@ class AnalyticsService:
             window,
             data_through=data_through,
         )
-        roster = self._roster(AnalysisScope.GLOBAL, area_key=area_key)
+        scope_snapshot = self._roster_snapshot(
+            AnalysisScope.GLOBAL,
+            publication=publication,
+        )
+        scope_roster = scope_snapshot.rows
+        roster = [
+            item
+            for item in scope_roster
+            if not area_key or str(item.get("area_key") or "") == area_key
+        ]
         roster_ids = {str(item["roster_id"]) for item in roster}
         events = [
-            item for item in self._analytics.overview_events(window=window, area_key=area_key)
+            item for item in self._analytics.overview_events(
+                window=window,
+                area_key=area_key,
+                published_run_id=str(publication["published_run_id"]),
+            )
             if str(item.get("roster_id") or "") in roster_ids and bool(item.get("valid_question", True))
         ]
         activity_events = [
-            item for item in self._analytics.activity_events(end=window.end_utc, area_key=area_key)
+            item for item in self._analytics.activity_events(
+                end=window.end_utc,
+                area_key=area_key,
+                published_run_id=str(publication["published_run_id"]),
+            )
             if str(item.get("roster_id") or "") in roster_ids
         ]
         active_ids = {str(item.get("roster_id") or "") for item in events}
@@ -587,7 +980,18 @@ class AnalyticsService:
             by_role[str(roster_by_id[roster_id].get("role") or "-")][level] += 1
 
         return {
-            "scope": "global",
+            **self._scope_metadata(
+                scope=AnalysisScope.GLOBAL,
+                # A display filter must not change the publication identity.
+                # Otherwise overview/regions/users would reject one another
+                # after an area is selected even though they read one run.
+                snapshot=scope_snapshot,
+                publication=publication,
+                window=window,
+            ),
+            "contentDiagnostics": self._content_diagnostics(
+                roster=scope_snapshot
+            ),
             "scopeUserCount": len(roster),
             "freshness": freshness,
             "analyticsQuality": _analytics_quality(
@@ -612,11 +1016,23 @@ class AnalyticsService:
             ],
             "deviceDistribution": _distribution(devices, {"desktop": "PC", "mobile": "モバイル"}),
             "deviceMeasurement": _measurement_coverage(
-                device_measured_count, len(events)
+                device_measured_count,
+                len(events),
+                unmeasured_rows=[
+                    item
+                    for item in events
+                    if _measured_dimension(item, "device_class") is None
+                ],
             ),
             "modeDistribution": _distribution(modes, {"internal": "社内モード", "websearch": "Web検索モード"}),
             "modeMeasurement": _measurement_coverage(
-                mode_measured_count, len(events)
+                mode_measured_count,
+                len(events),
+                unmeasured_rows=[
+                    item
+                    for item in events
+                    if _measured_dimension(item, "mode") is None
+                ],
             ),
             "usageTrend": [
                 {
@@ -635,7 +1051,11 @@ class AnalyticsService:
                 tasks,
                 {key: analytics_task_label(key) for key in tasks},
             ),
-            "taskMeasurement": _measurement_coverage(task_measured_count, len(events)),
+            "taskMeasurement": _measurement_coverage(
+                task_measured_count,
+                len(events),
+                unmeasured_rows=[item for item in events if not _tasks_for_measured_item(item)],
+            ),
             "activityDistribution": [
                 {"key": key, "label": _ACTIVITY_LABELS[key], "count": activity_counter.get(key, 0), "rate": _rate(activity_counter.get(key, 0), len(roster))}
                 for key in _ACTIVITY_ORDER
@@ -661,7 +1081,11 @@ class AnalyticsService:
                     product_resolved_count,
                     product_candidate_count,
                 ),
-                **_measurement_coverage(product_measured_count, len(events)),
+                **_measurement_coverage(
+                    product_measured_count,
+                    len(events),
+                    unmeasured_rows=[item for item in events if not _product_is_measured(item)],
+                ),
             },
         }
 
@@ -678,11 +1102,19 @@ class AnalyticsService:
         }
 
     def regions(self, *, window: MetricsTimeWindow) -> dict[str, Any]:
-        freshness = self._freshness(self._publication_snapshot())
-        roster = self._roster(AnalysisScope.USER_MAP)
+        publication = self._publication_snapshot()
+        freshness = self._freshness(publication)
+        roster_snapshot = self._roster_snapshot(
+            AnalysisScope.GLOBAL,
+            publication=publication,
+        )
+        roster = roster_snapshot.rows
         roster_ids = {str(item["roster_id"]) for item in roster}
         events = [
-            item for item in self._analytics.overview_events(window=window)
+            item for item in self._analytics.overview_events(
+                window=window,
+                published_run_id=str(publication["published_run_id"]),
+            )
             if str(item.get("roster_id") or "") in roster_ids and bool(item.get("valid_question", True))
         ]
         by_area_users: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -716,37 +1148,76 @@ class AnalyticsService:
             reverse=True,
         )
         return {
+            **self._scope_metadata(
+                scope=AnalysisScope.GLOBAL,
+                snapshot=roster_snapshot,
+                publication=publication,
+                window=window,
+            ),
+            "contentDiagnostics": self._content_diagnostics(
+                roster=roster_snapshot
+            ),
             "scopeUserCount": len(roster),
             "freshness": freshness,
             "regions": regions,
         }
 
-    def users(
+    def _users_for_scope(
         self,
         *,
+        scope: AnalysisScope,
         q: str = "",
         area_key: str = "",
         activity: str = "",
+        sort: str = "last_desc",
         window: MetricsTimeWindow,
     ) -> dict[str, Any]:
-        freshness = self._freshness(self._publication_snapshot())
-        roster = self._roster(AnalysisScope.USER_MAP, area_key=area_key)
-        metrics = {str(item.get("roster_id") or ""): item for item in self._analytics.user_metrics()}
+        publication = self._publication_snapshot()
+        freshness = self._freshness(publication)
+        scope_snapshot = self._roster_snapshot(
+            scope,
+            publication=publication,
+        )
+        scope_roster = scope_snapshot.rows
+        roster = [
+            item
+            for item in scope_roster
+            if not area_key or str(item.get("area_key") or "") == area_key
+        ]
+        metrics = {
+            str(item.get("roster_id") or ""): item
+            for item in self._analytics.user_metrics(
+                window=window,
+                published_run_id=str(publication["published_run_id"]),
+            )
+        }
         activity_times: dict[str, list[datetime]] = defaultdict(list)
         roster_ids = {str(item["roster_id"]) for item in roster}
         for item in self._analytics.activity_events(
             end=window.end_utc,
             area_key=area_key,
+            published_run_id=str(publication["published_run_id"]),
         ):
             roster_id = str(item.get("roster_id") or "")
             timestamp = _as_datetime(item.get("question_ts"))
             if roster_id in roster_ids and timestamp is not None:
                 activity_times[roster_id].append(timestamp)
         completion_by_user: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for item in self._analytics.overview_events(window=window, area_key=area_key):
+        for item in self._analytics.overview_events(
+            window=window,
+            area_key=area_key,
+            published_run_id=str(publication["published_run_id"]),
+        ):
             if str(item.get("roster_id") or "") in roster_ids and bool(item.get("valid_question", True)):
                 completion_by_user[str(item.get("roster_id") or "")].append(item)
-        labels = {str(item.get("label_id") or ""): item for item in self._directory.list_labels(include_inactive=True)}
+        label_rows, label_diagnostics = self._label_catalog(
+            snapshot=scope_snapshot
+        )
+        content_diagnostics = self._content_diagnostics(
+            roster=scope_snapshot,
+            labels=label_diagnostics,
+        )
+        labels = {str(item.get("label_id") or ""): item for item in label_rows}
         keyword = str(q or "").strip().lower()
         rows = []
         for user in roster:
@@ -767,6 +1238,9 @@ class AnalyticsService:
                 "email": user["email"],
                 "area": user["area"],
                 "areaKey": user["area_key"],
+                "workplace": str(user.get("workplace") or ""),
+                "role": str(user.get("role") or ""),
+                "department": str(user.get("department") or ""),
                 "labels": _analytics_labels(list(user.get("label_ids", [])), labels),
                 "lastActiveAt": (
                     parsed_last_active.isoformat()
@@ -779,26 +1253,118 @@ class AnalyticsService:
                 "activity": level,
                 "activityLabel": _ACTIVITY_LABELS[level],
             })
-        rows.sort(key=lambda item: str(item.get("lastActiveAt") or ""), reverse=True)
+        if sort == "name_asc":
+            rows.sort(key=lambda item: (str(item.get("name") or ""), str(item.get("rosterId") or "")))
+        elif sort == "messages_desc":
+            rows.sort(
+                key=lambda item: (
+                    int(item.get("userMessageCount7") or 0),
+                    str(item.get("lastActiveAt") or ""),
+                    str(item.get("name") or ""),
+                ),
+                reverse=True,
+            )
+        elif sort == "success_desc":
+            rows.sort(
+                key=lambda item: (
+                    -1.0
+                    if item["completeDelivery"].get("value") is None
+                    else float(item["completeDelivery"]["value"]),
+                    str(item.get("lastActiveAt") or ""),
+                    str(item.get("name") or ""),
+                ),
+                reverse=True,
+            )
+        else:
+            rows.sort(
+                key=lambda item: (
+                    str(item.get("lastActiveAt") or ""),
+                    str(item.get("name") or ""),
+                ),
+                reverse=True,
+            )
         return {
+            **self._scope_metadata(
+                scope=scope,
+                snapshot=scope_snapshot,
+                publication=publication,
+                window=window,
+            ),
+            "contentDiagnostics": content_diagnostics,
             "scopeUserCount": len(roster),
             "freshness": freshness,
             "users": rows,
         }
 
+    def overview_users(
+        self,
+        *,
+        q: str = "",
+        area_key: str = "",
+        activity: str = "",
+        sort: str = "last_desc",
+        window: MetricsTimeWindow,
+    ) -> dict[str, Any]:
+        return self._users_for_scope(
+            scope=AnalysisScope.GLOBAL,
+            q=q,
+            area_key=area_key,
+            activity=activity,
+            sort=sort,
+            window=window,
+        )
+
+    def users(
+        self,
+        *,
+        q: str = "",
+        area_key: str = "",
+        activity: str = "",
+        sort: str = "last_desc",
+        window: MetricsTimeWindow,
+    ) -> dict[str, Any]:
+        return self._users_for_scope(
+            scope=AnalysisScope.USER_MAP,
+            q=q,
+            area_key=area_key,
+            activity=activity,
+            sort=sort,
+            window=window,
+        )
+
     def user_detail(self, roster_id: str, *, window: MetricsTimeWindow) -> dict[str, Any]:
         publication = self._publication_snapshot()
         freshness = self._freshness(publication)
         data_through = _as_datetime(freshness.get("dataThrough"))
-        user = self._directory.get_user(roster_id)
-        if user is None or not membership_for(
-            Department(user["department"]),
-            is_active=bool(user["is_active"]),
-        ).includes(AnalysisScope.USER_MAP):
+        peer_snapshot = self._roster_snapshot(
+            AnalysisScope.USER_MAP,
+            publication=publication,
+        )
+        peer_roster = peer_snapshot.rows
+        user = next(
+            (
+                item
+                for item in peer_roster
+                if str(item.get("roster_id") or "") == roster_id
+            ),
+            None,
+        )
+        if user is None:
             raise KeyError("user not found")
-        events = self._analytics.user_detail_events(roster_id=roster_id, window=window)
+        events = self._analytics.user_detail_events(
+            roster_id=roster_id,
+            window=window,
+            published_run_id=str(publication["published_run_id"]),
+        )
         events = [item for item in events if bool(item.get("valid_question", True))]
-        labels = {str(item.get("label_id") or ""): item for item in self._directory.list_labels(include_inactive=True)}
+        label_rows, label_diagnostics = self._label_catalog(
+            snapshot=peer_snapshot
+        )
+        content_diagnostics = self._content_diagnostics(
+            roster=peer_snapshot,
+            labels=label_diagnostics,
+        )
+        labels = {str(item.get("label_id") or ""): item for item in label_rows}
         dates = {str(item.get("question_date") or "") for item in events}
         day_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in events:
@@ -851,16 +1417,21 @@ class AnalyticsService:
         user_metric = next(
             (
                 item
-                for item in self._analytics.user_metrics()
+                for item in self._analytics.user_metrics(
+                    window=window,
+                    published_run_id=str(publication["published_run_id"]),
+                )
                 if str(item.get("roster_id") or "") == roster_id
             ),
             {},
         )
         last_active = _as_datetime(user_metric.get("last_active_at"))
-        peer_roster = self._roster(AnalysisScope.USER_MAP)
         peer_ids = {str(item["roster_id"]) for item in peer_roster}
         peer_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for item in self._analytics.overview_events(window=window):
+        for item in self._analytics.overview_events(
+            window=window,
+            published_run_id=str(publication["published_run_id"]),
+        ):
             peer_id = str(item.get("roster_id") or "")
             if peer_id in peer_ids and bool(item.get("valid_question", True)):
                 peer_events[peer_id].append(item)
@@ -873,6 +1444,13 @@ class AnalyticsService:
             data_through=data_through,
         )
         return {
+            **self._scope_metadata(
+                scope=AnalysisScope.USER_MAP,
+                snapshot=peer_snapshot,
+                publication=publication,
+                window=window,
+            ),
+            "contentDiagnostics": content_diagnostics,
             "freshness": freshness,
             "analyticsQuality": _analytics_quality(
                 events,
@@ -895,6 +1473,7 @@ class AnalyticsService:
                 "questions": len(events),
                 "questionsPerActiveDay": _rate(len(events), len(dates)),
                 "completeDelivery": _complete_delivery_measurement(events),
+                "p95Latency": _complete_latency_measurement(events),
             },
             "comparisons": comparisons,
             "trend": [
@@ -921,27 +1500,49 @@ class AnalyticsService:
                     product_resolved_count,
                     product_candidate_count,
                 ),
-                **_measurement_coverage(product_measured_count, len(events)),
+                **_measurement_coverage(
+                    product_measured_count,
+                    len(events),
+                    unmeasured_rows=[item for item in events if not _product_is_measured(item)],
+                ),
             },
             "tasks": _distribution(
                 tasks,
                 {key: analytics_task_label(key) for key in tasks},
             ),
-            "taskMeasurement": _measurement_coverage(task_measured_count, len(events)),
+            "taskMeasurement": _measurement_coverage(
+                task_measured_count,
+                len(events),
+                unmeasured_rows=[item for item in events if not _tasks_for_measured_item(item)],
+            ),
             "questionCategories": _distribution(
                 categories,
                 {key: question_category_label(key) for key in categories},
             ),
             "questionCategoryMeasurement": _measurement_coverage(
-                len(measured_category_rows), len(events)
+                len(measured_category_rows),
+                len(events),
+                unmeasured_rows=[item for item in events if not _classification_is_measured(item)],
             ),
             "modes": _distribution(modes, {"internal": "社内モード", "websearch": "Web検索モード"}),
             "modeMeasurement": _measurement_coverage(
-                len(measured_modes), len(events)
+                len(measured_modes),
+                len(events),
+                unmeasured_rows=[
+                    item
+                    for item in events
+                    if _measured_dimension(item, "mode") is None
+                ],
             ),
             "devices": _distribution(devices, {"desktop": "PC", "mobile": "モバイル"}),
             "deviceMeasurement": _measurement_coverage(
-                len(measured_devices), len(events)
+                len(measured_devices),
+                len(events),
+                unmeasured_rows=[
+                    item
+                    for item in events
+                    if _measured_dimension(item, "device_class") is None
+                ],
             ),
         }
 
@@ -967,13 +1568,22 @@ class AnalyticsService:
             for item in peers
         ]
         complete_rates: list[float] = []
+        unmeasured_reasons: list[str] = []
         for item in peers:
             peer_rows = events.get(str(item["roster_id"]), [])
             if not peer_rows:
+                unmeasured_reasons.append("no_usage")
                 continue
             measurement = _complete_delivery_measurement(peer_rows)
             if measurement["value"] is not None:
                 complete_rates.append(float(measurement["value"]))
+            else:
+                unmeasured_reasons.append(str(measurement["measurementReason"]))
+        complete_delivery_coverage = _measurement_coverage(
+            len(complete_rates),
+            len(peers),
+            unmeasured_reasons=unmeasured_reasons,
+        )
         return {
             "label": label,
             "peerCount": len(peers),
@@ -985,10 +1595,6 @@ class AnalyticsService:
                     if complete_rates
                     else None
                 ),
-                "measuredCount": len(complete_rates),
-                "totalCount": len(peers),
-                "measurementState": _measurement_state(
-                    len(complete_rates), len(peers)
-                ),
+                **complete_delivery_coverage,
             },
         }

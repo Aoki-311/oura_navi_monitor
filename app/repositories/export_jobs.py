@@ -22,9 +22,31 @@ class ExportJobRepository:
         self._client.collection(self._collection).document(job_id).set(dict(job))
         return dict(job)
 
+    def put_idempotent(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Create one export per deterministic job id, replacing only an expired job."""
+
+        job_id = str(job.get("job_id") or "").strip()
+        if not job_id:
+            raise ValueError("job_id is required")
+        reference = self._client.collection(self._collection).document(job_id)
+
+        @firestore.transactional
+        def commit(transaction: Any) -> dict[str, Any]:
+            snapshot = reference.get(transaction=transaction)
+            current = dict(snapshot.to_dict() or {}) if snapshot.exists else None
+            if current is not None and not self.is_expired(current):
+                return current
+            transaction.set(reference, dict(job))
+            return dict(job)
+
+        return commit(self._client.transaction())
+
     def get(self, job_id: str) -> dict[str, Any] | None:
         document = self._client.collection(self._collection).document(str(job_id)).get()
         return dict(document.to_dict() or {}) if document.exists else None
+
+    def delete(self, job_id: str) -> None:
+        self._client.collection(self._collection).document(str(job_id)).delete()
 
     def cleanup_expired(self, *, limit: int = 200) -> int:
         query = (

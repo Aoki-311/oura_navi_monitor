@@ -3,13 +3,20 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from google.cloud import bigquery
+from google.oauth2 import service_account
+
+from app.domain.analysis_scopes import SCOPE_POLICY_VERSION
+
+try:
+    from scripts.credential_preflight import approved_credential_path
+except ModuleNotFoundError:
+    from credential_preflight import approved_credential_path
 
 
 REQUIRED_TABLE_COLUMNS: dict[str, set[str]] = {
@@ -17,6 +24,11 @@ REQUIRED_TABLE_COLUMNS: dict[str, set[str]] = {
         "source",
         "data_through",
         "published_run_id",
+        "scope_policy_version",
+        "global_roster_fingerprint",
+        "global_content_fingerprint",
+        "user_map_roster_fingerprint",
+        "user_map_content_fingerprint",
         "status",
         "lease_run_id",
         "lease_acquired_at",
@@ -80,13 +92,33 @@ REQUIRED_TABLE_COLUMNS: dict[str, set[str]] = {
         "complete_delivery",
     },
     "user_scope": {
+        "snapshot_run_id",
+        "snapshot_created_at",
         "roster_id",
+        "name",
+        "email",
+        "area",
+        "area_key",
+        "workplace",
+        "role",
+        "department",
+        "mr_experience",
+        "label_ids_json",
+        "labels_json",
         "global_scope_enabled",
         "user_map_scope_enabled",
+        "roster_diagnostic_fingerprint",
+        "global_label_catalog_status",
+        "user_map_label_catalog_status",
     },
 }
 REQUIRED_SOURCE_VIEWS = {"monitor_event_source", "http_request_source"}
-REQUIRED_API_ROUTINES = {"dashboard_events", "dashboard_user_list"}
+REQUIRED_API_ROUTINES = {
+    "dashboard_events",
+    "dashboard_user_list",
+    "dashboard_events_v2",
+    "dashboard_user_list_v2",
+}
 API_READ_MAXIMUM_BYTES = 67_108_864
 REQUIRED_API_OUTPUT_COLUMNS: dict[str, set[str]] = {
     "dashboard_events": {
@@ -128,6 +160,12 @@ REQUIRED_API_OUTPUT_COLUMNS: dict[str, set[str]] = {
         "user_message_count_7",
     },
 }
+REQUIRED_API_OUTPUT_COLUMNS["dashboard_events_v2"] = set(
+    REQUIRED_API_OUTPUT_COLUMNS["dashboard_events"]
+)
+REQUIRED_API_OUTPUT_COLUMNS["dashboard_user_list_v2"] = set(
+    REQUIRED_API_OUTPUT_COLUMNS["dashboard_user_list"]
+)
 
 
 def _iso(value: Any) -> str:
@@ -242,6 +280,9 @@ def verify_data_contract(
         client.query(
             f"""
             SELECT source, status, published_run_id, data_through,
+                   scope_policy_version,
+                   global_roster_fingerprint, global_content_fingerprint,
+                   user_map_roster_fingerprint, user_map_content_fingerprint,
                    lease_run_id, lease_expires_at
             FROM `{dataset_ref}.pipeline_state`
             WHERE source = 'published'
@@ -262,12 +303,59 @@ def verify_data_contract(
         raise ValueError("pipeline_state published row is not succeeded")
     if not str(published.get("published_run_id") or ""):
         raise ValueError("pipeline_state published row has no atomic run id")
+    if str(published.get("scope_policy_version") or "") != SCOPE_POLICY_VERSION:
+        raise ValueError("pipeline_state published row has no current scope policy")
+    for field in (
+        "global_roster_fingerprint",
+        "global_content_fingerprint",
+        "user_map_roster_fingerprint",
+        "user_map_content_fingerprint",
+    ):
+        if not str(published.get(field) or "").strip():
+            raise ValueError(f"pipeline_state published row has no {field}")
     if not _iso(published.get("data_through")):
         raise ValueError("pipeline_state published row has no watermark")
     if published.get("lease_run_id") or published.get("lease_expires_at"):
         raise ValueError("pipeline_state still has an active or unreleased lease")
 
     data_through = _as_utc_datetime(published["data_through"])
+    published_run_id = str(published["published_run_id"])
+    projection_rows = list(
+        client.query(
+            f"""
+            SELECT
+              COUNT(*) AS scope_row_count,
+              COUNTIF(snapshot_run_id != @published_run_id) AS wrong_run_count,
+              COUNTIF(snapshot_created_at IS NULL) AS missing_created_at_count,
+              COUNTIF(NULLIF(roster_diagnostic_fingerprint, '') IS NULL)
+                AS missing_diagnostic_count
+            FROM `{dataset_ref}.user_scope`
+            WHERE snapshot_run_id = @published_run_id
+            """,
+            job_config=bigquery.QueryJobConfig(
+                maximum_bytes_billed=10_485_760,
+                use_query_cache=False,
+                query_parameters=[
+                    bigquery.ScalarQueryParameter(
+                        "published_run_id", "STRING", published_run_id
+                    )
+                ],
+            ),
+            location=location,
+        ).result()
+    )
+    projection = _row_values(projection_rows[0]) if len(projection_rows) == 1 else {}
+    if int(projection.get("scope_row_count") or 0) <= 0:
+        raise ValueError("published user_scope projection is empty")
+    if any(
+        int(projection.get(field) or 0) != 0
+        for field in (
+            "wrong_run_count",
+            "missing_created_at_count",
+            "missing_diagnostic_count",
+        )
+    ):
+        raise ValueError("published user_scope projection is internally inconsistent")
     end_date = data_through.date()
     start_date = end_date - timedelta(days=1)
     api_reads = {
@@ -292,16 +380,65 @@ def verify_data_contract(
             client,
             sql=f"""
                 SELECT *
-                FROM `{dataset_ref}.dashboard_user_list`(@start_date, @end_date)
+                FROM `{dataset_ref}.dashboard_user_list`(@history_start_date, @as_of)
                 ORDER BY last_active_at DESC
+                LIMIT 1
+            """,
+            parameters=[
+                bigquery.ScalarQueryParameter(
+                    "history_start_date", "DATE", start_date
+                ),
+                bigquery.ScalarQueryParameter(
+                    "as_of", "TIMESTAMP", data_through
+                ),
+            ],
+            required_columns=REQUIRED_API_OUTPUT_COLUMNS["dashboard_user_list"],
+            routine_name="dashboard_user_list",
+            location=location,
+        ),
+        "dashboard_events_v2": _read_api_routine(
+            client,
+            sql=f"""
+                SELECT *
+                FROM `{dataset_ref}.dashboard_events_v2`(
+                  @start_date, @end_date, @published_run_id
+                )
+                WHERE question_date BETWEEN @start_date AND @end_date
+                ORDER BY question_ts DESC
                 LIMIT 1
             """,
             parameters=[
                 bigquery.ScalarQueryParameter("start_date", "DATE", start_date),
                 bigquery.ScalarQueryParameter("end_date", "DATE", end_date),
+                bigquery.ScalarQueryParameter(
+                    "published_run_id", "STRING", published_run_id
+                ),
             ],
-            required_columns=REQUIRED_API_OUTPUT_COLUMNS["dashboard_user_list"],
-            routine_name="dashboard_user_list",
+            required_columns=REQUIRED_API_OUTPUT_COLUMNS["dashboard_events_v2"],
+            routine_name="dashboard_events_v2",
+            location=location,
+        ),
+        "dashboard_user_list_v2": _read_api_routine(
+            client,
+            sql=f"""
+                SELECT *
+                FROM `{dataset_ref}.dashboard_user_list_v2`(
+                  @history_start_date, @as_of, @published_run_id
+                )
+                ORDER BY last_active_at DESC
+                LIMIT 1
+            """,
+            parameters=[
+                bigquery.ScalarQueryParameter(
+                    "history_start_date", "DATE", start_date
+                ),
+                bigquery.ScalarQueryParameter("as_of", "TIMESTAMP", data_through),
+                bigquery.ScalarQueryParameter(
+                    "published_run_id", "STRING", published_run_id
+                ),
+            ],
+            required_columns=REQUIRED_API_OUTPUT_COLUMNS["dashboard_user_list_v2"],
+            routine_name="dashboard_user_list_v2",
             location=location,
         ),
     }
@@ -319,6 +456,8 @@ def verify_data_contract(
         "apiRoutinesReadable": True,
         "publishedStateReadable": True,
         "publishedRunId": str(published["published_run_id"]),
+        "scopePolicyVersion": str(published["scope_policy_version"]),
+        "scopeProjectionRowCount": int(projection["scope_row_count"]),
         "dataThrough": _iso(published["data_through"]),
         "tables": verified_tables,
         "sourceViews": verified_views,
@@ -341,6 +480,7 @@ def main() -> int:
     parser.add_argument("--expected-git-sha", required=True)
     parser.add_argument("--expected-image", required=True)
     parser.add_argument("--receipt-output", required=True)
+    parser.add_argument("--credential-file")
     parser.add_argument("--verify", action="store_true")
     args = parser.parse_args()
 
@@ -365,18 +505,12 @@ def main() -> int:
     if not args.verify:
         return 0
 
-    cloud_credential = os.environ.get("CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", "")
-    application_credential = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
-    if not cloud_credential or not Path(cloud_credential).is_file():
-        raise SystemExit("approved credential is required")
-    if application_credential and application_credential != cloud_credential:
-        raise SystemExit(
-            "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential"
-        )
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = cloud_credential
+    credentials = service_account.Credentials.from_service_account_file(
+        str(approved_credential_path(args.credential_file or ""))
+    )
 
     receipt = verify_data_contract(
-        bigquery.Client(project=args.project),
+        bigquery.Client(project=args.project, credentials=credentials),
         project=args.project,
         dataset=args.dataset,
         location=args.location,

@@ -1,4 +1,6 @@
-import { analyticsMetadataModel, coverageModel, measurementModel } from "./overviewAdapter.js";
+import { analyticsMetadataModel, coverageModel, measurementModel, scopeMetadataModel } from "./overviewAdapter.js";
+import { isSummaryRole } from "../contracts/analysisScopes.js";
+import { contentDiagnosticsModel as parseContentDiagnostics } from "./contentDiagnosticsAdapter.js";
 
 const ACTIVITY_KEYS = new Set(["high", "middle", "low", "dormant"]);
 
@@ -24,7 +26,7 @@ function requiredArray(payload, key, label) {
 
 function requiredNumber(value, key, { nullable = false, integer = false } = {}) {
   if (nullable && value == null) return null;
-  if (typeof value !== "number" || !Number.isFinite(value) || (integer && !Number.isInteger(value))) throw new Error(`${key}を確認できません。`);
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || (integer && !Number.isInteger(value))) throw new Error(`${key}を確認できません。`);
   return value;
 }
 
@@ -44,15 +46,29 @@ function labels(value) {
   });
 }
 
-export function usersModel(payload) {
+export function contentDiagnosticsModel(payload) {
+  return parseContentDiagnostics(payload);
+}
+
+export function usersModel(payload, expectedScope = "user_map") {
   if (!payload || !Array.isArray(payload.users)) throw new Error("ユーザーデータの形式が不正です。");
+  const scopeMetadata = scopeMetadataModel(payload, expectedScope);
   const metadata = analyticsMetadataModel(payload);
-  const scopeUserCount = Number.isInteger(payload.scopeUserCount) && payload.scopeUserCount >= 0
+  metadata.metadataIssues.push(...scopeMetadata.issues);
+  let contentDiagnostics = contentDiagnosticsModel(payload);
+  let scopeUserCount = Number.isInteger(payload.scopeUserCount) && payload.scopeUserCount >= 0
     ? payload.scopeUserCount
     : null;
   if (scopeUserCount == null) metadata.metadataIssues.push("ユーザー対象者数を確認できません。");
   const issues = [];
+  let isolatedSummaryRoleCount = 0;
   const users = payload.users.flatMap((row, index) => {
+    if (expectedScope === "global" && !isSummaryRole(row?.role)) {
+      isolatedSummaryRoleCount += 1;
+      const role = typeof row?.role === "string" && row.role.trim() ? row.role : "未取得";
+      issues.push(`${index + 1}行目を表示できません: 全体サマリー対象外の役割「${role}」を検出しました。`);
+      return [];
+    }
     try {
       const rowIssues = [];
       const activity = ACTIVITY_KEYS.has(row?.activity) ? row.activity : null;
@@ -60,17 +76,28 @@ export function usersModel(payload) {
       const activeDays7 = Number.isInteger(row?.activeDays7) && row.activeDays7 >= 0 ? row.activeDays7 : null;
       const userMessageCount7 = Number.isInteger(row?.userMessageCount7) && row.userMessageCount7 >= 0 ? row.userMessageCount7 : null;
       if (activeDays7 == null || userMessageCount7 == null) rowIssues.push("直近7日の利用値は未計測です。");
+      const workplace = optionalText(row?.workplace);
+      const role = optionalText(row?.role);
+      const department = optionalText(row?.department);
+      if (!workplace || !role || !department) rowIssues.push("旧形式のため役割・部門・勤務地の一部を確認できません。");
+      let completeDelivery = null;
+      try { completeDelivery = measurementModel(row?.completeDelivery); } catch (error) {
+        rowIssues.push(`回答成功率: ${error?.message || "確認できません。"}`);
+      }
       const item = {
         rosterId: requiredText(row?.rosterId, "ユーザーID"),
         name: requiredText(row?.name, "社員名"),
         email: requiredText(row?.email, "メール"),
         area: requiredText(row?.area, "エリア"),
         areaKey: requiredText(row?.areaKey, "エリアキー"),
+        workplace: workplace || "未取得",
+        role: role || "未取得",
+        department: department || "未取得",
         labels: labels(row?.labels),
         lastActiveAt: optionalText(row?.lastActiveAt),
         activeDays7,
         userMessageCount7,
-        completeDelivery: measurementModel(row?.completeDelivery),
+        completeDelivery,
         activity,
         activityLabel: activity ? requiredText(row?.activityLabel, "活性度ラベル") : "未測定",
         issues: rowIssues,
@@ -82,37 +109,89 @@ export function usersModel(payload) {
       return [];
     }
   });
-  return { scopeUserCount, ...metadata, users, issues };
+  if (isolatedSummaryRoleCount > 0) {
+    const roleNotice = `全体サマリー対象外の役割を含む ${isolatedSummaryRoleCount}件のユーザー行を除外しました。残りの利用状況は表示しています。`;
+    const priorRosterIsolatedCount = Number.isInteger(contentDiagnostics.rosterIsolatedCount)
+      ? contentDiagnostics.rosterIsolatedCount
+      : 0;
+    contentDiagnostics = {
+      ...contentDiagnostics,
+      state: "degraded",
+      issues: [...new Set([...contentDiagnostics.issues, "unexpected_summary_role"])],
+      notice: [contentDiagnostics.notice, roleNotice].filter(Boolean).join(" "),
+      exportAvailable: false,
+      rosterStatus: "partial",
+      rosterIsolatedCount: contentDiagnostics.rosterDiagnosticsAvailable
+        ? priorRosterIsolatedCount + isolatedSummaryRoleCount
+        : null,
+      rosterIssueCounts: {
+        ...contentDiagnostics.rosterIssueCounts,
+        unexpected_summary_role: isolatedSummaryRoleCount,
+      },
+      isolatedSummaryRoleCount,
+    };
+    scopeUserCount = null;
+    metadata.metadataIssues.push("全体サマリー対象人数を確認できません。");
+  }
+  if (contentDiagnostics.notice) metadata.metadataIssues.push(contentDiagnostics.notice);
+  return { scopeUserCount, scopeMetadata, contentDiagnostics, ...metadata, users, issues };
 }
 
 export function userDetailEnvelope(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("ユーザー分析データの形式が不正です。");
-  return { ...payload, ...analyticsMetadataModel(payload, { includeQuality: true }) };
+  const scopeMetadata = scopeMetadataModel(payload, "user_map");
+  const metadata = analyticsMetadataModel(payload, { includeQuality: true });
+  metadata.metadataIssues.push(...scopeMetadata.issues);
+  const contentDiagnostics = contentDiagnosticsModel(payload);
+  if (contentDiagnostics.notice) metadata.metadataIssues.push(contentDiagnostics.notice);
+  return {
+    ...payload,
+    scopeMetadata,
+    contentDiagnostics,
+    ...metadata,
+  };
 }
 
 export function userProfileModel(payload) {
   const profile = requiredObject(payload, "profile", "個人プロフィール");
+  const issues = [];
+  const legacyText = (value, label) => {
+    try { return requiredText(value, label); } catch (error) {
+      issues.push(`${label}: ${error?.message || "確認できません。"}`);
+      return "未取得";
+    }
+  };
   return {
     rosterId: requiredText(profile.rosterId, "ユーザーID"),
     name: requiredText(profile.name, "社員名"),
     email: requiredText(profile.email, "メール"),
-    area: requiredText(profile.area, "エリア"),
-    workplace: requiredText(profile.workplace, "勤務地"),
-    role: requiredText(profile.role, "役割"),
-    department: requiredText(profile.department, "部門"),
-    mrExperience: requiredText(profile.mrExperience, "MR経験"),
+    area: legacyText(profile.area, "エリア"),
+    workplace: legacyText(profile.workplace, "勤務地"),
+    role: legacyText(profile.role, "役割"),
+    department: legacyText(profile.department, "部門"),
+    mrExperience: legacyText(profile.mrExperience, "MR経験"),
     labels: labels(profile.labels),
+    issues,
   };
 }
 
 export function userSummaryModel(payload) {
   const summary = requiredObject(payload, "summary", "個人利用サマリー");
+  const issues = [];
+  const safe = (label, create) => {
+    try { return create(); } catch (error) {
+      issues.push(`${label}: ${error?.message || "確認できません。"}`);
+      return null;
+    }
+  };
   return {
     lastActiveAt: optionalText(summary.lastActiveAt),
-    activeDays: requiredNumber(summary.activeDays, "利用日数", { integer: true }),
-    questions: requiredNumber(summary.questions, "質問数", { integer: true }),
-    questionsPerActiveDay: requiredNumber(summary.questionsPerActiveDay, "1日平均質問", { nullable: true }),
-    completeDelivery: measurementModel(summary.completeDelivery),
+    activeDays: safe("利用日数", () => requiredNumber(summary.activeDays, "利用日数", { integer: true })),
+    questions: safe("質問数", () => requiredNumber(summary.questions, "質問数", { integer: true })),
+    questionsPerActiveDay: safe("1日平均質問", () => requiredNumber(summary.questionsPerActiveDay, "1日平均質問", { nullable: true })),
+    completeDelivery: safe("回答成功率", () => measurementModel(summary.completeDelivery)),
+    p95Latency: safe("P95応答時間", () => measurementModel(summary.p95Latency, { latency: true })),
+    issues,
   };
 }
 
@@ -127,17 +206,40 @@ function comparison(row) {
 }
 
 export function userComparisonsModel(payload) {
-  const comparisons = requiredObject(payload, "comparisons", "比較分析");
-  return { area: comparison(comparisons.area), role: comparison(comparisons.role) };
+  const issues = [];
+  let comparisons = null;
+  try { comparisons = requiredObject(payload, "comparisons", "比較分析"); } catch (error) {
+    issues.push(error?.message || "比較分析を確認できません。");
+  }
+  const safe = (label, value) => {
+    try { return comparison(value); } catch (error) {
+      issues.push(`${label}: ${error?.message || "確認できません。"}`);
+      return null;
+    }
+  };
+  return {
+    area: comparisons ? safe("地域比較", comparisons.area) : null,
+    role: comparisons ? safe("役割比較", comparisons.role) : null,
+    issues,
+  };
 }
 
 export function userTrendModel(payload) {
-  return requiredArray(payload, "trend", "個人利用推移").map((row) => ({
-    date: requiredText(row?.date, "日付"),
-    questions: requiredNumber(row?.questions, "質問数", { integer: true }),
-    completeDelivery: measurementModel(row?.completeDelivery),
-    isPartial: requiredBoolean(row?.isPartial, "個人利用推移の途中集計状態"),
-  }));
+  const issues = [];
+  const rows = requiredArray(payload, "trend", "個人利用推移").flatMap((row, index) => {
+    try {
+      return [{
+        date: requiredText(row?.date, "日付"),
+        questions: requiredNumber(row?.questions, "質問数", { integer: true }),
+        completeDelivery: measurementModel(row?.completeDelivery),
+        isPartial: requiredBoolean(row?.isPartial, "個人利用推移の途中集計状態"),
+      }];
+    } catch (error) {
+      issues.push(`${index + 1}行目: ${error?.message || "確認できません。"}`);
+      return [];
+    }
+  });
+  return { rows, issues };
 }
 
 function distributionRows(rows) {
@@ -149,24 +251,49 @@ function distributionRows(rows) {
   }));
 }
 
+function tolerantDistribution(payload, key, label, issues) {
+  return requiredArray(payload, key, label).flatMap((row, index) => {
+    try { return distributionRows([row]); } catch (error) {
+      issues.push(`${label} ${index + 1}行目: ${error?.message || "確認できません。"}`);
+      return [];
+    }
+  });
+}
+
 export function userNeedsModel(payload) {
+  const issues = [];
+  const safe = (label, create) => {
+    try { return create(); } catch (error) {
+      issues.push(`${label}: ${error?.message || "確認できません。"}`);
+      return null;
+    }
+  };
+  const productResolution = safe("製品判定範囲", () => ({
+    ...requiredObject(payload, "productResolution", "製品判定範囲"),
+    ...coverageModel(payload.productResolution, "製品判定範囲"),
+  }));
   return {
-    products: requiredArray(payload, "products", "製品分析").map((row) => ({
-      label: requiredText(row?.label, "製品名"),
-      count: requiredNumber(row?.count, "製品質問数", { integer: true }),
+    products: safe("製品分析", () => requiredArray(payload, "products", "製品分析").flatMap((row, index) => {
+      try {
+        return [{
+          label: requiredText(row?.label, "製品名"),
+          count: requiredNumber(row?.count, "製品質問数", { integer: true }),
+        }];
+      } catch (error) {
+        issues.push(`製品分析 ${index + 1}行目: ${error?.message || "確認できません。"}`);
+        return [];
+      }
     })),
-    productResolution: {
-      ...requiredObject(payload, "productResolution", "製品判定範囲"),
-      ...coverageModel(payload.productResolution, "製品判定範囲"),
-    },
-    tasks: distributionRows(requiredArray(payload, "tasks", "質問種類")),
-    taskMeasurement: coverageModel(payload.taskMeasurement, "質問種類の計測範囲"),
-    questionCategories: distributionRows(requiredArray(payload, "questionCategories", "質問テーマ")),
-    questionCategoryMeasurement: coverageModel(payload.questionCategoryMeasurement, "質問テーマの計測範囲"),
-    modes: distributionRows(requiredArray(payload, "modes", "モード分析")),
-    modeMeasurement: coverageModel(payload.modeMeasurement, "モード分析の計測範囲"),
-    devices: distributionRows(requiredArray(payload, "devices", "デバイス分析")),
-    deviceMeasurement: coverageModel(payload.deviceMeasurement, "デバイス分析の計測範囲"),
+    productResolution,
+    tasks: safe("質問種類", () => tolerantDistribution(payload, "tasks", "質問種類", issues)),
+    taskMeasurement: safe("質問種類の計測範囲", () => coverageModel(payload.taskMeasurement, "質問種類の計測範囲")),
+    questionCategories: safe("質問テーマ", () => tolerantDistribution(payload, "questionCategories", "質問テーマ", issues)),
+    questionCategoryMeasurement: safe("質問テーマの計測範囲", () => coverageModel(payload.questionCategoryMeasurement, "質問テーマの計測範囲")),
+    modes: safe("モード分析", () => tolerantDistribution(payload, "modes", "モード分析", issues)),
+    modeMeasurement: safe("モード分析の計測範囲", () => coverageModel(payload.modeMeasurement, "モード分析の計測範囲")),
+    devices: safe("デバイス分析", () => tolerantDistribution(payload, "devices", "デバイス分析", issues)),
+    deviceMeasurement: safe("デバイス分析の計測範囲", () => coverageModel(payload.deviceMeasurement, "デバイス分析の計測範囲")),
+    issues,
   };
 }
 

@@ -6,6 +6,7 @@ DATASET_ID="oura_navi_monitor"
 LOCATION="US"
 REGION="us-central1"
 FREEZE_SNAPSHOT=""
+JOB_DEPLOY_RECEIPT=""
 RECEIPT_OUTPUT=""
 EXPECTED_IMAGE=""
 EXPECTED_JOB_SERVICE_ACCOUNT=""
@@ -14,6 +15,7 @@ EXPECTED_NEW_SCHEDULER_SERVICE_ACCOUNT=""
 SOURCE_SERVICE="lcs-rag-app"
 CONFIRM_BACKFILL=""
 APPLY="false"
+CREDENTIAL_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -22,6 +24,7 @@ while [[ $# -gt 0 ]]; do
     --location) LOCATION="$2"; shift 2 ;;
     --region) REGION="$2"; shift 2 ;;
     --freeze-snapshot) FREEZE_SNAPSHOT="$2"; shift 2 ;;
+    --job-deploy-receipt) JOB_DEPLOY_RECEIPT="$2"; shift 2 ;;
     --receipt-output) RECEIPT_OUTPUT="$2"; shift 2 ;;
     --expected-image) EXPECTED_IMAGE="$2"; shift 2 ;;
     --expected-job-service-account) EXPECTED_JOB_SERVICE_ACCOUNT="$2"; shift 2 ;;
@@ -29,6 +32,7 @@ while [[ $# -gt 0 ]]; do
     --expected-new-scheduler-service-account) EXPECTED_NEW_SCHEDULER_SERVICE_ACCOUNT="$2"; shift 2 ;;
     --source-service) SOURCE_SERVICE="$2"; shift 2 ;;
     --confirm-backfill) CONFIRM_BACKFILL="$2"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="$2"; shift 2 ;;
     --apply) APPLY="true"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -77,18 +81,65 @@ if [[ "${APPLY}" != "true" ]]; then exit 0; fi
 [[ -n "${FREEZE_SNAPSHOT}" && -f "${FREEZE_SNAPSHOT}" ]] || {
   echo "--freeze-snapshot must be the receipt created by the freeze stage" >&2; exit 2;
 }
+[[ -n "${JOB_DEPLOY_RECEIPT}" && -f "${JOB_DEPLOY_RECEIPT}" ]] || {
+  echo "--job-deploy-receipt is required on apply" >&2; exit 2;
+}
 [[ -n "${RECEIPT_OUTPUT}" ]] || { echo "--receipt-output is required on apply" >&2; exit 2; }
 [[ ! -e "${RECEIPT_OUTPUT}" ]] || { echo "receipt output already exists" >&2; exit 2; }
 [[ -d "$(dirname "${RECEIPT_OUTPUT}")" ]] || { echo "receipt output parent does not exist" >&2; exit 2; }
-[[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || {
-  echo "approved credential is required" >&2; exit 2;
-}
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && "${GOOGLE_APPLICATION_CREDENTIALS}" != "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]]; then
-  echo "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential" >&2; exit 2
-fi
-export GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}"
+python3 "${ROOT_DIR}/scripts/credential_preflight.py" \
+  --credential-file "${CREDENTIAL_FILE}"
 command -v bq >/dev/null 2>&1 || { echo "bq not found" >&2; exit 2; }
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
+source "${ROOT_DIR}/scripts/credential_shell.sh"
+monitor_install_google_credential_wrappers "${CREDENTIAL_FILE}"
+
+python3 - "${JOB_DEPLOY_RECEIPT}" "${PROJECT_ID}" "${REGION}" \
+  "${DATASET_ID}" "${LOCATION}" "${SOURCE_SERVICE}" "${JOB_NAME}" \
+  "${NEW_SCHEDULER}" "${EXPECTED_IMAGE}" "${EXPECTED_JOB_SERVICE_ACCOUNT}" \
+  "${EXPECTED_NEW_SCHEDULER_SERVICE_ACCOUNT}" <<'PY'
+import json
+import sys
+
+(
+    path,
+    project,
+    region,
+    dataset,
+    location,
+    source_service,
+    job,
+    scheduler,
+    image,
+    job_service_account,
+    scheduler_service_account,
+) = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    receipt = json.load(handle)
+expected = {
+    "receipt_type": "monitor_refresh_job_deploy_v1",
+    "project": project,
+    "region": region,
+    "dataset": dataset,
+    "location": location,
+    "source_service": source_service,
+    "job": job,
+    "scheduler": scheduler,
+    "image": image,
+    "expected_job_service_account": job_service_account,
+    "expected_scheduler_service_account": scheduler_service_account,
+}
+if any(receipt.get(key) != value for key, value in expected.items()):
+    raise SystemExit("refresh Job deploy receipt does not match this backfill")
+contract = receipt.get("validated_job_contract") or {}
+if contract.get("image") != image or contract.get("serviceAccount") != job_service_account:
+    raise SystemExit("refresh Job deploy receipt has an invalid Job contract")
+scheduler_readback = receipt.get("scheduler_readback") or {}
+if scheduler_readback.get("state") != "PAUSED":
+    raise SystemExit("refresh Job deploy receipt did not leave the Scheduler paused")
+if not receipt.get("captured_at"):
+    raise SystemExit("refresh Job deploy receipt has no capture time")
+PY
 
 python3 - "${FREEZE_SNAPSHOT}" "${PROJECT_ID}" "${REGION}" "${DATASET_ID}" \
   "${LOCATION}" "${SOURCE_SERVICE}" "${EXPECTED_JOB_SERVICE_ACCOUNT}" \
@@ -235,6 +286,16 @@ EXECUTION_JSON="$(gcloud --project="${PROJECT_ID}" run jobs execute "${JOB_NAME}
   --region="${REGION}" \
   --args=-m,app.jobs.refresh_analytics,--apply,--until-current,--trigger-source,manual_backfill,--target-at,"${TARGET_AT}" \
   --wait --format=json)"
+EXECUTION_PROVENANCE_JSON="$(JOB_DESCRIPTION_JSON="${EXECUTION_JSON}" \
+  python3 "${ROOT_DIR}/scripts/validate_refresh_job.py" \
+    --execution-provenance-only \
+    --expected-image "${EXPECTED_IMAGE}" \
+    --expected-service-account "${EXPECTED_JOB_SERVICE_ACCOUNT}" \
+    --project "${PROJECT_ID}" \
+    --dataset "${DATASET_ID}" \
+    --location "${LOCATION}" \
+    --source-service "${SOURCE_SERVICE}" \
+    --timeout-minutes "${JOB_TIMEOUT_MINUTES}")"
 EXECUTION_SUMMARY="$(RECEIPT_EXECUTION_JSON="${EXECUTION_JSON}" python3 - <<'PY'
 import json
 import os
@@ -305,11 +366,20 @@ BACKFILL_AUDIT_JSON="$(bq --project_id="${PROJECT_ID}" --location="${LOCATION}" 
        AND (execution_id = @execution_id OR ENDS_WITH(execution_id, CONCAT('/', @execution_id)))
        AND trigger_source = 'manual_backfill'
        AND status = 'succeeded'
-   ), manifest AS (
-     SELECT DISTINCT event_key_hash, event_family, disposition
+   ), manifest_all AS (
+     SELECT run_id, source_event_hash, event_key_hash, event_family, disposition
      FROM \`${PROJECT_ID}.${DATASET_ID}.pipeline_run_event_manifest\` manifest
      JOIN runs USING (run_id)
      WHERE DATE(manifest.observed_at) BETWEEN DATE(@freeze_started_at) AND CURRENT_DATE()
+   ), manifest AS (
+     SELECT DISTINCT event_key_hash, event_family, disposition
+     FROM manifest_all
+   ), conflicting_duplicate_hashes AS (
+     SELECT DISTINCT source_event_hash
+     FROM \`${PROJECT_ID}.${DATASET_ID}.pipeline_event_issues\`
+     WHERE DATE(last_observed_at) BETWEEN DATE(@freeze_started_at) AND CURRENT_DATE()
+       AND issue_code = 'conflicting_duplicate_event_id'
+       AND disposition = 'row_quarantined'
    ), questions AS (
      SELECT DISTINCT TO_HEX(SHA256(event_id)) AS event_key_hash
      FROM \`${PROJECT_ID}.${DATASET_ID}.question_events\`
@@ -334,7 +404,14 @@ BACKFILL_AUDIT_JSON="$(bq --project_id="${PROJECT_ID}" --location="${LOCATION}" 
      (SELECT COALESCE(SUM(merged_rows), 0) FROM runs) AS merged_row_count,
      (SELECT COALESCE(SUM(duplicate_rows), 0) FROM runs) AS duplicate_row_count,
      COUNTIF(manifest.disposition = 'row_quarantined') AS quarantined_manifest_count,
-     COUNTIF(manifest.disposition = 'deduplicated') AS deduplicated_manifest_count,
+     (SELECT COUNTIF(disposition = 'deduplicated') FROM manifest_all) AS deduplicated_manifest_count,
+     (SELECT COUNTIF(
+        manifest_all.disposition = 'row_quarantined'
+        AND conflicts.source_event_hash IS NOT NULL
+      )
+      FROM manifest_all
+      LEFT JOIN conflicting_duplicate_hashes conflicts USING (source_event_hash)
+     ) AS conflicting_duplicate_manifest_count,
      COUNTIF(manifest.disposition = 'canonical' AND manifest.event_family = 'message_persisted') AS canonical_persistence_count,
      COUNTIF(manifest.disposition = 'canonical' AND manifest.event_family = 'question_received') AS canonical_question_count,
      COUNTIF(manifest.disposition = 'canonical' AND manifest.event_family = 'question_received' AND questions.event_key_hash IS NOT NULL) AS matched_question_count,
@@ -371,6 +448,14 @@ for family in ("question", "answer", "action"):
         raise SystemExit(f"backfill {family} manifest does not reconcile to canonical facts")
 if count("blocking_failure_count") != 0:
     raise SystemExit("backfill has unresolved batch-blocking quality failures")
+durably_dispositioned_duplicates = (
+    count("deduplicated_manifest_count")
+    + count("conflicting_duplicate_manifest_count")
+)
+if count("duplicate_row_count") != durably_dispositioned_duplicates:
+    raise SystemExit(
+        "backfill duplicate rows do not reconcile to deduplicated or quarantined manifest dispositions"
+    )
 print(
     "runs={runs} input={inputs} merged={merged} quarantined={quarantined} "
     "deduplicated={deduplicated} persistence={persistence} axis_findings={axis}".format(
@@ -389,15 +474,18 @@ echo "backfill_reconciliation=${BACKFILL_AUDIT_SUMMARY}"
 
 RECEIPT_JOB_JSON="${JOB_JSON}" RECEIPT_EXECUTION_JSON="${EXECUTION_JSON}" \
 RECEIPT_JOB_VALIDATION_JSON="${JOB_VALIDATION_JSON}" \
+RECEIPT_EXECUTION_PROVENANCE_JSON="${EXECUTION_PROVENANCE_JSON}" \
 RECEIPT_PRE_STATE="${PRE_STATE}" RECEIPT_POST_STATE="${POST_STATE}" \
 RECEIPT_AUDIT_JSON="${BACKFILL_AUDIT_JSON}" \
 RECEIPT_FREEZE_SNAPSHOT="${FREEZE_SNAPSHOT}" \
+RECEIPT_JOB_DEPLOY_RECEIPT="${JOB_DEPLOY_RECEIPT}" \
   python3 - "${RECEIPT_OUTPUT}" "${PROJECT_ID}" "${REGION}" "${DATASET_ID}" \
     "${LOCATION}" "${SOURCE_SERVICE}" "${EXPECTED_JOB_SERVICE_ACCOUNT}" \
     "${EXPECTED_OLD_SCHEDULER_SERVICE_ACCOUNT}" \
     "${EXPECTED_NEW_SCHEDULER_SERVICE_ACCOUNT}" \
     "${JOB_NAME}" "${EXPECTED_IMAGE}" "${TARGET_AT}" <<'PY'
 import json
+import hashlib
 import os
 import sys
 
@@ -419,11 +507,16 @@ payload = {
     "freeze_snapshot": freeze_snapshot,
     "job_before": json.loads(os.environ["RECEIPT_JOB_JSON"]),
     "validated_job_contract": json.loads(os.environ["RECEIPT_JOB_VALIDATION_JSON"]),
+    "validated_execution_provenance": json.loads(
+        os.environ["RECEIPT_EXECUTION_PROVENANCE_JSON"]
+    ),
     "execution": json.loads(os.environ["RECEIPT_EXECUTION_JSON"]),
     "pipeline_before": json.loads(os.environ["RECEIPT_PRE_STATE"]),
     "pipeline_after": json.loads(os.environ["RECEIPT_POST_STATE"]),
     "reconciliation": json.loads(os.environ["RECEIPT_AUDIT_JSON"]),
 }
+with open(os.environ["RECEIPT_JOB_DEPLOY_RECEIPT"], "rb") as handle:
+    payload["job_deploy_receipt_sha256"] = hashlib.sha256(handle.read()).hexdigest()
 with open(path, "x", encoding="utf-8") as handle:
     json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
     handle.write("\n")

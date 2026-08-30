@@ -1,22 +1,14 @@
 from __future__ import annotations
 
-import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.domain.analysis_scopes import Department
-
-
-_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
-LABEL_COLORS = frozenset(
-    {"#23d28f", "#386dff", "#ffb340", "#ff5b74", "#7c5cff", "#27d9d2", "#5f6285"}
-)
+from app.domain.label_records import LABEL_COLORS
+from app.domain.roster_records import normalize_roster_email
 
 
 def normalize_email(value: str) -> str:
-    email = str(value or "").strip().lower()
-    if not _EMAIL_RE.fullmatch(email):
-        raise ValueError("invalid email")
-    return email
+    return normalize_roster_email(value)
 
 
 class UserCreate(BaseModel):
@@ -31,6 +23,7 @@ class UserCreate(BaseModel):
     mr_experience: str = Field(default="-", max_length=80)
     label_ids: list[str] = Field(default_factory=list, max_length=30)
     is_active: bool = True
+    expected_scope_policy_version: str = Field(min_length=1, max_length=80)
 
     _email = field_validator("email")(normalize_email)
 
@@ -48,6 +41,7 @@ class UserPatch(BaseModel):
     label_ids: list[str] | None = Field(default=None, max_length=30)
     is_active: bool | None = None
     expected_updated_at: str = Field(default="", max_length=80)
+    expected_scope_policy_version: str = Field(min_length=1, max_length=80)
 
     @field_validator("email")
     @classmethod
@@ -102,13 +96,15 @@ class UserView(BaseModel):
     areaKey: str
     workplace: str
     role: str
-    department: Department
+    department: str
     mrExperience: str
     labelIds: list[str]
     isActive: bool
     identityBound: bool
     globalScopeEnabled: bool
     userMapScopeEnabled: bool
+    scopePolicyVersion: str
+    rosterIssues: list[str]
     updatedAt: str | None
     updatedBy: str
 
@@ -126,6 +122,7 @@ class LabelView(BaseModel):
     color: str
     usageCount: int
     isActive: bool
+    labelIssues: list[str]
     updatedAt: str | None
     updatedBy: str
 
@@ -135,20 +132,29 @@ class LabelListResponse(BaseModel):
     labels: list[LabelView]
 
 
-class DepartmentScopeView(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    department: Department
-    globalScopeEnabled: bool
-    userMapScopeEnabled: bool
-
-
 class ManagementMetadataResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     areas: list[str]
     workplaces: list[str]
     roles: list[str]
+    summaryRoles: list[str]
     departments: list[Department]
-    departmentScopes: list[DepartmentScopeView]
+    scopePolicyVersion: str
     labelColors: list[str]
+
+
+class ScopePreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    role: str = Field(min_length=1, max_length=80)
+    department: Department
+    is_active: bool = True
+
+
+class ScopePreviewResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    globalScopeEnabled: bool
+    userMapScopeEnabled: bool
+    scopePolicyVersion: str

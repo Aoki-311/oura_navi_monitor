@@ -8,6 +8,7 @@ ANALYTICS_START_AT=""
 HISTORY_CONFIRM=""
 APPLY="false"
 PYTHON_BIN="python3"
+CREDENTIAL_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project) PROJECT_ID="$2"; shift 2 ;;
@@ -16,6 +17,7 @@ while [[ $# -gt 0 ]]; do
     --analytics-start-at) ANALYTICS_START_AT="$2"; shift 2 ;;
     --history-confirm) HISTORY_CONFIRM="$2"; shift 2 ;;
     --python) PYTHON_BIN="$2"; shift 2 ;;
+    --credential-file) CREDENTIAL_FILE="$2"; shift 2 ;;
     --apply) APPLY="true"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -36,19 +38,17 @@ fi
   exit 2
 }
 [[ -n "${HISTORY_CONFIRM}" ]] || { echo "--history-confirm is required on apply" >&2; exit 2; }
-[[ -n "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" && -f "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]] || {
-  echo "approved credential is required" >&2; exit 2;
-}
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && "${GOOGLE_APPLICATION_CREDENTIALS}" != "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}" ]]; then
-  echo "GOOGLE_APPLICATION_CREDENTIALS must use the same approved credential" >&2; exit 2
-fi
-export GOOGLE_APPLICATION_CREDENTIALS="${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE}"
+python3 "${ROOT_DIR}/scripts/credential_preflight.py" \
+  --credential-file "${CREDENTIAL_FILE}"
 command -v bq >/dev/null 2>&1 || { echo "bq not found" >&2; exit 2; }
 
 PREFLIGHT_JSON="$(
   MONITOR_PROJECT_ID="${PROJECT_ID}" MONITOR_BQ_DATASET="${DATASET_ID}" \
   MONITOR_BQ_LOCATION="${LOCATION}" MONITOR_ANALYTICS_START_AT="${ANALYTICS_START_AT}" \
-  PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -m app.jobs.rebuild_history
+  CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="${CREDENTIAL_FILE}" \
+  GOOGLE_APPLICATION_CREDENTIALS="${CREDENTIAL_FILE}" \
+  PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -m app.jobs.rebuild_history \
+    --credential-file "${CREDENTIAL_FILE}"
 )"
 PREFLIGHT_CONFIRM="$(
   printf '%s' "${PREFLIGHT_JSON}" | "${PYTHON_BIN}" -c \
@@ -59,9 +59,12 @@ PREFLIGHT_CONFIRM="$(
   exit 2
 }
 
-"${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --apply
-"${ROOT_DIR}/scripts/publish_monitor_source_views.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --apply
+"${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --credential-file "${CREDENTIAL_FILE}" --apply
+"${ROOT_DIR}/scripts/publish_monitor_source_views.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --credential-file "${CREDENTIAL_FILE}" --apply
 MONITOR_PROJECT_ID="${PROJECT_ID}" MONITOR_BQ_DATASET="${DATASET_ID}" MONITOR_BQ_LOCATION="${LOCATION}" \
 MONITOR_ANALYTICS_START_AT="${ANALYTICS_START_AT}" PYTHONPATH="${ROOT_DIR}" \
-  "${PYTHON_BIN}" -m app.jobs.rebuild_history --apply --confirm "${HISTORY_CONFIRM}"
-"${ROOT_DIR}/scripts/publish_monitor_views.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --apply
+CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="${CREDENTIAL_FILE}" \
+GOOGLE_APPLICATION_CREDENTIALS="${CREDENTIAL_FILE}" \
+  "${PYTHON_BIN}" -m app.jobs.rebuild_history --credential-file "${CREDENTIAL_FILE}" \
+    --apply --confirm "${HISTORY_CONFIRM}"
+"${ROOT_DIR}/scripts/publish_monitor_views.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --credential-file "${CREDENTIAL_FILE}" --apply

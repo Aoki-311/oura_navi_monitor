@@ -1,6 +1,6 @@
 # OurA Navi Monitor 实施、删除与切换清单
 
-更新日：2026-08-29
+更新日：2026-08-30
 
 规则：只有代码处于最终状态、冲突旧路径关闭且最后一次修改后的对应验证通过，
 本地项目才能打勾。云端写入、构建、部署、登录、业务和流量是独立授权与证据。
@@ -24,7 +24,9 @@
 - [x] overview、regions、users、user detail、conversations 独立合同和失败边界。
 - [x] 缺失、未测量、真实 0 和零事件日期轴的语义分开。
 - [x] 单日回访率返回 `null`；P95 和完整交付返回 measured/total 覆盖数量。
-- [x] 活性度、7 日消息数、唯一 answer join 与 69/80 动态范围统一。
+- [x] 活性度、7 日消息数与唯一 answer join 统一；Summary 人群由当前有效名簿中
+  `本社MR` / `コントラクトMR` 角色动态计算，用户分析使用独立的 USER_MAP 范围，
+  不再把历史 69/80 人数当成运行合同。
 - [x] 前端导航、preset、导出统一 AbortController，旧响应不能覆盖新页面。
 - [x] 用户编辑、标签编辑/删除携带 expected revision，repository transaction 再检查。
 - [x] 停用标签保留显示但不可新分配；冲突时抽屉不关闭。
@@ -43,7 +45,8 @@
   邮箱不迁移。
 - [x] 旧问题类型只做封闭一次性枚举转换；旧默认 `topic_ideation` 进入 unclassified。
 - [x] 历史 apply 前检查编译 event ID 重复，apply 后按全部 expected event ID 验证。
-- [x] 真实 Excel 只读核对 83=61+8+11+3、global=69、user/map=80；无地点字典。
+- [x] 历史 Excel 已只读核对 83=61+8+11+3、旧 global=69、旧 user/map=80；这些数字只用于
+  迁移对账，不是当前 Summary 的验收值；源文件中没有地点字典。
 - [x] 首页保持七模块；用户详细保持会话双栏；用户管理只在 Monitor 内管理名簿和标签。
 - [x] 首页与用户管理长表改成稳定搜索、筛选、排序和分页，状态写入同一 URL owner。
 - [x] 桌面首页每页 15 人、管理 20 人；手机分别为 6、8、8 人，避免列表淹没后续模块。
@@ -55,21 +58,32 @@
 - [x] 停用用户的分析与会话直达 URL 统一由分析范围 owner 拒绝，并返回用户选择页说明原因。
 - [x] 同地区/同角色完整交付覆盖数量使用“名”，回答与事件覆盖数量继续使用“件”。
 - [x] 三页统一商务 BI 视觉层级、图表色板、空值/部分计量状态和键盘/ARIA 行为。
-- [x] 真实云端只读 inventory 和历史 plan；没有云写。
-- [x] 最后一次业务代码修改后的 Python 全量回归通过。
-- [x] 最后一次业务代码修改后的 JS syntax、脚本/YAML/SQL 合同和 E2E 通过。
-- [x] 最终 diff、旧引用、敏感信息、用户文件和 release state 复核。
+- [ ] 用最终提交 SHA 重新执行真实云端只读 inventory；已有结果仅是旧基线快照，本轮没有云写。
+- [x] 最后一次业务代码修改后的 Python 全量回归通过并记录新证据。
+- [x] 最后一次业务代码修改后的 JS syntax、脚本/YAML/SQL 合同和 E2E 通过并记录新证据。
+- [x] 最终 diff、旧引用、敏感信息、用户文件和 release state 已在提交前复核；云端
+  release state 仍按独立门处理。
 - [x] 晚到事件按本次 event ID/effective partition 去重、补充字段和质量检查。
 - [x] `pipeline_run_event_manifest` 与 `pipeline_event_issues` 保存逐事件哈希化去向。
 - [x] 质量阻断回滚 facts，但独立保留诊断和 latest failed run；旧成功页面继续可读。
 - [x] overview、用户选择和个人页共享鲜度/质量 banner；当天部分日明确标记。
 - [x] 3 小时 timing 只有 `app/refresh_policy.py` 一个 owner，Scheduler retry 为 0。
 - [x] freeze 等待 Cloud Run execution 与 BigQuery DML；补数绑定固定目标和逐项对账。
-- [x] activation、backfill、DTS pause/45 分钟/72 小时验证均产生不可覆盖 receipt。
+- [x] Job deploy、activation、backfill、DTS pause preflight/apply、45 分钟/72 小时验证均
+  产生受控 receipt；首次 DTS apply 在 60 分钟内消费 preflight、先落 intent 且重跑全部
+  live 门，disabled 后中断可由同一 intent 幂等补齐 final，backfill 与
+  正式 execution 均绑定同一 digest/identity。
 - [x] Monitor candidate 保持当前 runtime identity；Refresh writer 与 Scheduler invoker
   在数据切换时分离；Monitor 与 Job 镜像必须是同一 digest。
 - [x] additive table functions 与 destructive cleanup 分开；旧对象删除 apply 永久硬停止。
-- [x] Monitor 与 LCS 均有精确 candidate promotion 门、验收收据、切流前快照和 100% 读回。
+- [x] Monitor promotion 强制消费同一 activation → DTS pause → 45 分钟 → 72 小时收据链，
+  并在切流前再次要求精确 candidate=0%，现场复核 Job/Scheduler/DTS 未漂移；LCS 仍使用
+  其独立 promotion 门。
+- [x] Monitor promotion 的同一 intent `pre/post` 也不能并发接管；锁内全部现场重读完成后，
+  紧贴切流前重新验证 intent 绑定的 API/浏览器收据原始 bytes 与 60 分钟时限，失败保留锁。
+  `pre/post` 崩溃后的清锁是单独授权动作，只有不可变 `final` 可自动 exact recovery。
+- [x] `.gcloudignore` 明确上传 Cloud Build 所需 config/dev requirements/deploy/scripts/tests/e2e，
+  同时排除 credentials、node_modules 和测试产物；`.dockerignore` 继续只允许 runtime 文件。
 
 ## 3. 已关闭的本地旧路径
 
@@ -107,9 +121,9 @@ monitor_field_split_8_1.xlsx
 
 `OurA-Navi_userlist.xlsx` 仅只读核对，没有保存或改写。
 
-## 5. 只读真实环境证据
+## 5. 历史只读环境快照（不是当前发布证明）
 
-### 5.1 当前 BigQuery
+### 5.1 2026-08-26 至 2026-08-29 的 BigQuery 快照
 
 2026-08-26 metadata/read-only：raw request/stdout/stderr 均仍在；旧
 `monitor_answer_events=4,176`、`monitor_user_daily=1,184`、snapshot=9 仍未删除。
@@ -190,23 +204,39 @@ log metrics 和 policy。未来删除必须另做保留期、依赖、回滚和�
 
 ## 7. 从当前状态继续的唯一云端顺序
 
-- [x] 重新只读 inventory 并保存对象类型、生产 revision/image/SHA。
-- [x] 运行最终 history plan，人工核对数量并固定只读确认串。
-- [x] 冻结当前 Monitor runtime 与 GitHub trigger build identity；push 自动生成待审批 build，
+- [ ] 使用最终提交 SHA 重新只读 inventory 并保存对象类型、生产 revision/image/SHA。
+- [ ] 冻结当前 Monitor runtime 与 GitHub trigger build identity；push 自动生成待审批 build，
   不以新建 IAM 或修改 trigger 为前置条件。
 - [ ] 激活数据链前确认不同的 Refresh writer 与 Scheduler invoker；如需新建或改权，另行
   完成最小 IAM 授权。
 - [ ] 获得 BigQuery/Logging/Firestore 写入授权。
-- [x] canonical facts、additive state/诊断表、source view 和两个参数化语义函数在线存在，
-  并有只读 schema 收据；未运行 destructive retirement。
-- [ ] 用最新确认串追平 8/26 的 15/15 差额并逐 event ID 验证。
-- [ ] bounded incremental `--until-current`，验证质量门和 dataThrough。
-- [ ] 构建 Monitor 无流量候选；IAP 登录并验收三页历史数据、空值和局部失败。
-- [ ] 之后才创建/选择 LCS 候选 revision，跑 internal/Web 真实问答和写回成功/失败链。
-- [ ] 刷新增窗口，验证同一 canonical 页面同时连续显示历史与新事件。
-- [ ] 三次 Scheduler-proven 正式窗口后，以零依赖 receipt 暂停旧 DTS 自动调度。
+- [ ] 用本轮固定凭据重新确认 canonical facts、additive state/诊断表、source view 和两个
+  参数化语义函数在线存在并生成当前只读 schema 收据；不得运行 destructive retirement。
+- [ ] 构建 Monitor 无流量候选；确认 candidate tag 精确指向本 SHA/revision/URL、当前 runtime
+  identity 未被部署参数暗改；IAP 登录并验收三页历史数据、空值和局部失败，但保持 0%。
+- [ ] 构建 LCS 无流量候选；六条业务问答路由逐条验证 `monitor.v2`、revision+trace+span、
+  一请求一 question、服务器持久化与失败不抹正文；四条 debug 路由验证不进入业务指标。
+- [ ] 先把精确 LCS candidate revision/image/SHA/build/runtime identity 注册进 Monitor v2
+  revision registry，保存不可覆盖 registration receipt；此时不得提前开启严格 enforcement。
+- [ ] 独立授权 LCS 流量并生成原子 promotion final；等待该收据中的 `drainUntil`，确认旧正流量
+  revision 的在途请求已排空。中断时只允许以同一 intent/参数恢复，禁止创建第二条切流链。
+- [ ] `drainUntil` 后用同一 promotion final 激活严格 v2 enforcement；BigQuery ledger 是 durable
+  authority，若数据库已提交而本地收据中断，只从精确 ledger 恢复，不重做或覆盖激活。
+- [ ] 使用当前源数据重新运行 history plan，人工核对数量并固定只读确认串；再用最新确认串
+  追平 8/26 的 15/15 差额并逐 event ID 验证。
+- [ ] 用精确确认串部署与 Monitor candidate 相同 digest 的 Job，保存不可覆盖 deploy receipt，
+  并保持新旧 Scheduler 都 PAUSED。
+- [ ] bounded incremental `--until-current`，从本次 execution 回读 digest/identity/终态，验证
+  duplicate durable disposition、质量门、dataThrough，以及严格 current v2 中
+  `http_trace_contract_unavailable=0`。
+- [ ] 启用新 Scheduler；三次 Scheduler-proven 正式窗口的每个 execution 都验证相同
+  digest/identity/terminal success，AttemptFinished 必须成功。
+- [ ] 以零依赖 receipt 完成全只读 DTS pause preflight；60 分钟内重跑全部门、消费
+  preflight receipt 并先写受控 intent 后才暂停旧 DTS 自动调度；若 disabled 后中断，使用
+  同一 intent/参数只读恢复 final，禁止新建第二条暂停链或自动回滚。
 - [ ] DTS 暂停后完成 45 分钟与 72 小时不变性验证；旧对象继续保留。
-- [ ] 分别完成 Monitor/LCS 业务验收和明确流量切换。
+- [ ] 72 小时通过后重新验收 Monitor 0% candidate，绑定完整 receipt 链后才切 Monitor
+  Web 流量；不得用已经完成的 LCS 流量门替代 Monitor 登录/业务验收。
 
 任一步失败：停止后续 release 动作，修复唯一 owner；不恢复旧表读取或建立 fallback。
 
@@ -219,28 +249,33 @@ find frontend e2e/tests -name '*.js' -not -path '*/node_modules/*' -print0 \
   | xargs -0 -n1 node --check
 for script_file in scripts/*.sh; do bash -n "$script_file"; done
 ./scripts/run_e2e.sh
-.venv/bin/python scripts/dry_run_monitor_sql.py
+.venv/bin/python scripts/dry_run_monitor_sql.py \
+  --credential-file "<ABSOLUTE_APPROVED_KEY_JSON>"
 git diff --check
 ```
 
-2026-08-29 最后一次完整本地证据：
+2026-08-30 最终源树本地证据：
 
-- Monitor `pytest`：197 passed；晚到事件、逐事件去向、质量失败、lease、固定目标补数、
-  Scheduler provenance、DTS pause/观察和身份绑定均有回归；
-- `compileall`：通过；YAML：可解析；
-- JavaScript `node --check`、全部 Shell `bash -n`、`git diff --check`：通过；
-- Monitor Playwright：35 passed，覆盖三页、局部失败、元数据/诊断查询失败仍保留正文、
-  API/浏览器缓存禁用、旧响应滚动兼容、最新刷新失败仍显示旧成功数据、
-  历史未计测环境、停用用户直达链接、
-  请求竞态、地图键盘联动、URL 刷新/返回、并发编辑、停用标签、分页状态与
-  PC/iPad/mobile；
-- BigQuery 只读 dry-run：planned cutover 与所有当前 SQL 通过；projection 11,017 bytes，
-  其他当前合同为 0 bytes；无 BigQuery 写入；
-- LCS 交叉门禁：后端 996 passed（1 个 httpx deprecation warning），ESLint、TypeScript、
-  production build 通过；stale-parent/durability 定向事务通过；最终单 worker 全量
-  Playwright 为 175 passed、2 个按浏览器能力设计跳过、0 failed；
-- LCS build 有既存的 Browserslist 资料较旧与一个 622 KB chunk warning，不阻断本次
-  正确性，但应作为后续性能维护项。
+- Monitor `pytest`：360 passed（124.99 秒）；覆盖晚到事件、逐事件去向、质量失败不覆盖
+  已发布正文、lease、固定目标补数、完整计量轴、角色范围、CSV、registration、promotion、
+  enforcement、Scheduler provenance、DTS pause/恢复、45 分钟/72 小时观察与身份绑定；
+- Monitor `compileall`、Cloud Build YAML 解析、JavaScript `node --check`、全部 Shell
+  `bash -n`、`git diff --check`：通过；
+- Monitor Playwright：96 passed（单 worker，0 failed）；覆盖三页完整事务、缓存禁用、
+  Summary 精确角色、用户分析较宽范围、用户管理 scope/label 关系、CSV 创建到下载事务、
+  局部失败不抹正文、旧响应竞态、历史未计测、PC/iPad/mobile 与恢复后的旧兼容响应；
+- LCS 后端：1081 passed、1 个既有 httpx deprecation warning；promotion 聚焦 28 passed；
+  compile、两个 Cloud Build YAML、全部受影响 shell、ESLint、production build 与
+  `npm audit --audit-level=high` 通过，0 vulnerabilities；
+- LCS 单 worker 全量 Playwright：175 passed、2 个按 WebKit 能力设计跳过、0 failed；其中
+  浏览器恢复不能伪造服务端持久化、局部失败不抹回答正文和旧历史兼容路径均有回归；
+- 真实 Cloud Build 上传清单：Monitor 155 文件 / 1,783,540 bytes，LCS 598 文件 /
+  41,916,499 bytes；新增 runtime、发布脚本和测试均包含，credentials、node_modules、
+  release/test 产物均未包含；
+- 最终 SQL 结构与语义由本地合同覆盖，但本轮未用真实 BigQuery 重新 dry-run；Docker daemon
+  也未执行本地镜像构建。这两项不能被上述本地通过替代，必须在真实 Build/只读云端门取证；
+- LCS build 仍有既有 Browserslist 资料较旧与一个 622 KB chunk warning，不阻断正确性，
+  但应作为后续性能维护项。
 
 本仓库没有独立的 TypeScript/mypy/ruff/eslint 配置；没有擅自安装第二套工具。
 本地结果不代替 Cloud Build。main push 后必须读取自动触发 build 的原始步骤；build、
@@ -250,18 +285,19 @@ git diff --check
 
 | 层次 | 当前状态 |
 | --- | --- |
-| 本地代码 | `local validated`：当前两个 repair worktree 已通过本轮完整本地门禁 |
-| Git commit | 已获授权；精确 SHA 以仓库历史和本次交付记录为准 |
-| Git push | 已获授权；远端状态以 `origin/main` 回读为准 |
-| Build | `31a8abb` 自动 build 因无效 runtime 占位值在 precheck 失败；修复 push 后由现有 trigger 自动生成新待审批 build |
+| 本地代码 | 同一最终源树的完整 Python、浏览器、语法、YAML、shell、上传边界和敏感信息门均已通过 |
+| Git commit | 本文不写自引用 SHA；交付时以 `git rev-parse HEAD` 的外部回读为准 |
+| Git push | 交付时必须以远端 `refs/heads/main` 与本地 HEAD 精确相等的外部回读为准，不能从本地 commit 推断 |
+| Build | 历史基线 Build `5e23172c-1eb1-4e24-958a-e7ede4a91e11` 只证明 `4fefea4`；本次 source commit 的终态 Build 必须另行读取 |
 | IAM | source build 不需要新 IAM；Job/Scheduler 身份与权限仍是后续激活门，未执行 |
-| Cloud Run candidate | 本轮未创建 |
+| Cloud Run candidate | 历史基线 revision `oura-navi-monitor-4fefea4` 曾 Ready 且 100%；本次 source commit 的 0% candidate 尚无当前证据 |
 | Monitor 登录验收 | 未执行 |
 | Monitor 业务验收 | 未执行 |
 | BigQuery/Firestore/Logging apply | 本轮未执行；线上已有此前 backfill 与刷新结果 |
-| 历史 backfill | 本轮未 apply；两天/当前缺口仍需冻结后用固定目标补齐 |
-| Scheduler | live 只读核对仍只有旧 15 分钟 Scheduler ENABLED；新三小时 Scheduler 未创建 |
+| 历史 backfill | 基线 manual backfill execution 已成功到 `2026-08-29T14:30:49Z`；不能作为下一 digest 的 receipt |
+| Scheduler | 旧 quarter-hour、新 three-hour Scheduler 与 DTS 状态仅有历史快照；本次 source commit 尚未完成三窗口与 DTS pause 真实取证 |
 | LCS revision | 本轮未构建或部署新 revision |
-| Monitor/LCS production traffic | 本轮未改变；本次只读回读为 Monitor 00046=100%，LCS 00247=100% |
+| Monitor/LCS production traffic | 本轮未改变；Monitor `oura-navi-monitor-4fefea4`=100%，下一版 traffic 未授权 |
 
-整体结论：**代码已完成本地闭合；Git 状态以 `origin/main` 回读为准；生产收口尚未完成**。
+整体结论：**源代码与本地发布合同已完成最终验证；Git 运输必须由外部 SHA 回读证明；
+Build、candidate、数据、登录浏览器、业务、Scheduler/DTS 与 traffic 仍是独立生产门，尚未收口**。

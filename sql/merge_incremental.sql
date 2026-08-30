@@ -12,7 +12,8 @@ SELECT
   ARRAY_AGG(roster_id ORDER BY updated_at DESC, roster_id LIMIT 1)[OFFSET(0)] AS roster_id,
   COUNT(DISTINCT roster_id) AS roster_match_count
 FROM `${PROJECT_ID}.${DATASET_ID}.user_scope`
-WHERE NULLIF(user_id, '') IS NOT NULL
+WHERE snapshot_run_id = @run_id
+  AND NULLIF(user_id, '') IS NOT NULL
   AND user_map_scope_enabled = TRUE
 GROUP BY user_id;
 
@@ -30,7 +31,10 @@ WITH hashed AS (
       event.source_ts,
       event.event_id,
       event.event_family,
+      event.monitor_contract_version,
       event.event_ts,
+      event.cloud_trace,
+      event.cloud_span_id,
       event.request_id,
       event.conversation_id,
       event.turn_id,
@@ -41,7 +45,10 @@ WITH hashed AS (
     TO_HEX(SHA256(TO_JSON_STRING(STRUCT(
       event.event_id,
       event.event_family,
+      event.monitor_contract_version,
       event.event_ts,
+      event.cloud_trace,
+      event.cloud_span_id,
       event.trace_id,
       event.request_id,
       event.conversation_id,
@@ -346,13 +353,7 @@ USING (
       COALESCE(NULLIF(insert_id, ''), TO_HEX(SHA256(CONCAT(CAST(source_ts AS STRING), '|', method, '|', request_url)))) AS event_id,
       source_ts AS request_ts,
       DATE(source_ts, '${MONITOR_TIMEZONE}') AS request_date,
-      CASE
-        WHEN REGEXP_CONTAINS(request_path, r'^/v[0-9]+/ask/stream/?$') THEN 'ask_stream'
-        WHEN REGEXP_CONTAINS(request_path, r'^/v[0-9]+/ask/?$') THEN 'ask'
-        WHEN REGEXP_CONTAINS(request_path, r'^/v[0-9]+/conversations/[^/]+/messages/[^/]+/?$') THEN 'message_write'
-        WHEN REGEXP_CONTAINS(request_path, r'^/v[0-9]+/conversations') THEN 'conversation'
-        ELSE 'other'
-      END AS endpoint_class,
+      endpoint_class,
       method,
       status,
       CAST(ROUND(COALESCE(
@@ -367,11 +368,8 @@ USING (
         PARTITION BY COALESCE(NULLIF(insert_id, ''), TO_HEX(SHA256(CONCAT(CAST(source_ts AS STRING), '|', method, '|', request_url))))
         ORDER BY source_ts DESC
       ) AS row_number
-    FROM (
-      SELECT *, REGEXP_EXTRACT(request_url, r'^https?://[^/]+([^?]*)') AS request_path
-      FROM `${PROJECT_ID}.${DATASET_ID}.http_request_source`
-      WHERE source_ts >= @window_start AND source_ts < @window_end
-    )
+    FROM `${PROJECT_ID}.${DATASET_ID}.http_request_source`
+    WHERE source_ts >= @window_start AND source_ts < @window_end
   )
   WHERE row_number = 1
 ) source
@@ -647,21 +645,41 @@ WHERE question.question_date BETWEEN event_partition_start AND event_partition_e
 -- Persist outcome is a separate owner and may arrive after answer_completed.
 UPDATE `${PROJECT_ID}.${DATASET_ID}.answer_events` answer
 SET
-  message_persisted = persistence.persisted,
-  assistant_error_present = persistence.assistant_error_present,
-  persistence_error_code = persistence.error_code,
+  -- Persistence is a monotonic fact. Once any authoritative event for this
+  -- exact answer identity confirms TRUE, a delayed/replayed FALSE event must
+  -- never turn the published answer back into a failure.
+  message_persisted = CASE
+    WHEN answer.message_persisted IS TRUE OR persistence.persisted IS TRUE THEN TRUE
+    WHEN persistence.persisted IS FALSE THEN FALSE
+    ELSE answer.message_persisted
+  END,
+  assistant_error_present = CASE
+    WHEN answer.message_persisted IS TRUE AND persistence.persisted IS NOT TRUE
+      THEN answer.assistant_error_present
+    ELSE persistence.assistant_error_present
+  END,
+  persistence_error_code = CASE
+    WHEN answer.message_persisted IS TRUE AND persistence.persisted IS NOT TRUE
+      THEN answer.persistence_error_code
+    ELSE persistence.error_code
+  END,
   materialized_at = CURRENT_TIMESTAMP()
 FROM (
-  SELECT request_id, conversation_id, message_id,
-    SAFE_CAST(JSON_VALUE(payload_json, '$.answer_ts') AS TIMESTAMP) AS answer_ts,
-    SAFE_CAST(JSON_VALUE(payload_json, '$.persisted') AS BOOL) AS persisted,
-    SAFE_CAST(JSON_VALUE(payload_json, '$.assistant_error_present') AS BOOL) AS assistant_error_present,
-    JSON_VALUE(payload_json, '$.error_code') AS error_code
-  FROM _run_admissible_monitor_events
-  WHERE event_family = 'message_persisted'
+  SELECT * EXCEPT(source_ts, insert_id)
+  FROM (
+    SELECT request_id, conversation_id, message_id,
+      SAFE_CAST(JSON_VALUE(payload_json, '$.answer_ts') AS TIMESTAMP) AS answer_ts,
+      SAFE_CAST(JSON_VALUE(payload_json, '$.persisted') AS BOOL) AS persisted,
+      SAFE_CAST(JSON_VALUE(payload_json, '$.assistant_error_present') AS BOOL) AS assistant_error_present,
+      JSON_VALUE(payload_json, '$.error_code') AS error_code,
+      source_ts,
+      insert_id
+    FROM _run_admissible_monitor_events
+    WHERE event_family = 'message_persisted'
+  ) persistence_candidates
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY request_id, conversation_id, message_id
-    ORDER BY source_ts DESC, insert_id DESC
+    ORDER BY IF(persisted IS TRUE, 1, 0) DESC, source_ts DESC, insert_id DESC
   ) = 1
 ) persistence
 WHERE persistence.answer_ts IS NOT NULL
@@ -669,11 +687,7 @@ WHERE persistence.answer_ts IS NOT NULL
   AND answer.answer_date = DATE(persistence.answer_ts, '${MONITOR_TIMEZONE}')
   AND answer.request_id = persistence.request_id
   AND answer.conversation_id = persistence.conversation_id
-  AND (
-    NULLIF(persistence.message_id, '') IS NULL
-    OR NULLIF(answer.message_id, '') IS NULL
-    OR answer.message_id = persistence.message_id
-  );
+  AND COALESCE(answer.message_id, '') = COALESCE(persistence.message_id, '');
 
 -- One official complete-delivery owner and one failure priority.
 UPDATE `${PROJECT_ID}.${DATASET_ID}.answer_events` answer

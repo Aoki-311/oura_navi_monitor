@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
-import stat
-from pathlib import Path
 from typing import Any
 
 from google.auth.transport.requests import AuthorizedSession
 from google.oauth2 import service_account
+
+try:
+    from scripts.credential_preflight import approved_credential_path
+except ModuleNotFoundError:
+    from credential_preflight import approved_credential_path
 
 
 _RESOURCE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -79,17 +81,6 @@ def submit_build_decision(
     }
 
 
-def _credential_path() -> Path:
-    configured = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
-    path = Path(configured)
-    if not configured or not path.is_file() or path.is_symlink():
-        raise CloudBuildApprovalError("approved credential is not a regular file")
-    metadata = path.stat()
-    if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
-        raise CloudBuildApprovalError("approved credential metadata is unsafe")
-    return path
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Approve or reject one exact regional Cloud Build"
@@ -98,14 +89,16 @@ def main() -> int:
     parser.add_argument("--region", required=True)
     parser.add_argument("--build-id", required=True)
     parser.add_argument("--action", choices=tuple(_DECISIONS), required=True)
+    parser.add_argument("--credential-file", required=True)
     args = parser.parse_args()
 
     try:
         credentials = service_account.Credentials.from_service_account_file(
-            str(_credential_path()), scopes=[_CLOUD_PLATFORM_SCOPE]
+            str(approved_credential_path(args.credential_file)),
+            scopes=[_CLOUD_PLATFORM_SCOPE],
         )
-    except CloudBuildApprovalError:
-        raise
+    except ValueError as exc:
+        raise CloudBuildApprovalError(str(exc)) from None
     except Exception as exc:
         raise CloudBuildApprovalError(
             f"approved credential initialization failed ({type(exc).__name__})"

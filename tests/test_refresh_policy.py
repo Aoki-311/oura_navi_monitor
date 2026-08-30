@@ -7,6 +7,8 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from app.refresh_policy import (
     REFRESH_POLICY,
     RefreshPolicy,
@@ -75,6 +77,35 @@ def _refresh_job_json(image: str) -> dict[str, object]:
     }
 
 
+def _refresh_execution_json(
+    image: str,
+    *,
+    name: str = "fake-refresh-execution",
+    create_time: str = "2026-08-28T00:05:30Z",
+    creator: str = TEST_NEW_SCHEDULER_SERVICE_ACCOUNT,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "metadata": {
+            "name": name,
+            "annotations": {"run.googleapis.com/creator": creator},
+        },
+        "createTime": create_time,
+        "template": {
+            "taskCount": 1,
+            "template": {
+                "serviceAccount": TEST_JOB_SERVICE_ACCOUNT,
+                "containers": [{"image": image}],
+            },
+        },
+        "status": {
+            "succeededCount": 1,
+            "failedCount": 0,
+            "conditions": [{"type": "Completed", "status": "True"}],
+        },
+    }
+
+
 def _validated_refresh_contract(image: str) -> dict[str, object]:
     return {
         "image": image,
@@ -101,15 +132,23 @@ def _validated_refresh_contract(image: str) -> dict[str, object]:
     }
 
 
-def _successful_reconciliation() -> list[dict[str, str]]:
+def _successful_reconciliation(
+    *,
+    duplicate_rows: int = 0,
+    deduplicated_rows: int = 0,
+    conflicting_duplicate_rows: int = 0,
+) -> list[dict[str, str]]:
     return [
         {
             "successful_run_count": "1",
             "input_row_count": "3",
             "merged_row_count": "3",
-            "duplicate_row_count": "0",
+            "duplicate_row_count": str(duplicate_rows),
             "quarantined_manifest_count": "0",
-            "deduplicated_manifest_count": "0",
+            "deduplicated_manifest_count": str(deduplicated_rows),
+            "conflicting_duplicate_manifest_count": str(
+                conflicting_duplicate_rows
+            ),
             "canonical_persistence_count": "0",
             "canonical_question_count": "1",
             "matched_question_count": "1",
@@ -138,13 +177,23 @@ def test_three_hour_policy_is_the_single_timing_owner() -> None:
     assert REFRESH_POLICY.legacy_scheduler_attempt_deadline_seconds == 30
     assert REFRESH_POLICY.scheduler_max_retry_attempts == 0
     assert REFRESH_POLICY.timezone == "Asia/Tokyo"
-    assert settings.monitor_refresh_cadence_minutes == 180
-    assert settings.monitor_refresh_delay_minutes == 5
-    assert settings.monitor_event_future_tolerance_minutes == 10
-    assert settings.monitor_refresh_overlap_minutes == 240
-    assert settings.monitor_refresh_max_window_hours == 24
-    assert settings.monitor_data_freshness_minutes == 240
-    assert settings.monitor_refresh_lease_ttl_minutes == 45
+    assert REFRESH_POLICY.cadence_minutes == 180
+    assert REFRESH_POLICY.expected_delay_minutes == 5
+    assert REFRESH_POLICY.event_future_tolerance_minutes == 10
+    assert REFRESH_POLICY.overlap_minutes == 240
+    assert REFRESH_POLICY.max_window_hours == 24
+    assert REFRESH_POLICY.freshness_stale_after_minutes == 240
+    assert REFRESH_POLICY.lease_ttl_minutes == 45
+    for legacy_override in (
+        "monitor_refresh_cadence_minutes",
+        "monitor_refresh_delay_minutes",
+        "monitor_event_future_tolerance_minutes",
+        "monitor_refresh_overlap_minutes",
+        "monitor_refresh_max_window_hours",
+        "monitor_data_freshness_minutes",
+        "monitor_refresh_lease_ttl_minutes",
+    ):
+        assert not hasattr(settings, legacy_override)
 
 
 def test_next_refresh_uses_the_five_minute_japan_boundary() -> None:
@@ -195,6 +244,147 @@ def test_bootstrap_and_alerts_read_the_governed_policy() -> None:
     assert "REFRESH_POLICY.no_success_critical_minutes" in alerts
     assert "refresh-every-15m" not in bootstrap
     assert "--trigger-source,scheduler_three_hour" in bootstrap
+
+
+def test_refresh_job_deploy_requires_exact_confirmation_and_writes_receipt(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bootstrap-bin"
+    fake_bin.mkdir(exist_ok=True)
+    mutation_marker = tmp_path / "job-deployed"
+    credential = tmp_path / "approved.json"
+    credential.write_text("{}", encoding="utf-8")
+    credential.chmod(0o600)
+    image = (
+        "us-central1-docker.pkg.dev/test-project/repository/monitor@sha256:"
+        + "9" * 64
+    )
+    job_uri = (
+        "https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/"
+        "namespaces/test-project/jobs/oura-navi-monitor-refresh:run"
+    )
+    scheduler = {
+        "state": "PAUSED",
+        "schedule": "5 */3 * * *",
+        "timeZone": "Asia/Tokyo",
+        "attemptDeadline": "60s",
+        "retryConfig": {"retryCount": 0},
+        "httpTarget": {
+            "uri": job_uri,
+            "oauthToken": {
+                "serviceAccountEmail": TEST_NEW_SCHEDULER_SERVICE_ACCOUNT
+            },
+        },
+    }
+    gcloud = fake_bin / "gcloud"
+    gcloud.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" scheduler jobs describe "* && " $* " == *"--format=value(state)"* ]]; then
+  printf '%s\n' 'PAUSED'
+elif [[ " $* " == *" scheduler jobs describe "* && " $* " == *"--format=json"* ]]; then
+  printf '%s\n' "${FAKE_SCHEDULER_JSON}"
+elif [[ " $* " == *" scheduler jobs describe "* ]]; then
+  printf '%s\n' '{}'
+elif [[ " $* " == *" run jobs deploy "* ]]; then
+  : > "${FAKE_MUTATION_MARKER}"
+elif [[ " $* " == *" run jobs describe "* ]]; then
+  printf '%s\n' "${FAKE_JOB_JSON}"
+elif [[ " $* " == *" scheduler jobs update http "* ]]; then
+  true
+else
+  echo "unexpected gcloud command: $*" >&2
+  exit 91
+fi
+""",
+        encoding="utf-8",
+    )
+    bq = fake_bin / "bq"
+    bq.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" query "* ]]; then
+  printf '%s\n' '1'
+elif [[ " $* " == *" show "* ]]; then
+  true
+else
+  exit 91
+fi
+""",
+        encoding="utf-8",
+    )
+    gcloud.chmod(0o755)
+    bq.chmod(0o755)
+    env = {
+        **os.environ,
+        "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE": str(credential),
+        "GOOGLE_APPLICATION_CREDENTIALS": str(credential),
+        "FAKE_MUTATION_MARKER": str(mutation_marker),
+        "FAKE_JOB_JSON": json.dumps(_refresh_job_json(image)),
+        "FAKE_SCHEDULER_JSON": json.dumps(scheduler),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+    }
+    base_arguments = [
+        "bash",
+        str(ROOT / "scripts" / "bootstrap_gcp.sh"),
+        "--stage",
+        "activate",
+        "--project",
+        "test-project",
+        "--runtime-service-account",
+        TEST_JOB_SERVICE_ACCOUNT,
+        "--scheduler-invoker-service-account",
+        TEST_NEW_SCHEDULER_SERVICE_ACCOUNT,
+        "--image",
+        image,
+        "--analytics-start-at",
+        "2026-03-16T00:00:00Z",
+        "--deploy-receipt-output",
+        str(tmp_path / "job-deploy.json"),
+        "--credential-file",
+        str(credential),
+        "--apply",
+    ]
+
+    rejected = subprocess.run(
+        base_arguments,
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode != 0
+    assert not mutation_marker.exists()
+    assert "--confirm-activate must equal" in rejected.stderr
+
+    confirmation = (
+        "projects/test-project/locations/us-central1/jobs/"
+        f"oura-navi-monitor-refresh:deploy:{image}:"
+        f"{TEST_JOB_SERVICE_ACCOUNT}:{TEST_NEW_SCHEDULER_SERVICE_ACCOUNT}"
+    )
+    applied = subprocess.run(
+        [
+            *base_arguments[:-1],
+            "--confirm-activate",
+            confirmation,
+            "--apply",
+        ],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert applied.returncode == 0, applied.stderr
+    assert mutation_marker.exists()
+    receipt = json.loads(
+        (tmp_path / "job-deploy.json").read_text(encoding="utf-8")
+    )
+    assert receipt["receipt_type"] == "monitor_refresh_job_deploy_v1"
+    assert receipt["image"] == image
+    assert receipt["scheduler_readback"]["state"] == "PAUSED"
 
 
 def test_legacy_dts_pause_defaults_to_a_read_only_plan() -> None:
@@ -260,7 +450,33 @@ def test_recent_backfill_defaults_to_a_read_only_plan() -> None:
     assert "--until-current" in result.stdout
 
 
-def test_recent_backfill_runs_only_the_expected_frozen_job(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("reconciliation", "expected_success"),
+    (
+        (_successful_reconciliation(), True),
+        (
+            _successful_reconciliation(
+                duplicate_rows=2,
+                deduplicated_rows=1,
+                conflicting_duplicate_rows=1,
+            ),
+            True,
+        ),
+        (
+            _successful_reconciliation(
+                duplicate_rows=2,
+                deduplicated_rows=1,
+                conflicting_duplicate_rows=0,
+            ),
+            False,
+        ),
+    ),
+)
+def test_recent_backfill_runs_only_the_expected_frozen_job(
+    tmp_path: Path,
+    reconciliation: list[dict[str, str]],
+    expected_success: bool,
+) -> None:
     fake_bin = tmp_path / "backfill-bin"
     fake_bin.mkdir()
     execution_marker = tmp_path / "job-executed"
@@ -293,6 +509,33 @@ def test_recent_backfill_runs_only_the_expected_frozen_job(tmp_path: Path) -> No
     )
     credential = tmp_path / "approved-backfill-credential.json"
     credential.write_text("{}", encoding="utf-8")
+    credential.chmod(0o600)
+    job_deploy_receipt = tmp_path / "job-deploy-receipt.json"
+    job_deploy_receipt.write_text(
+        json.dumps(
+            {
+                "receipt_type": "monitor_refresh_job_deploy_v1",
+                "project": "test-project",
+                "region": "us-central1",
+                "dataset": "oura_navi_monitor",
+                "location": "US",
+                "source_service": "lcs-rag-app",
+                "job": "oura-navi-monitor-refresh",
+                "scheduler": "oura-navi-monitor-refresh-three-hour",
+                "image": expected_image,
+                "expected_job_service_account": TEST_JOB_SERVICE_ACCOUNT,
+                "expected_scheduler_service_account": (
+                    TEST_NEW_SCHEDULER_SERVICE_ACCOUNT
+                ),
+                "captured_at": "2026-08-28T00:02:00Z",
+                "validated_job_contract": _validated_refresh_contract(
+                    expected_image
+                ),
+                "scheduler_readback": {"state": "PAUSED"},
+            }
+        ),
+        encoding="utf-8",
+    )
     gcloud = fake_bin / "gcloud"
     gcloud.write_text(
         """#!/usr/bin/env bash
@@ -312,7 +555,7 @@ elif [[ " $* " == *" run jobs describe "* ]]; then
   printf '%s\n' "${FAKE_JOB_JSON}"
 elif [[ " $* " == *" run jobs execute "* && " $* " == *"--until-current"* && " $* " == *"--target-at"* ]]; then
   : > "${FAKE_EXECUTION_MARKER}"
-  printf '%s\n' '{"name":"fake-backfill-execution","succeededCount":1}'
+  printf '%s\n' "${FAKE_EXECUTION_JSON}"
 else
   exit 2
 fi
@@ -345,9 +588,15 @@ fi
         "FAKE_JOB_URI": job_uri,
         "FAKE_EXPECTED_IMAGE": expected_image,
         "FAKE_JOB_JSON": json.dumps(_refresh_job_json(expected_image)),
+        "FAKE_EXECUTION_JSON": json.dumps(
+            _refresh_execution_json(
+                expected_image,
+                name="fake-backfill-execution",
+            )
+        ),
         "FAKE_OLD_SCHEDULER_SERVICE_ACCOUNT": TEST_OLD_SCHEDULER_SERVICE_ACCOUNT,
         "FAKE_NEW_SCHEDULER_SERVICE_ACCOUNT": TEST_NEW_SCHEDULER_SERVICE_ACCOUNT,
-        "FAKE_RECONCILIATION_JSON": json.dumps(_successful_reconciliation()),
+        "FAKE_RECONCILIATION_JSON": json.dumps(reconciliation),
         "FAKE_EXECUTION_MARKER": str(execution_marker),
         "FAKE_BQ_CALL_MARKER": str(bq_call_marker),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -365,6 +614,8 @@ fi
             "test-project",
             "--freeze-snapshot",
             str(freeze_snapshot),
+            "--job-deploy-receipt",
+            str(job_deploy_receipt),
             "--receipt-output",
             str(tmp_path / "backfill-receipt.json"),
             "--expected-image",
@@ -375,6 +626,8 @@ fi
             TEST_OLD_SCHEDULER_SERVICE_ACCOUNT,
             "--expected-new-scheduler-service-account",
             TEST_NEW_SCHEDULER_SERVICE_ACCOUNT,
+            "--credential-file",
+            str(credential),
             "--confirm-backfill",
             confirmation,
             "--apply",
@@ -386,10 +639,19 @@ fi
         text=True,
     )
 
-    assert result.returncode == 0, result.stderr
     assert execution_marker.exists()
-    assert (tmp_path / "backfill-receipt.json").exists()
-    assert "backfill=complete" in result.stdout
+    if expected_success:
+        assert result.returncode == 0, result.stderr
+        receipt = json.loads(
+            (tmp_path / "backfill-receipt.json").read_text(encoding="utf-8")
+        )
+        assert receipt["validated_execution_provenance"]["image"] == expected_image
+        assert len(receipt["job_deploy_receipt_sha256"]) == 64
+        assert "backfill=complete" in result.stdout
+    else:
+        assert result.returncode != 0
+        assert "duplicate rows do not reconcile" in result.stderr
+        assert not (tmp_path / "backfill-receipt.json").exists()
 
 
 def _fake_scheduler_cutover_tools(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -457,8 +719,10 @@ def _scheduler_cutover_environment(
     tmp_path: Path,
 ) -> tuple[dict[str, str], Path, Path, Path]:
     old_paused, new_enabled, operation_log = _fake_scheduler_cutover_tools(tmp_path)
+    fake_modules = _install_refresh_lock_firestore(tmp_path)
     credential = tmp_path / "approved-cutover-credential.json"
     credential.write_text("{}", encoding="utf-8")
+    credential.chmod(0o600)
     gate = {
         "source": "published",
         "status": "succeeded",
@@ -484,6 +748,9 @@ def _scheduler_cutover_environment(
         "FAKE_OLD_PAUSED": str(old_paused),
         "FAKE_NEW_ENABLED": str(new_enabled),
         "FAKE_OPERATION_LOG": str(operation_log),
+        "FAKE_REFRESH_LOCK_STATE": str(tmp_path / "refresh-lock.json"),
+        "FAKE_REFRESH_LOCK_MUTEX": str(tmp_path / "refresh-lock.mutex"),
+        "PYTHONPATH": f"{fake_modules}:{ROOT}",
         "PATH": f"{tmp_path / 'cutover-bin'}:{os.environ['PATH']}",
     }, old_paused, new_enabled, operation_log
 
@@ -518,6 +785,8 @@ def _run_scheduler_cutover_stage(
             TEST_OLD_SCHEDULER_SERVICE_ACCOUNT,
             "--expected-new-scheduler-service-account",
             TEST_NEW_SCHEDULER_SERVICE_ACCOUNT,
+            "--credential-file",
+            run_env["GOOGLE_APPLICATION_CREDENTIALS"],
             "--confirm-cutover",
             confirmations[stage],
             "--apply",
@@ -543,6 +812,14 @@ def _run_scheduler_cutover_stage(
                     "validated_job_contract": _validated_refresh_contract(
                         run_env["FAKE_EXPECTED_IMAGE"]
                     ),
+                    "validated_execution_provenance": {
+                        "name": "execution-1",
+                        "image": run_env["FAKE_EXPECTED_IMAGE"],
+                        "serviceAccount": TEST_JOB_SERVICE_ACCOUNT,
+                        "succeededCount": 1,
+                        "failedCount": 0,
+                    },
+                    "job_deploy_receipt_sha256": "a" * 64,
                     "execution": {
                         "name": "execution-1",
                         "succeededCount": 1,
@@ -689,7 +966,7 @@ def _canonical_gate_rows() -> list[dict[str, str]]:
 
 def _fake_legacy_pause_tools(tmp_path: Path) -> Path:
     fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
+    fake_bin.mkdir(exist_ok=True)
     update_marker = tmp_path / "bq-update-called"
     bq = fake_bin / "bq"
     bq.write_text(
@@ -702,13 +979,21 @@ elif [[ " $* " == *" query "* ]]; then
 elif [[ " $* " == *" ls "* && " $* " == *"--transfer_run"* ]]; then
   printf '%s\\n' '[]'
 elif [[ " $* " == *" update "* ]]; then
-  : > "${FAKE_UPDATE_MARKER}"
+  if [[ "${FAKE_UPDATE_APPLIES:-true}" == "true" ]]; then
+    : > "${FAKE_UPDATE_MARKER}"
+  fi
+  exit "${FAKE_UPDATE_RETURN_CODE:-0}"
 elif [[ " $* " == *" show "* && " $* " != *"--transfer_config"* ]]; then
   resource="${@: -1}"
   table="${resource##*.}"
-  printf '{"tableReference":{"tableId":"%s"},"lastModifiedTime":"1788000000000","numRows":"10","etag":"table-etag"}\\n' "${table}"
+  printf '{"tableReference":{"tableId":"%s"},"lastModifiedTime":"%s","numRows":"10","etag":"table-etag"}\\n' "${table}" "${FAKE_TABLE_LAST_MODIFIED:-1788000000000}"
 elif [[ " $* " == *" show "* ]]; then
   if [[ -e "${FAKE_UPDATE_MARKER}" ]]; then
+    if [[ "${FAKE_FAIL_POST_UPDATE_SHOW_ONCE:-false}" == "true" && ! -e "${FAKE_POST_UPDATE_FAILURE_MARKER}" ]]; then
+      : > "${FAKE_POST_UPDATE_FAILURE_MARKER}"
+      echo "synthetic post-update readback interruption" >&2
+      exit 77
+    fi
     printf '%s\\n' "${FAKE_TRANSFER_AFTER_JSON}"
   else
     printf '%s\\n' "${FAKE_TRANSFER_BEFORE_JSON}"
@@ -732,7 +1017,11 @@ elif [[ " $* " == *" run jobs executions list "* ]]; then
 elif [[ " $* " == *" run jobs describe "* ]]; then
   printf '%s\\n' "${FAKE_JOB_JSON}"
 elif [[ " $* " == *" logging read "* ]]; then
-  printf '%s\\n' "${FAKE_ATTEMPTS_JSON}"
+  if [[ " $* " == *"protoPayload.serviceName"* ]]; then
+    printf '%s\\n' "${FAKE_RUN_JOB_AUDITS_JSON}"
+  else
+    printf '%s\\n' "${FAKE_ATTEMPTS_JSON}"
+  fi
 else
   exit 2
 fi
@@ -744,14 +1033,115 @@ fi
     return update_marker
 
 
+def _install_refresh_lock_firestore(tmp_path: Path) -> Path:
+    modules = tmp_path / "fake-firestore-modules"
+    package = modules / "google" / "cloud"
+    package.mkdir(parents=True, exist_ok=True)
+    oauth2 = modules / "google" / "oauth2"
+    oauth2.mkdir(parents=True, exist_ok=True)
+    (oauth2 / "__init__.py").write_text(
+        "from . import service_account\n", encoding="utf-8"
+    )
+    (oauth2 / "service_account.py").write_text(
+        "class Credentials:\n"
+        "    @staticmethod\n"
+        "    def from_service_account_file(*args, **kwargs): return object()\n",
+        encoding="utf-8",
+    )
+    (package / "firestore.py").write_text(
+        '''import fcntl
+import json
+import os
+from pathlib import Path
+
+SERVER_TIMESTAMP = "server-time"
+
+class Snapshot:
+    def __init__(self, value):
+        self.exists = value is not None
+        self.value = value
+    def to_dict(self):
+        return dict(self.value) if self.value is not None else None
+
+class Document:
+    def __init__(self, key): self.key = key
+
+class Collection:
+    def __init__(self, name): self.name = name
+    def document(self, name): return Document(self.name + "/" + name)
+
+class Transaction:
+    def __init__(self):
+        self.store = None
+        self.deleted = False
+    def get(self, document): return iter([Snapshot(self.store.get(document.key))])
+    def create(self, document, value): self.store[document.key] = dict(value)
+    def delete(self, document):
+        self.store.pop(document.key, None)
+        self.deleted = True
+
+class Client:
+    def __init__(self, *, project, database, credentials=None):
+        if project != "test-project" or database != "lcs-user-data":
+            raise RuntimeError("wrong Firestore scope")
+    def collection(self, name): return Collection(name)
+    def transaction(self): return Transaction()
+
+def transactional(function):
+    def run(transaction):
+        state = Path(os.environ["FAKE_REFRESH_LOCK_STATE"])
+        mutex = Path(os.environ["FAKE_REFRESH_LOCK_MUTEX"])
+        mutex.touch(exist_ok=True)
+        with mutex.open("r+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            transaction.store = json.loads(state.read_text()) if state.exists() else {}
+            result = function(transaction)
+            temporary = state.with_suffix(".tmp")
+            temporary.write_text(json.dumps(transaction.store, sort_keys=True))
+            os.replace(temporary, state)
+            return result
+    return run
+''',
+        encoding="utf-8",
+    )
+    (modules / "sitecustomize.py").write_text(
+        '''import importlib.util
+import sys
+from pathlib import Path
+from google.oauth2 import service_account
+
+service_account.Credentials.from_service_account_file = staticmethod(
+    lambda *args, **kwargs: object()
+)
+path = Path(__file__).parent / "google" / "cloud" / "firestore.py"
+spec = importlib.util.spec_from_file_location("google.cloud.firestore", path)
+module = importlib.util.module_from_spec(spec)
+sys.modules["google.cloud.firestore"] = module
+spec.loader.exec_module(module)
+''',
+        encoding="utf-8",
+    )
+    return modules
+
+
 def _run_legacy_pause_apply(
     tmp_path: Path,
     *,
     gate: list[dict[str, str]],
+    execution_image: str | None = None,
+    attempt_status: str = "OK",
+    execution_creator: str = TEST_NEW_SCHEDULER_SERVICE_ACCOUNT,
+    fail_post_update_show_once: bool = False,
+    update_applies: bool = True,
+    update_return_code: int = 0,
+    after_schedule: str | None = None,
+    table_last_modified: str = "1788000000000",
 ) -> tuple[subprocess.CompletedProcess[str], Path, dict[str, str]]:
     update_marker = _fake_legacy_pause_tools(tmp_path)
+    fake_modules = _install_refresh_lock_firestore(tmp_path)
     credential = tmp_path / "approved-credential.json"
     credential.write_text("{}", encoding="utf-8")
+    credential.chmod(0o600)
     transfer = "projects/test-project/locations/us/transferConfigs/example"
     canonical_start = "2026-08-28T00:00:00Z"
     legacy_query = """
@@ -794,6 +1184,8 @@ CREATE OR REPLACE TABLE `test-project.oura_navi_monitor.monitor_dashboard_snapsh
         },
     }
     transfer_after = {**transfer_before, "disabled": True}
+    if after_schedule is not None:
+        transfer_after["schedule"] = after_schedule
     dependency_receipt = tmp_path / "legacy-dependency-receipt.json"
     dependency_receipt.write_text(
         json.dumps(
@@ -846,29 +1238,67 @@ CREATE OR REPLACE TABLE `test-project.oura_navi_monitor.monitor_dashboard_snapsh
         encoding="utf-8",
     )
     executions = [
-        {
-            "name": (
+        _refresh_execution_json(
+            execution_image or expected_image,
+            name=(
                 "projects/test-project/locations/us-central1/jobs/"
                 "oura-navi-monitor-refresh/executions/"
                 f"execution-{index}"
             ),
-            "createTime": f"2026-08-28T{hour:02d}:05:30Z",
-        }
+            create_time=f"2026-08-28T{hour:02d}:05:30Z",
+            creator=execution_creator,
+        )
         for index, hour in enumerate((0, 3, 6), start=1)
     ]
     scheduler_name = "oura-navi-monitor-refresh-three-hour"
     attempts = [
         {
+            "insertId": f"attempt-{index}",
             "timestamp": f"2026-08-28T{hour:02d}:05:00Z",
+            "severity": "INFO",
+            "resource": {
+                "type": "cloud_scheduler_job",
+                "labels": {
+                    "project_id": "test-project",
+                    "location_id": "us-central1",
+                    "job_id": scheduler_name,
+                },
+            },
             "jsonPayload": {
                 "jobName": (
                     "projects/test-project/locations/us-central1/jobs/"
                     f"{scheduler_name}"
                 ),
                 "url": job_uri,
+                "status": attempt_status,
             },
         }
-        for hour in (0, 3, 6)
+        for index, hour in enumerate((0, 3, 6), start=1)
+    ]
+    audits = [
+        {
+            "protoPayload": {
+                "serviceName": "run.googleapis.com",
+                "methodName": "google.cloud.run.v2.Jobs.RunJob",
+                "authenticationInfo": {
+                    "principalEmail": TEST_NEW_SCHEDULER_SERVICE_ACCOUNT,
+                },
+                "resourceName": (
+                    "projects/test-project/locations/us-central1/jobs/"
+                    "oura-navi-monitor-refresh"
+                ),
+                "response": {
+                    "metadata": {
+                        "name": (
+                            "projects/test-project/locations/us-central1/jobs/"
+                            "oura-navi-monitor-refresh/executions/"
+                            f"execution-{index}"
+                        )
+                    }
+                },
+            }
+        }
+        for index in range(1, 4)
     ]
     env = {
         **os.environ,
@@ -886,39 +1316,78 @@ CREATE OR REPLACE TABLE `test-project.oura_navi_monitor.monitor_dashboard_snapsh
             ]
         ),
         "FAKE_UPDATE_MARKER": str(update_marker),
+        "FAKE_POST_UPDATE_FAILURE_MARKER": str(
+            tmp_path / "post-update-show-failed-once"
+        ),
+        "FAKE_FAIL_POST_UPDATE_SHOW_ONCE": str(
+            fail_post_update_show_once
+        ).lower(),
+        "FAKE_UPDATE_APPLIES": str(update_applies).lower(),
+        "FAKE_UPDATE_RETURN_CODE": str(update_return_code),
         "FAKE_TRANSFER_BEFORE_JSON": json.dumps(transfer_before),
         "FAKE_TRANSFER_AFTER_JSON": json.dumps(transfer_after),
         "FAKE_EXECUTIONS_JSON": json.dumps(executions),
         "FAKE_ATTEMPTS_JSON": json.dumps(attempts),
+        "FAKE_RUN_JOB_AUDITS_JSON": json.dumps(audits),
         "FAKE_JOB_JSON": json.dumps(_refresh_job_json(expected_image)),
         "FAKE_JOB_URI": job_uri,
         "FAKE_SERVICE_ACCOUNT": TEST_NEW_SCHEDULER_SERVICE_ACCOUNT,
         "FAKE_SCHEDULER_JSON": json.dumps(scheduler_readback),
+        "FAKE_TABLE_LAST_MODIFIED": table_last_modified,
+        "FAKE_REFRESH_LOCK_STATE": str(tmp_path / "refresh-lock.json"),
+        "FAKE_REFRESH_LOCK_MUTEX": str(tmp_path / "refresh-lock.mutex"),
         "GOOGLE_APPLICATION_CREDENTIALS": str(credential),
+        "PYTHONPATH": f"{fake_modules}:{ROOT}",
         "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
     }
+    common_arguments = [
+        "bash",
+        str(ROOT / "scripts" / "pause_legacy_bigquery_refresh.sh"),
+        "--project",
+        "test-project",
+        "--transfer-config",
+        transfer,
+        "--canonical-start-at",
+        canonical_start,
+        "--expected-query-sha256",
+        query_sha,
+        "--expected-dts-service-account",
+        TEST_DTS_SERVICE_ACCOUNT,
+        "--expected-scheduler-service-account",
+        TEST_NEW_SCHEDULER_SERVICE_ACCOUNT,
+        "--dependency-receipt",
+        str(dependency_receipt),
+        "--activation-receipt",
+        str(activation_receipt),
+        "--credential-file",
+        str(credential),
+    ]
+    preflight_receipt = tmp_path / "legacy-transfer-preflight.json"
+    if not preflight_receipt.exists():
+        preflight = subprocess.run(
+            [
+                *common_arguments,
+                "--preflight-receipt-output",
+                str(preflight_receipt),
+                "--preflight",
+            ],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if preflight.returncode != 0:
+            return preflight, update_marker, env
+        if update_marker.exists():
+            raise AssertionError("read-only DTS pause preflight performed a mutation")
     result = subprocess.run(
         [
-            "bash",
-            str(ROOT / "scripts" / "pause_legacy_bigquery_refresh.sh"),
-            "--project",
-            "test-project",
-            "--transfer-config",
-            transfer,
+            *common_arguments,
             "--snapshot-output",
             str(tmp_path / "legacy-transfer.json"),
-            "--canonical-start-at",
-            canonical_start,
-            "--expected-query-sha256",
-            query_sha,
-            "--expected-dts-service-account",
-            TEST_DTS_SERVICE_ACCOUNT,
-            "--expected-scheduler-service-account",
-            TEST_NEW_SCHEDULER_SERVICE_ACCOUNT,
-            "--dependency-receipt",
-            str(dependency_receipt),
-            "--activation-receipt",
-            str(activation_receipt),
+            "--preflight-receipt",
+            str(preflight_receipt),
             "--confirm-pause",
             f"{transfer}:pause-after-canonical-3:{canonical_start}",
             "--apply",
@@ -951,6 +1420,15 @@ def test_legacy_dts_pause_requires_three_distinct_spaced_fresh_executions(
 
     snapshot_path = tmp_path / "legacy-transfer.json"
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    preflight_receipt = json.loads(
+        (tmp_path / "legacy-transfer-preflight.json").read_text(encoding="utf-8")
+    )
+    assert preflight_receipt["receipt_type"] == "monitor_legacy_dts_pause_preflight_v1"
+    assert preflight_receipt["validated_read_only_gates"][
+        "canonical_three_run_provenance"
+    ].startswith("runs=3 executions=3 windows=3")
+    assert snapshot["preflight_receipt"] == preflight_receipt
+    assert len(snapshot["preflight_receipt_sha256"]) == 64
     snapshot["paused_at"] = (
         datetime.now(timezone.utc) - timedelta(minutes=60)
     ).isoformat().replace("+00:00", "Z")
@@ -967,6 +1445,8 @@ def test_legacy_dts_pause_requires_three_distinct_spaced_fresh_executions(
             str(tmp_path / "dts-verification.json"),
             "--min-observation-minutes",
             "45",
+            "--credential-file",
+            env["GOOGLE_APPLICATION_CREDENTIALS"],
             "--verify",
         ],
         cwd=ROOT,
@@ -981,6 +1461,134 @@ def test_legacy_dts_pause_requires_three_distinct_spaced_fresh_executions(
     assert "legacy_dts_pause_verification=complete" in verify.stdout
 
 
+def test_legacy_dts_pause_recovers_exact_intent_after_disable_readback_interruption(
+    tmp_path: Path,
+) -> None:
+    interrupted, update_marker, _ = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+        fail_post_update_show_once=True,
+    )
+
+    assert interrupted.returncode != 0
+    assert "synthetic post-update readback interruption" in interrupted.stderr
+    assert update_marker.exists()
+    snapshot_path = tmp_path / "legacy-transfer.json"
+    intent = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert intent["receipt_type"] == "monitor_legacy_dts_pause_intent_v1"
+    assert intent["state"] == "intent"
+
+    recovered, _, _ = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+        fail_post_update_show_once=True,
+    )
+
+    assert recovered.returncode == 0, recovered.stderr
+    final_bytes = snapshot_path.read_bytes()
+    final = json.loads(final_bytes)
+    assert final["receipt_type"] == "monitor_legacy_dts_pause_v2"
+    assert final["state"] == "complete"
+    assert final["transfer_config_after"]["disabled"] is True
+    assert final["update_command_return_code"] == -1
+
+    rejected_stale_proof, _, _ = _run_legacy_pause_apply(
+        tmp_path,
+        gate=[],
+        execution_image=(
+            "us-central1-docker.pkg.dev/test-project/repository/monitor@sha256:"
+            + "f" * 64
+        ),
+        attempt_status="PERMISSION_DENIED",
+    )
+    assert rejected_stale_proof.returncode != 0
+    assert "three successful canonical runs are required" in rejected_stale_proof.stderr
+    assert snapshot_path.read_bytes() == final_bytes
+
+    repeated, _, _ = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+    )
+    assert repeated.returncode == 0, repeated.stderr
+    assert "exact receipt verified" in repeated.stdout
+    assert snapshot_path.read_bytes() == final_bytes
+
+    update_marker.unlink()
+    conflicted, _, _ = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+    )
+    assert conflicted.returncode != 0
+    assert "completed DTS pause receipt is not exact or live-disabled" in conflicted.stderr
+    assert snapshot_path.read_bytes() == final_bytes
+
+
+def test_completed_dts_receipt_rechecks_live_table_inventory_under_global_lock(
+    tmp_path: Path,
+) -> None:
+    completed, _, _ = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+    )
+    assert completed.returncode == 0, completed.stderr
+    snapshot_path = tmp_path / "legacy-transfer.json"
+    final_bytes = snapshot_path.read_bytes()
+
+    drifted, _, _ = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+        table_last_modified="1788000000001",
+    )
+
+    assert drifted.returncode != 0
+    assert "live legacy table inventory drifted" in drifted.stderr
+    assert snapshot_path.read_bytes() == final_bytes
+
+
+def test_legacy_dts_pause_finalizes_when_update_command_failed_after_applying(
+    tmp_path: Path,
+) -> None:
+    result, update_marker, _ = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+        update_applies=True,
+        update_return_code=23,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert update_marker.exists()
+    snapshot = json.loads(
+        (tmp_path / "legacy-transfer.json").read_text(encoding="utf-8")
+    )
+    assert snapshot["receipt_type"] == "monitor_legacy_dts_pause_v2"
+    assert snapshot["update_command_return_code"] == 23
+
+
+def test_legacy_dts_pause_recovery_stops_on_transfer_contract_drift(
+    tmp_path: Path,
+) -> None:
+    interrupted, update_marker, _ = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+        fail_post_update_show_once=True,
+    )
+    assert interrupted.returncode != 0
+    assert update_marker.exists()
+
+    drifted, _, _ = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+        after_schedule="every 30 minutes",
+    )
+
+    assert drifted.returncode != 0
+    assert "legacy 15-minute schedule" in drifted.stderr
+    snapshot = json.loads(
+        (tmp_path / "legacy-transfer.json").read_text(encoding="utf-8")
+    )
+    assert snapshot["receipt_type"] == "monitor_legacy_dts_pause_intent_v1"
+
+
 def test_legacy_dts_pause_never_mutates_when_dependency_gate_is_short(
     tmp_path: Path,
 ) -> None:
@@ -992,3 +1600,46 @@ def test_legacy_dts_pause_never_mutates_when_dependency_gate_is_short(
     assert result.returncode != 0
     assert not update_marker.exists()
     assert "three successful canonical runs are required" in result.stderr
+
+
+def test_legacy_dts_pause_rejects_scheduler_execution_from_another_digest(
+    tmp_path: Path,
+) -> None:
+    result, update_marker, _env = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+        execution_image=(
+            "us-central1-docker.pkg.dev/test-project/repository/monitor@sha256:"
+            + "f" * 64
+        ),
+    )
+
+    assert result.returncode != 0
+    assert not update_marker.exists()
+    assert "execution image does not match" in result.stderr
+
+
+def test_legacy_dts_pause_rejects_failed_scheduler_attempts(tmp_path: Path) -> None:
+    result, update_marker, _env = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+        attempt_status="PERMISSION_DENIED",
+    )
+
+    assert result.returncode != 0
+    assert not update_marker.exists()
+    assert "three unique successful exact Scheduler attempts" in result.stderr
+
+
+def test_legacy_dts_pause_rejects_nearby_manual_execution(tmp_path: Path) -> None:
+    result, update_marker, _env = _run_legacy_pause_apply(
+        tmp_path,
+        gate=_canonical_gate_rows(),
+        # Attempts are deliberately at the same nearby timestamps. Exact
+        # Execution.creator must still reject a manual operator execution.
+        execution_creator="manual-operator@example.com",
+    )
+
+    assert result.returncode != 0
+    assert not update_marker.exists()
+    assert "creator is not the Scheduler OAuth identity" in result.stderr
