@@ -1,3 +1,4 @@
+import re
 import subprocess
 from pathlib import Path
 
@@ -38,16 +39,19 @@ def test_cloud_build_gates_the_candidate_with_browser_contract_and_immutable_dig
     assert "@$$\u007bdigest}" in cloudbuild
     assert "--no-traffic" in cloudbuild
     assert "--no-allow-unauthenticated" not in cloudbuild
-    assert "run services get-iam-policy" in cloudbuild
-    assert "scripts/verify_service_access_contract.py" in cloudbuild
+    assert "scripts/verify_candidate_readback.py" in cloudbuild
+    assert "scripts/verify_service_access_contract.py" not in cloudbuild
     assert "--revision-suffix" in cloudbuild
     assert "monitor-candidate-revision.txt" in cloudbuild
     assert "monitor-predeploy-runtime-service-account.txt" in cloudbuild
     assert "current Monitor runtime service account does not match" in cloudbuild
-    assert "scripts/verify_candidate_service.py" in cloudbuild
+    assert "scripts/verify_candidate_service.py" not in cloudbuild
     assert "--candidate-tag candidate" in cloudbuild
-    assert '--expected-project "${PROJECT_ID}"' in cloudbuild
+    assert '--expected-project-id "${PROJECT_ID}"' in cloudbuild
+    assert '--expected-project-number "${PROJECT_NUMBER}"' in cloudbuild
     assert '--expected-region "${_REGION}"' in cloudbuild
+    assert "--max-attempts 30" in cloudbuild
+    assert "--poll-seconds 2" in cloudbuild
     assert 'build_id="${BUILD_ID}"' in cloudbuild
     assert cloudbuild.count('--project "${PROJECT_ID}"') == cloudbuild.count(
         "gcloud run"
@@ -74,9 +78,18 @@ def test_cloud_build_gates_the_candidate_with_browser_contract_and_immutable_dig
     assert "**/*service-account*.json" in gcloudignore
     assert "e2e/node_modules/**" in gcloudignore
     credential_wrapper = root / "scripts" / "credential_shell.sh"
+    readback_owner = (root / "scripts" / "verify_candidate_readback.py").read_text(
+        encoding="utf-8"
+    )
     assert credential_wrapper.is_file()
     assert "!scripts/**" in gcloudignore
     assert not credential_wrapper.name.endswith(".json")
+    assert re.search(r'"services",\s*"describe"', readback_owner)
+    assert re.search(r'"revisions",\s*"describe"', readback_owner)
+    assert '"get-iam-policy"' in readback_owner
+    assert "verify_access(" in readback_owner
+    assert "verify_candidate(" in readback_owner
+    assert "ReconciliationPending" in readback_owner
 
 
 def test_docker_push_receipt_extracts_one_exact_commit_digest(tmp_path: Path) -> None:

@@ -10,12 +10,14 @@ from urllib.parse import urlparse
 try:
     from scripts.verify_service_access_contract import (
         require_exact_tagged_revision,
+        require_reconciled_ready,
         require_reconciled_traffic,
         traffic_planes,
     )
 except ModuleNotFoundError:  # Direct execution from scripts/.
     from verify_service_access_contract import (
         require_exact_tagged_revision,
+        require_reconciled_ready,
         require_reconciled_traffic,
         traffic_planes,
     )
@@ -31,6 +33,11 @@ def _load(path: str) -> dict[str, Any]:
 def _require_resource_segment(label: str, value: str) -> None:
     if not isinstance(value, str) or not re.fullmatch(r"[^/\s]+", value):
         raise ValueError(f"expected {label} must be one exact resource segment")
+
+
+def _require_project_number(value: str) -> None:
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]*", value):
+        raise ValueError("expected project number must be one positive decimal integer")
 
 
 def _observed_resource_names(payload: dict[str, Any], *, label: str) -> set[str]:
@@ -50,14 +57,19 @@ def _observed_resource_names(payload: dict[str, Any], *, label: str) -> set[str]
 
 
 def _require_scope_evidence(
-    payload: dict[str, Any], *, project: str, region: str, full_name: str, label: str
+    payload: dict[str, Any],
+    *,
+    expected_namespace: str,
+    region: str,
+    full_names: set[str],
+    label: str,
 ) -> None:
     names = _observed_resource_names(payload, label=label)
-    if full_name in names:
+    if names & full_names:
         return
     metadata = payload.get("metadata") or {}
     labels = metadata.get("labels") or {}
-    if metadata.get("namespace") != project:
+    if metadata.get("namespace") != expected_namespace:
         raise ValueError(f"candidate {label} readback has no exact project evidence")
     if labels.get("cloud.googleapis.com/location") != region:
         raise ValueError(f"candidate {label} readback has no exact region evidence")
@@ -66,21 +78,24 @@ def _require_scope_evidence(
 def _require_service_identity(
     payload: dict[str, Any],
     *,
-    project: str,
+    project_id: str,
+    project_number: str,
     region: str,
     service: str,
 ) -> None:
-    allowed = {
-        service,
-        f"projects/{project}/locations/{region}/services/{service}",
+    project_names = {project_id, project_number}
+    full_names = {
+        f"projects/{project_name}/locations/{region}/services/{service}"
+        for project_name in project_names
     }
+    allowed = {service, *full_names}
     if not _observed_resource_names(payload, label="service") <= allowed:
         raise ValueError("candidate service readback returned another service")
     _require_scope_evidence(
         payload,
-        project=project,
+        expected_namespace=project_number,
         region=region,
-        full_name=f"projects/{project}/locations/{region}/services/{service}",
+        full_names=full_names,
         label="service",
     )
 
@@ -88,28 +103,28 @@ def _require_service_identity(
 def _require_revision_identity(
     payload: dict[str, Any],
     *,
-    project: str,
+    project_id: str,
+    project_number: str,
     region: str,
     service: str,
     revision: str,
 ) -> None:
-    allowed = {
-        revision,
+    project_names = {project_id, project_number}
+    full_names = {
         (
-            f"projects/{project}/locations/{region}/services/{service}/"
+            f"projects/{project_name}/locations/{region}/services/{service}/"
             f"revisions/{revision}"
-        ),
+        )
+        for project_name in project_names
     }
+    allowed = {revision, *full_names}
     if not _observed_resource_names(payload, label="revision") <= allowed:
         raise ValueError("candidate revision readback returned another revision")
     _require_scope_evidence(
         payload,
-        project=project,
+        expected_namespace=project_number,
         region=region,
-        full_name=(
-            f"projects/{project}/locations/{region}/services/{service}/"
-            f"revisions/{revision}"
-        ),
+        full_names=full_names,
         label="revision",
     )
 
@@ -145,7 +160,8 @@ def verify_candidate(
     *,
     service: dict[str, Any],
     revision: dict[str, Any],
-    expected_project: str,
+    expected_project_id: str,
+    expected_project_number: str,
     expected_region: str,
     expected_service: str,
     expected_image: str,
@@ -155,21 +171,24 @@ def verify_candidate(
     candidate_tag: str,
 ) -> dict[str, Any]:
     for label, value in (
-        ("project", expected_project),
+        ("project ID", expected_project_id),
         ("region", expected_region),
         ("service", expected_service),
         ("revision", expected_revision),
     ):
         _require_resource_segment(label, value)
+    _require_project_number(expected_project_number)
     _require_service_identity(
         service,
-        project=expected_project,
+        project_id=expected_project_id,
+        project_number=expected_project_number,
         region=expected_region,
         service=expected_service,
     )
     _require_revision_identity(
         revision,
-        project=expected_project,
+        project_id=expected_project_id,
+        project_number=expected_project_number,
         region=expected_region,
         service=expected_service,
         revision=expected_revision,
@@ -206,16 +225,8 @@ def verify_candidate(
         expected_digest = expected_image.rsplit("@", 1)[-1]
         if status.get("imageDigest") not in {expected_image, expected_digest}:
             raise ValueError("candidate revision status image digest readback failed")
-    conditions = status.get("conditions") or []
-    if not isinstance(conditions, list):
-        raise ValueError("candidate revision conditions are not a list")
-    if not any(
-        item.get("type") == "Ready" and str(item.get("status")).lower() == "true"
-        for item in conditions
-        if isinstance(item, dict)
-    ):
-        raise ValueError("candidate revision is not Ready")
-
+    require_reconciled_ready(service, label="candidate service")
+    require_reconciled_ready(revision, label="candidate revision")
     planes = traffic_planes(service, label="candidate service")
     candidate_rows = _candidate_traffic_rows(
         planes,
@@ -246,7 +257,8 @@ def main() -> None:
     )
     parser.add_argument("--service-json", required=True)
     parser.add_argument("--revision-json", required=True)
-    parser.add_argument("--expected-project", required=True)
+    parser.add_argument("--expected-project-id", required=True)
+    parser.add_argument("--expected-project-number", required=True)
     parser.add_argument("--expected-region", required=True)
     parser.add_argument("--expected-service", required=True)
     parser.add_argument("--expected-image", required=True)
@@ -259,7 +271,8 @@ def main() -> None:
         receipt = verify_candidate(
             service=_load(args.service_json),
             revision=_load(args.revision_json),
-            expected_project=args.expected_project,
+            expected_project_id=args.expected_project_id,
+            expected_project_number=args.expected_project_number,
             expected_region=args.expected_region,
             expected_service=args.expected_service,
             expected_image=args.expected_image,

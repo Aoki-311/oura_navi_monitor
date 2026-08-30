@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -8,6 +12,7 @@ from scripts.verify_candidate_service import verify_candidate
 
 
 PROJECT = "lcs-developer-483404"
+PROJECT_NUMBER = "643644246736"
 REGION = "us-central1"
 REVISION = "oura-navi-monitor-abcdef0-12345678"
 SERVICE = "oura-navi-monitor"
@@ -23,7 +28,8 @@ def _revision() -> dict[str, Any]:
     return {
         "metadata": {
             "name": REVISION,
-            "namespace": PROJECT,
+            "namespace": PROJECT_NUMBER,
+            "generation": "1",
             "labels": {
                 "git-sha": GIT_SHA,
                 "cloud.googleapis.com/location": REGION,
@@ -33,7 +39,10 @@ def _revision() -> dict[str, Any]:
             "containers": [{"image": IMAGE}],
             "serviceAccountName": SERVICE_ACCOUNT,
         },
-        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+        "status": {
+            "observedGeneration": 1,
+            "conditions": [{"type": "Ready", "status": "True"}],
+        },
     }
 
 
@@ -59,13 +68,14 @@ def _service(*, revision: str = REVISION, percent: int = 0) -> dict[str, Any]:
     return {
         "metadata": {
             "name": SERVICE,
-            "namespace": PROJECT,
+            "namespace": PROJECT_NUMBER,
             "generation": "8",
             "labels": {"cloud.googleapis.com/location": REGION},
         },
         "spec": {"traffic": desired_traffic},
         "status": {
             "observedGeneration": 8,
+            "conditions": [{"type": "Ready", "status": "True"}],
             "latestReadyRevisionName": REVISION,
             "traffic": observed_traffic,
         },
@@ -78,7 +88,8 @@ def _verify(
     return verify_candidate(
         service=service,
         revision=revision if revision is not None else _revision(),
-        expected_project=PROJECT,
+        expected_project_id=PROJECT,
+        expected_project_number=PROJECT_NUMBER,
         expected_region=REGION,
         expected_service=SERVICE,
         expected_image=IMAGE,
@@ -115,6 +126,57 @@ def test_candidate_accepts_exact_bare_and_full_resource_names_together() -> None
     assert receipt["candidateRevision"] == REVISION
 
 
+def test_candidate_accepts_cloud_run_v1_numeric_namespace() -> None:
+    service = _service()
+    revision = _revision()
+    service["metadata"]["namespace"] = PROJECT_NUMBER
+    revision["metadata"]["namespace"] = PROJECT_NUMBER
+
+    assert _verify(service, revision)["candidateRevision"] == REVISION
+
+
+def test_candidate_cli_uses_distinct_project_id_and_number(tmp_path: Path) -> None:
+    service_path = tmp_path / "service.json"
+    revision_path = tmp_path / "revision.json"
+    service_path.write_text(json.dumps(_service()), encoding="utf-8")
+    revision_path.write_text(json.dumps(_revision()), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/verify_candidate_service.py",
+            "--service-json",
+            str(service_path),
+            "--revision-json",
+            str(revision_path),
+            "--expected-project-id",
+            PROJECT,
+            "--expected-project-number",
+            PROJECT_NUMBER,
+            "--expected-region",
+            REGION,
+            "--expected-service",
+            SERVICE,
+            "--expected-image",
+            IMAGE,
+            "--expected-revision",
+            REVISION,
+            "--expected-service-account",
+            SERVICE_ACCOUNT,
+            "--expected-git-sha",
+            GIT_SHA,
+            "--candidate-tag",
+            "candidate",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["candidateRevision"] == REVISION
+
+
 def test_candidate_rejects_bare_names_without_project_and_region_evidence() -> None:
     service = _service()
     revision = _revision()
@@ -125,6 +187,40 @@ def test_candidate_rejects_bare_names_without_project_and_region_evidence() -> N
 
     with pytest.raises(ValueError, match="exact project evidence"):
         _verify(service, revision)
+
+
+def test_candidate_rejects_another_numeric_project_namespace() -> None:
+    service = _service()
+    service["metadata"]["namespace"] = "999999999999"
+
+    with pytest.raises(ValueError, match="exact project evidence"):
+        _verify(service)
+
+
+def test_candidate_waits_for_revision_generation_to_be_observed() -> None:
+    revision = _revision()
+    revision["metadata"]["generation"] = "2"
+
+    with pytest.raises(ValueError, match="generation has not been fully observed"):
+        _verify(_service(), revision)
+
+
+def test_candidate_rejects_terminal_revision_reconciliation_failure() -> None:
+    revision = _revision()
+    revision["status"]["conditions"] = [
+        {
+            "type": "Ready",
+            "status": "False",
+            "reason": "HealthCheckContainerError",
+            "message": "container did not become ready",
+        }
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="reconciliation failed: reason=HealthCheckContainerError",
+    ):
+        _verify(_service(), revision)
 
 
 @pytest.mark.parametrize("image_digest", [IMAGE, IMAGE_DIGEST])
@@ -150,7 +246,8 @@ def test_candidate_rejects_mutable_image_even_when_revision_matches_it() -> None
         verify_candidate(
             service=_service(),
             revision=revision,
-            expected_project=PROJECT,
+            expected_project_id=PROJECT,
+            expected_project_number=PROJECT_NUMBER,
             expected_region=REGION,
             expected_service=SERVICE,
             expected_image=mutable_image,
@@ -170,7 +267,7 @@ def test_candidate_rejects_mutable_image_even_when_revision_matches_it() -> None
             {
                 "metadata": {
                     "name": SERVICE,
-                    "namespace": PROJECT,
+                    "namespace": PROJECT_NUMBER,
                     "generation": "8",
                     "labels": {"cloud.googleapis.com/location": REGION},
                 },
@@ -181,6 +278,7 @@ def test_candidate_rejects_mutable_image_even_when_revision_matches_it() -> None
                 },
                 "status": {
                     "observedGeneration": 8,
+                    "conditions": [{"type": "Ready", "status": "True"}],
                     "latestReadyRevisionName": REVISION,
                     "traffic": [
                         {"revisionName": "oura-navi-monitor-live", "percent": 100}

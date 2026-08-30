@@ -27,6 +27,7 @@ def _service(
         },
         "status": {
             "observedGeneration": generation,
+            "conditions": [{"type": "Ready", "status": "True"}],
             "latestReadyRevisionName": latest_ready_revision or live_revision,
             "traffic": [
                 {"revisionName": live_revision, "percent": 100},
@@ -109,6 +110,37 @@ def test_candidate_deploy_rejects_unobserved_service_generation() -> None:
     after["status"]["observedGeneration"] = 7
 
     with pytest.raises(ValueError, match="generation has not been fully observed"):
+        verify(_service(), after, _iam(), _iam())
+
+
+def test_candidate_deploy_waits_when_ready_condition_is_not_available() -> None:
+    after = _service(generation=8)
+    del after["status"]["conditions"]
+
+    with pytest.raises(ValueError, match="Ready condition is not available yet"):
+        verify(_service(), after, _iam(), _iam())
+
+
+def test_candidate_deploy_rejects_invalid_ready_condition_shape() -> None:
+    after = _service(generation=8)
+    after["status"]["conditions"] = "not-a-list"
+
+    with pytest.raises(ValueError, match="conditions are not a list"):
+        verify(_service(), after, _iam(), _iam())
+
+
+def test_candidate_deploy_rejects_terminal_service_reconciliation_failure() -> None:
+    after = _service(generation=8)
+    after["status"]["conditions"] = [
+        {
+            "type": "Ready",
+            "status": "False",
+            "reason": "RevisionFailed",
+            "message": "candidate revision failed",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="reconciliation failed: reason=RevisionFailed"):
         verify(_service(), after, _iam(), _iam())
 
 

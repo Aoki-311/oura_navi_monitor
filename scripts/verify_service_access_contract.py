@@ -16,6 +16,10 @@ ACCESS_ANNOTATIONS = (
 )
 
 
+class ReconciliationPending(ValueError):
+    """The Cloud Run controller has not observed the current generation yet."""
+
+
 def _load(path: str) -> dict[str, Any]:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -84,6 +88,53 @@ def _positive_generation(value: Any, *, label: str) -> int:
     if parsed <= 0:
         raise ValueError(label + " is not a positive integer")
     return parsed
+
+
+def require_reconciled_ready(resource: dict[str, Any], *, label: str) -> None:
+    metadata = resource.get("metadata")
+    status = resource.get("status")
+    if not isinstance(metadata, dict) or not isinstance(status, dict):
+        raise ValueError(label + " metadata/status has an invalid shape")
+    generation = _positive_generation(
+        metadata.get("generation"), label=label + " metadata generation"
+    )
+    try:
+        observed_generation = _positive_generation(
+            status.get("observedGeneration"),
+            label=label + " observed generation",
+        )
+    except ValueError as exc:
+        raise ReconciliationPending(str(exc)) from exc
+    if observed_generation != generation:
+        raise ReconciliationPending(label + " generation has not been fully observed")
+
+    conditions = status.get("conditions")
+    if conditions is None:
+        raise ReconciliationPending(label + " Ready condition is not available yet")
+    if not isinstance(conditions, list):
+        raise ValueError(label + " conditions are not a list")
+    ready = [
+        condition
+        for condition in conditions
+        if isinstance(condition, dict) and condition.get("type") == "Ready"
+    ]
+    if not ready:
+        raise ReconciliationPending(label + " Ready condition is not available yet")
+    if len(ready) != 1:
+        raise ValueError(label + " Ready condition must occur exactly once")
+    ready_status = str(ready[0].get("status") or "").lower()
+    if ready_status == "true":
+        return
+    if ready_status in {"", "unknown"}:
+        raise ReconciliationPending(label + " Ready condition is still Unknown")
+    if ready_status == "false":
+        reason = str(ready[0].get("reason") or "unspecified")
+        message = str(ready[0].get("message") or "")
+        detail = f" reason={reason}"
+        if message:
+            detail += f" message={message}"
+        raise ValueError(label + " reconciliation failed:" + detail)
+    raise ValueError(label + " Ready condition has an invalid status")
 
 
 def traffic_planes(
@@ -245,6 +296,8 @@ def verify(before_service: dict[str, Any], after_service: dict[str, Any], before
         raise ValueError("candidate deploy changed Cloud Run access configuration")
     if _iam(before_iam) != _iam(after_iam):
         raise ValueError("candidate deploy changed Cloud Run service IAM policy")
+    require_reconciled_ready(before_service, label="predeploy service")
+    require_reconciled_ready(after_service, label="candidate service")
     before_planes = traffic_planes(before_service, label="predeploy service")
     after_planes = traffic_planes(after_service, label="candidate service")
     before_positive = require_reconciled_traffic(

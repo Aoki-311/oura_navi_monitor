@@ -176,31 +176,23 @@ steps:
         }
         service_json=/workspace/monitor-candidate-service.json
         revision_json=/workspace/monitor-candidate-revision.json
-        gcloud run services describe "${_SERVICE_NAME}" \
-          --project "${PROJECT_ID}" \
-          --region "${_REGION}" --format=json > "$${service_json}"
-        gcloud run services get-iam-policy "${_SERVICE_NAME}" \
-          --project "${PROJECT_ID}" --region "${_REGION}" --format=json \
-          > /workspace/monitor-candidate-iam.json
-        python3 scripts/verify_service_access_contract.py \
+        python3 scripts/verify_candidate_readback.py \
           --before-service /workspace/monitor-predeploy-service.json \
-          --after-service "$${service_json}" \
           --before-iam /workspace/monitor-predeploy-iam.json \
-          --after-iam /workspace/monitor-candidate-iam.json
-        gcloud run revisions describe "$${revision}" \
-          --project "${PROJECT_ID}" \
-          --region "${_REGION}" --format=json > "$${revision_json}"
-        python3 scripts/verify_candidate_service.py \
-          --service-json "$${service_json}" \
-          --revision-json "$${revision_json}" \
-          --expected-project "${PROJECT_ID}" \
+          --service-output "$${service_json}" \
+          --revision-output "$${revision_json}" \
+          --iam-output /workspace/monitor-candidate-iam.json \
+          --expected-project-id "${PROJECT_ID}" \
+          --expected-project-number "${PROJECT_NUMBER}" \
           --expected-region "${_REGION}" \
           --expected-service "${_SERVICE_NAME}" \
           --expected-image "$${immutable_image}" \
           --expected-revision "$${revision}" \
           --expected-service-account "${_RUNTIME_SERVICE_ACCOUNT}" \
           --expected-git-sha "${COMMIT_SHA}" \
-          --candidate-tag candidate
+          --candidate-tag candidate \
+          --max-attempts 30 \
+          --poll-seconds 2
 
 substitutions:
   _SERVICE_NAME: oura-navi-monitor
