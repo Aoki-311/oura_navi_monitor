@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -244,6 +245,10 @@ def test_bootstrap_and_alerts_read_the_governed_policy() -> None:
     assert "REFRESH_POLICY.no_success_critical_minutes" in alerts
     assert "refresh-every-15m" not in bootstrap
     assert "--trigger-source,scheduler_three_hour" in bootstrap
+    assert 'PYTHON_BIN="python3"' in bootstrap
+    assert '--python) PYTHON_BIN="$2"' in bootstrap
+    assert bootstrap.count("python3") == 1
+    assert '${ROOT_DIR}/.venv/bin/python' not in bootstrap
 
 
 def test_refresh_job_deploy_requires_exact_confirmation_and_writes_receipt(
@@ -343,6 +348,8 @@ fi
         str(tmp_path / "job-deploy.json"),
         "--credential-file",
         str(credential),
+        "--python",
+        sys.executable,
         "--apply",
     ]
 

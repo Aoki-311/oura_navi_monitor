@@ -9,15 +9,7 @@ LOCATION="US"
 SOURCE_SERVICE="lcs-rag-app"
 SINK_NAME="oura_navi_monitor_sink"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-JOB_NAME="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_name)')"
-SCHEDULER_REFRESH="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_name)')"
-SCHEDULER_LEGACY="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.legacy_scheduler_name)')"
-SCHEDULER_CRON="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_cron)')"
-SCHEDULER_BOOTSTRAP_CRON="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import safe_scheduler_bootstrap_cron; print(safe_scheduler_bootstrap_cron())')"
-SCHEDULER_TIMEZONE="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.timezone)')"
-SCHEDULER_ATTEMPT_DEADLINE_SECONDS="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_attempt_deadline_seconds)')"
-SCHEDULER_MAX_RETRY_ATTEMPTS="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_max_retry_attempts)')"
-JOB_TIMEOUT_MINUTES="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_timeout_minutes)')"
+PYTHON_BIN="python3"
 RUNTIME_SERVICE_ACCOUNT=""
 SCHEDULER_INVOKER_SERVICE_ACCOUNT=""
 IMAGE=""
@@ -48,10 +40,21 @@ while [[ $# -gt 0 ]]; do
     --deploy-receipt-output) DEPLOY_RECEIPT_OUTPUT="$2"; shift 2 ;;
     --confirm-activate) CONFIRM_ACTIVATE="$2"; shift 2 ;;
     --credential-file) CREDENTIAL_FILE="$2"; shift 2 ;;
+    --python) PYTHON_BIN="$2"; shift 2 ;;
     --apply) APPLY="true"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+JOB_NAME="$(PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_name)')"
+SCHEDULER_REFRESH="$(PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_name)')"
+SCHEDULER_LEGACY="$(PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.legacy_scheduler_name)')"
+SCHEDULER_CRON="$(PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_cron)')"
+SCHEDULER_BOOTSTRAP_CRON="$(PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c 'from app.refresh_policy import safe_scheduler_bootstrap_cron; print(safe_scheduler_bootstrap_cron())')"
+SCHEDULER_TIMEZONE="$(PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.timezone)')"
+SCHEDULER_ATTEMPT_DEADLINE_SECONDS="$(PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_attempt_deadline_seconds)')"
+SCHEDULER_MAX_RETRY_ATTEMPTS="$(PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_max_retry_attempts)')"
+JOB_TIMEOUT_MINUTES="$(PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.job_timeout_minutes)')"
 
 [[ -n "${PROJECT_ID}" ]] || { echo "--project is required" >&2; exit 2; }
 [[ "${STAGE}" == "prepare" || "${STAGE}" == "activate" ]] || { echo "--stage must be prepare or activate" >&2; exit 2; }
@@ -87,7 +90,7 @@ if [[ "${APPLY}" != "true" ]]; then
   fi
   exit 0
 fi
-python3 "${ROOT_DIR}/scripts/credential_preflight.py" \
+"${PYTHON_BIN}" "${ROOT_DIR}/scripts/credential_preflight.py" \
   --credential-file "${CREDENTIAL_FILE}"
 command -v gcloud >/dev/null 2>&1 || { echo "gcloud not found" >&2; exit 2; }
 command -v bq >/dev/null 2>&1 || { echo "bq not found" >&2; exit 2; }
@@ -116,7 +119,7 @@ if [[ "${STAGE}" == "prepare" ]]; then
       --quiet
   done
 
-  "${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${ROOT_DIR}/.venv/bin/python" --credential-file "${CREDENTIAL_FILE}" --apply
+  "${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --credential-file "${CREDENTIAL_FILE}" --apply
 
   DESTINATION="bigquery.googleapis.com/projects/${PROJECT_ID}/datasets/${DATASET_ID}"
   FILTER="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${SOURCE_SERVICE}\" AND (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Frequests\" OR (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstdout\" AND (jsonPayload.monitor_event=true OR textPayload=~\"(request_user_metric_json|stream_terminal_json)=\")) OR (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstderr\" AND textPayload=~\"tmcs_stage_latency_json[ =]\"))"
@@ -157,7 +160,7 @@ PUBLISHED_READY="$(bq --project_id="${PROJECT_ID}" --location="${LOCATION}" quer
 }
 RUNTIME_ENV="$(mktemp)"
 trap 'rm -f "${RUNTIME_ENV}"' EXIT
-"${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/render_runtime_env.py" \
+"${PYTHON_BIN}" "${ROOT_DIR}/scripts/render_runtime_env.py" \
   --source "${ROOT_DIR}/deploy/cloudrun.env.yaml" \
   --output "${RUNTIME_ENV}" \
   --analytics-start-at "${ANALYTICS_START_AT}" \
@@ -189,7 +192,7 @@ gcloud --project="${PROJECT_ID}" run jobs deploy "${JOB_NAME}" \
 
 DEPLOYED_JOB_JSON="$(gcloud --project="${PROJECT_ID}" run jobs describe "${JOB_NAME}" --region="${REGION}" --format=json)"
 DEPLOYED_JOB_CONTRACT="$(JOB_DESCRIPTION_JSON="${DEPLOYED_JOB_JSON}" \
-  python3 "${ROOT_DIR}/scripts/validate_refresh_job.py" \
+  "${PYTHON_BIN}" "${ROOT_DIR}/scripts/validate_refresh_job.py" \
     --expected-image "${IMAGE}" \
     --expected-service-account "${RUNTIME_SERVICE_ACCOUNT}" \
     --project "${PROJECT_ID}" \
@@ -216,7 +219,7 @@ upsert_scheduler "${SCHEDULER_REFRESH}" "${SCHEDULER_CRON}"
 
 SCHEDULER_READBACK="$(gcloud --project="${PROJECT_ID}" scheduler jobs describe "${SCHEDULER_REFRESH}" \
   --location="${REGION}" --format=json)"
-SCHEDULER_JSON="${SCHEDULER_READBACK}" python3 - \
+SCHEDULER_JSON="${SCHEDULER_READBACK}" "${PYTHON_BIN}" - \
   "${SCHEDULER_CRON}" "${SCHEDULER_TIMEZONE}" "${JOB_URI}" \
   "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" "${SCHEDULER_ATTEMPT_DEADLINE_SECONDS}" \
   "${SCHEDULER_MAX_RETRY_ATTEMPTS}" <<'PY'
@@ -250,7 +253,7 @@ PY
 DEPLOYED_JOB_JSON="${DEPLOYED_JOB_JSON}" \
 DEPLOYED_JOB_CONTRACT="${DEPLOYED_JOB_CONTRACT}" \
 SCHEDULER_READBACK="${SCHEDULER_READBACK}" \
-  python3 - "${DEPLOY_RECEIPT_OUTPUT}" "${PROJECT_ID}" "${REGION}" \
+  "${PYTHON_BIN}" - "${DEPLOY_RECEIPT_OUTPUT}" "${PROJECT_ID}" "${REGION}" \
     "${DATASET_ID}" "${LOCATION}" "${SOURCE_SERVICE}" "${JOB_NAME}" \
     "${SCHEDULER_REFRESH}" "${IMAGE}" "${RUNTIME_SERVICE_ACCOUNT}" \
     "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" "${ANALYTICS_START_AT}" <<'PY'
