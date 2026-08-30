@@ -186,9 +186,11 @@ Git SHA、Ready、身份和 0% 流量。
   --credential-file "<ABSOLUTE_APPROVED_KEY_JSON>"
 ```
 
-发布后必须回读 `pipeline_state` 的 lease 字段、两张逐事件 ledger、质量账，以及
-`dashboard_events` / `dashboard_user_list` 的对象类型和参数；缺一项就不能进入冻结。
-使用候选的完整 SHA 和同一个不可变 digest 生成不可覆盖的 schema 收据：
+发布后必须回读 `pipeline_state` 的 lease 字段、两张逐事件 ledger、质量账，以及兼容
+wrapper 与两个 `*_v2` runtime routine 的对象类型和参数；缺一项就不能进入冻结。已有完整
+v2 published run 时可立即生成下述收据；从 legacy schema 迁移时，必须先完成 F 的首个原子
+refresh，再生成包含同 run projection/指纹与四条真实 routine 读取的不可覆盖收据。收据在
+Monitor promotion 前必须完成，不能用只有 DDL 对象的检查冒充：
 
 ```bash
 .venv/bin/python scripts/verify_monitor_data_contract.py \
@@ -202,9 +204,10 @@ Git SHA、Ready、身份和 0% 流量。
   --verify
 ```
 
-验证器会在 published 水位附近真实执行 `dashboard_events` 和
-`dashboard_user_list`，核对服务实际消费的输出字段；只看 routine 名称或类型不能通过。
-两条读取使用 64 MiB 的独立费用硬上限（当前 BigQuery 编译结果至少需要 30 MiB），不会
+验证器会在 published 水位附近真实执行兼容 wrapper `dashboard_events` /
+`dashboard_user_list`，以及当前 runtime 唯一读取的 `dashboard_events_v2` /
+`dashboard_user_list_v2`，核对服务实际消费的输出字段；只看 routine 名称或类型不能通过。
+四条读取使用 64 MiB 的独立费用硬上限（当前 BigQuery 编译结果至少需要 30 MiB），不会
 借验收脚本放开无界扫描。
 
 additive DDL 对同一张表的新增字段必须合并为一次 metadata update，避免触发 BigQuery

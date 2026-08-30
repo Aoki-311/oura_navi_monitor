@@ -457,7 +457,12 @@ def _validate_receipt_snapshot(
         if schema.get(key) is not True:
             raise ValueError("schema receipt is missing " + key)
     routine_reads = _require_object(schema.get("apiRoutineReads"), "API routine reads")
-    for routine_name in ("dashboard_events", "dashboard_user_list"):
+    for routine_name in (
+        "dashboard_events",
+        "dashboard_user_list",
+        "dashboard_events_v2",
+        "dashboard_user_list_v2",
+    ):
         routine = _require_object(
             routine_reads.get(routine_name), "API routine read " + routine_name
         )

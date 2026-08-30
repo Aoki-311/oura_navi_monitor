@@ -378,6 +378,7 @@ def _run(
     current_job_image: str = IMAGE,
     current_dts_disabled: bool = True,
     api_routines_readable: bool = True,
+    unreadable_schema_routine: str = "",
     observation_72h_minutes: int = 4320,
     service_before: dict | None = None,
     service_after: dict | None = None,
@@ -455,8 +456,15 @@ def _run(
                 "apiRoutinesReady": True,
                 "apiRoutinesReadable": api_routines_readable,
                 "apiRoutineReads": {
-                    "dashboard_events": {"readable": True},
-                    "dashboard_user_list": {"readable": True},
+                    routine_name: {
+                        "readable": routine_name != unreadable_schema_routine
+                    }
+                    for routine_name in (
+                        "dashboard_events",
+                        "dashboard_user_list",
+                        "dashboard_events_v2",
+                        "dashboard_user_list_v2",
+                    )
                 },
                 "publishedStateReadable": True,
                 "capturedAt": "2026-08-29T00:00:00Z",
@@ -1106,6 +1114,25 @@ def test_promotion_rejects_a_schema_receipt_that_only_saw_routine_names(
 
     assert result.returncode != 0
     assert "schema receipt is missing apiRoutinesReadable" in result.stderr
+    assert not marker.exists()
+    assert not snapshot.exists()
+
+
+@pytest.mark.parametrize(
+    "runtime_routine",
+    ("dashboard_events_v2", "dashboard_user_list_v2"),
+)
+def test_promotion_rejects_schema_receipt_without_real_runtime_v2_read(
+    tmp_path: Path,
+    runtime_routine: str,
+) -> None:
+    result, snapshot, marker = _run(
+        tmp_path,
+        unreadable_schema_routine=runtime_routine,
+    )
+
+    assert result.returncode != 0
+    assert f"schema receipt has no real read for {runtime_routine}" in result.stderr
     assert not marker.exists()
     assert not snapshot.exists()
 

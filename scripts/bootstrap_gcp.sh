@@ -146,7 +146,11 @@ for object in \
     echo "canonical activation prerequisite missing: ${PROJECT_ID}.${DATASET_ID}.${object}" >&2; exit 2;
   }
 done
-for routine in dashboard_events dashboard_user_list; do
+for routine in \
+  dashboard_events \
+  dashboard_user_list \
+  dashboard_events_v2 \
+  dashboard_user_list_v2; do
   bq --project_id="${PROJECT_ID}" --location="${LOCATION}" show --routine \
     "${PROJECT_ID}:${DATASET_ID}.${routine}" >/dev/null || {
     echo "canonical activation prerequisite missing: ${PROJECT_ID}.${DATASET_ID}.${routine}" >&2; exit 2;

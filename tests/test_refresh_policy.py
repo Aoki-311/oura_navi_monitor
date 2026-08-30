@@ -251,8 +251,13 @@ def test_bootstrap_and_alerts_read_the_governed_policy() -> None:
     assert '${ROOT_DIR}/.venv/bin/python' not in bootstrap
 
 
+@pytest.mark.parametrize(
+    "missing_runtime_routine",
+    (None, "dashboard_events_v2", "dashboard_user_list_v2"),
+)
 def test_refresh_job_deploy_requires_exact_confirmation_and_writes_receipt(
     tmp_path: Path,
+    missing_runtime_routine: str | None,
 ) -> None:
     fake_bin = tmp_path / "bootstrap-bin"
     fake_bin.mkdir(exist_ok=True)
@@ -311,6 +316,9 @@ set -euo pipefail
 if [[ " $* " == *" query "* ]]; then
   printf '%s\n' '1'
 elif [[ " $* " == *" show "* ]]; then
+  if [[ -n "${FAKE_MISSING_RUNTIME_ROUTINE:-}" && " $* " == *"${FAKE_MISSING_RUNTIME_ROUTINE}"* ]]; then
+    exit 1
+  fi
   true
 else
   exit 91
@@ -327,6 +335,7 @@ fi
         "FAKE_MUTATION_MARKER": str(mutation_marker),
         "FAKE_JOB_JSON": json.dumps(_refresh_job_json(image)),
         "FAKE_SCHEDULER_JSON": json.dumps(scheduler),
+        "FAKE_MISSING_RUNTIME_ROUTINE": missing_runtime_routine or "",
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
     }
     base_arguments = [
@@ -383,6 +392,16 @@ fi
         capture_output=True,
         text=True,
     )
+
+    if missing_runtime_routine:
+        assert applied.returncode != 0
+        assert (
+            "canonical activation prerequisite missing: "
+            f"test-project.oura_navi_monitor.{missing_runtime_routine}"
+        ) in applied.stderr
+        assert not mutation_marker.exists()
+        assert not (tmp_path / "job-deploy.json").exists()
+        return
 
     assert applied.returncode == 0, applied.stderr
     assert mutation_marker.exists()
