@@ -144,14 +144,14 @@ def test_runbook_makes_candidate_proof_registration_a_pre_traffic_stop_gate() ->
     normalized = " ".join(runbook.split())
     registration = normalized.index("scripts/register_monitor_v2_revision.py")
     traffic_stop = normalized.index("禁止给 LCS candidate 切生产流量")
-    scheduler = normalized.index("之后才允许启用三小时 Scheduler")
 
-    assert registration < traffic_stop < scheduler
+    assert registration < traffic_stop
     assert "automatic HTTP request log" in runbook
     assert "monitor.v2 question_received" in runbook
     assert "定时刷新只读这个 ledger" in runbook
-    assert "activation 前" in runbook
-    assert "activation 起" in runbook
+    assert "该证明用于发布验收" in runbook
+    assert "不能让 recurring refresh 回滚整批" in runbook
+    assert "不再充当全体用户数据的运行时开关" in runbook
 
 
 class _QueryJob:

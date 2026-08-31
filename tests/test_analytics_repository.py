@@ -117,11 +117,12 @@ def test_legacy_publication_uses_the_existing_stable_routines_as_one_contract() 
         parameters = {item.name: item.value for item in config.query_parameters}
         assert "published_run_id" not in parameters
     metrics_sql, metrics_config, _location = client.calls[3]
-    assert ".dashboard_user_list`(@history_start_date, @today)" in metrics_sql
+    assert ".dashboard_user_list`(@history_start_date, @as_of)" in metrics_sql
     assert "dashboard_user_list_v2" not in metrics_sql
     metric_parameters = {
         item.name: item for item in metrics_config.query_parameters
     }
-    assert metric_parameters["today"].type_ == "DATE"
-    assert str(metric_parameters["today"].value) == "2026-08-24"
+    assert metric_parameters["as_of"].type_ == "TIMESTAMP"
+    assert metric_parameters["as_of"].value == _window().end_utc
+    assert "today" not in metric_parameters
     assert "published_run_id" not in metric_parameters

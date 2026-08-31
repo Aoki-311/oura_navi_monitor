@@ -17,6 +17,18 @@ def _sql(name: str) -> str:
     return (SQL_DIR / name).read_text(encoding="utf-8")
 
 
+def _checks_for_disposition(disposition: str) -> set[str]:
+    checks: set[str] = set()
+    for clause, resolved_disposition in re.findall(
+        r"WHEN\s+check_name\s+IN\s*\((.*?)\)\s+THEN\s+'([^']+)'",
+        _sql("check_data_quality.sql"),
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        if resolved_disposition.lower() == disposition.lower():
+            checks.update(re.findall(r"'([^']+)'", clause))
+    return checks
+
+
 def test_canonical_sql_files_and_objects_exist_once() -> None:
     required = {
         "create_dataset.sql",
@@ -223,13 +235,7 @@ def test_all_four_debug_ask_paths_are_classified_by_the_sql_owner() -> None:
 
 def test_v2_http_event_contract_is_bidirectional_and_route_exact() -> None:
     quality_sql = " ".join(_sql("check_data_quality.sql").lower().split())
-    batch_clause = quality_sql.split(
-        "then 'repaired' when check_name in (",
-        maxsplit=1,
-    )[1].split(
-        ") then 'batch_blocking'",
-        maxsplit=1,
-    )[0]
+    coverage_checks = _checks_for_disposition("coverage")
 
     assert re.search(
         r"endpoint_class in \(\s*'ask', 'ask_stream', 'debug_ask', "
@@ -248,7 +254,7 @@ def test_v2_http_event_contract_is_bidirectional_and_route_exact() -> None:
         "http_event_route_class_mismatch",
         "monitor_v2_question_completed_http_cardinality_mismatch",
     ):
-        assert f"'{check_name}'" in batch_clause
+        assert check_name in coverage_checks
 
 
 def test_http_contract_separates_completed_failures_from_accepted_requests() -> None:
@@ -344,15 +350,10 @@ def test_http_contract_separates_completed_failures_from_accepted_requests() -> 
     )
 
 
-def test_expected_v2_missing_trace_or_span_is_a_blocking_contract_failure() -> None:
+def test_expected_v2_missing_trace_or_span_is_diagnostic_without_batch_rollback() -> None:
     quality_sql = " ".join(_sql("check_data_quality.sql").lower().split())
-    batch_clause = quality_sql.split(
-        "then 'repaired' when check_name in (",
-        maxsplit=1,
-    )[1].split(
-        ") then 'batch_blocking'",
-        maxsplit=1,
-    )[0]
+    coverage_checks = _checks_for_disposition("coverage")
+    axis_checks = _checks_for_disposition("axis_unmeasured")
     missing_fields_check = quality_sql.split(
         "select 'monitor_v2_event_missing_http_correlation_fields'",
         maxsplit=1,
@@ -366,9 +367,9 @@ def test_expected_v2_missing_trace_or_span_is_a_blocking_contract_failure() -> N
         "monitor_v2_event_missing_http_correlation_fields",
         "monitor_v2_question_invalid_endpoint_class",
         "monitor_v2_http_missing_trace_context",
-        "monitor_v2_revision_contract_downgrade",
     ):
-        assert f"'{check_name}'" in batch_clause
+        assert check_name in coverage_checks
+    assert "monitor_v2_revision_contract_downgrade" in axis_checks
 
 
 def test_v2_revision_contract_uses_a_bounded_persistent_ledger() -> None:
@@ -448,15 +449,9 @@ def test_cutover_comes_only_from_a_self_verifying_registration_row() -> None:
     assert "@enforcement_start" not in quality_sql
 
 
-def test_legacy_unknown_v2_is_coverage_but_unknown_after_cutover_is_blocking() -> None:
+def test_unregistered_v2_revisions_remain_diagnostic_after_cutover() -> None:
     quality_sql = " ".join(_sql("check_data_quality.sql").lower().split())
-    batch_clause = quality_sql.split(
-        "then 'repaired' when check_name in (",
-        maxsplit=1,
-    )[1].split(
-        ") then 'batch_blocking'",
-        maxsplit=1,
-    )[0]
+    coverage_checks = _checks_for_disposition("coverage")
     post_event_check = quality_sql.split(
         "select 'unexpected_monitor_v2_revision_after_enforcement'",
         maxsplit=1,
@@ -474,18 +469,11 @@ def test_legacy_unknown_v2_is_coverage_but_unknown_after_cutover_is_blocking() -
     assert "request.source_ts >= enforcement.enforcement_start" in post_http_check
     assert "request.endpoint_class in ('ask', 'ask_stream')" in post_http_check
     assert "event.source_ts < enforcement.enforcement_start" in legacy_check
-    assert "'unexpected_monitor_v2_revision_after_enforcement'" in batch_clause
-    assert "'unexpected_accepted_business_http_revision_after_enforcement'" in batch_clause
-    assert "'legacy_unregistered_monitor_v2_revision'" not in batch_clause
-
-    def unknown_revision_blocks(*, activated_at: int | None, source_ts: int) -> bool:
-        return activated_at is not None and source_ts >= activated_at
-
-    # Candidate proof may precede traffic promotion by minutes. Until the
-    # drained activation is written, old production traffic remains coverage.
-    assert not unknown_revision_blocks(activated_at=None, source_ts=200)
-    assert not unknown_revision_blocks(activated_at=300, source_ts=299)
-    assert unknown_revision_blocks(activated_at=300, source_ts=300)
+    assert {
+        "unexpected_monitor_v2_revision_after_enforcement",
+        "unexpected_accepted_business_http_revision_after_enforcement",
+        "legacy_unregistered_monitor_v2_revision",
+    } <= coverage_checks
 
 
 def test_two_requests_sharing_one_trace_cannot_match_one_question_span() -> None:
@@ -612,39 +600,29 @@ def test_api_views_do_not_read_logging_raw_tables() -> None:
     assert "run_googleapis_com_requests" not in sql
 
 
-def test_missing_current_lifecycle_telemetry_blocks_an_incomplete_publish() -> None:
+def test_missing_current_lifecycle_telemetry_degrades_only_affected_measurements() -> None:
     normalized = " ".join(_sql("check_data_quality.sql").lower().split())
-    batch_clause = normalized.split(
-        "then 'repaired' when check_name in (",
-        maxsplit=1,
-    )[1].split(
-        ") then 'batch_blocking'",
-        maxsplit=1,
-    )[0]
+    coverage_checks = _checks_for_disposition("coverage")
+    axis_checks = _checks_for_disposition("axis_unmeasured")
     for check_name in (
         "accepted_http_without_question_event",
         "invalid_current_question_event_contract",
         "question_without_terminal",
         "answer_without_question",
+    ):
+        assert check_name in coverage_checks
+    for check_name in (
         "invalid_current_terminal_contract",
         "current_final_without_persistence_measurement",
         "current_final_without_demand_measurement",
         "current_terminal_without_latency_measurement",
     ):
-        assert f"'{check_name}'" in batch_clause
+        assert check_name in axis_checks
     assert "when 'batch_blocking' then 'critical'" in normalized
 
 
-def test_missing_or_malformed_current_contract_fields_block_publication() -> None:
-    normalized = " ".join(_sql("check_data_quality.sql").lower().split())
-    batch_clause = normalized.split(
-        "then 'repaired' when check_name in (",
-        maxsplit=1,
-    )[1].split(
-        ") then 'batch_blocking'",
-        maxsplit=1,
-    )[0]
-
+def test_missing_or_malformed_current_contract_fields_are_axis_unmeasured() -> None:
+    axis_checks = _checks_for_disposition("axis_unmeasured")
     for check_name in (
         "unknown_question_category",
         "unknown_secondary_question_category",
@@ -662,7 +640,16 @@ def test_missing_or_malformed_current_contract_fields_block_publication() -> Non
         "unknown_product_resolution_reason_code",
         "unknown_classification_status",
     ):
-        assert f"'{check_name}'" in batch_clause
+        assert check_name in axis_checks
+
+
+def test_only_structural_fact_integrity_failures_block_the_batch() -> None:
+    assert _checks_for_disposition("batch_blocking") == {
+        "run_manifest_accounting_mismatch",
+        "duplicate_question_event_id",
+        "duplicate_answer_event_id",
+        "duplicate_answer_request_id",
+    }
 
 
 def test_current_lifecycle_gates_do_not_reclassify_explicit_history_gaps() -> None:
@@ -731,21 +718,18 @@ def test_one_sided_telemetry_is_detected_before_an_incomplete_publish() -> None:
     assert "duplicate_source_answer_event_id" in sql
 
 
-def test_invalid_current_v2_producer_axes_are_visible_and_block_publication() -> None:
+def test_invalid_current_v2_producer_axes_are_visible_and_axis_unmeasured() -> None:
     sql = _sql("check_data_quality.sql").lower()
     assert "invalid_classification_producer" in sql
     assert "classification_status = 'producer_invalid'" in sql
     assert "invalid_product_resolution_counts" in sql
     assert "product_resolved_count > product_candidate_count" in sql
-    normalized = " ".join(sql.split())
-    assert (
-        "when check_name in ( "
-        "'invalid_classification_producer', "
-        "'invalid_task_producer', "
-        "'invalid_product_producer' "
-        ") then 'batch_blocking'"
-    ) in normalized
-    assert "when 'batch_blocking' then 'critical'" in normalized
+    assert {
+        "invalid_classification_producer",
+        "invalid_task_producer",
+        "invalid_product_producer",
+    } <= _checks_for_disposition("axis_unmeasured")
+    assert "when 'axis_unmeasured' then 'producer_error'" in " ".join(sql.split())
 
 
 def test_versioned_api_routines_coexist_with_legacy_two_argument_contracts() -> None:

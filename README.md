@@ -35,6 +35,17 @@ LCS 上游的结构化事件实现位于相邻仓库：
 ../lcs_mrchatbot-main
 ```
 
+修改两仓日志合同时，先用实际 YAML、运行环境和 LCS serializer 做一次无云端
+依赖的联合检查：
+
+```bash
+.venv/bin/python scripts/verify_lcs_monitor_local_contract.py \
+  --lcs-repo ../lcs_mrchatbot-main
+```
+
+这项检查只证明本地 producer/consumer 与部署配置相容，不替代 Cloud Build、
+BigQuery Refresh Job、候选 API 或页面验收。
+
 ## 本地启动
 
 生产模式读取 IAP 注入的 `x-goog-authenticated-user-email`，规范化邮箱后必须命中

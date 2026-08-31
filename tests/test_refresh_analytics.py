@@ -8,6 +8,7 @@ from app.jobs.refresh_analytics import (
     DataQualityGateError,
     PublicationOutcomeUnknownError,
     _failed_quality_checks,
+    _has_blocking_quality_failure,
     _render_begin_run_sql,
     render_publish_sql,
 )
@@ -221,6 +222,16 @@ def test_only_nonzero_quality_findings_emit_bounded_operator_events() -> None:
             "run_id": "run-1",
         }
     ]
+    assert not _has_blocking_quality_failure(
+        [
+            {
+                "check_name": "current_final_without_persistence_measurement",
+                "disposition": "axis_unmeasured",
+                "failure_count": 1,
+                "passed": False,
+            }
+        ]
+    )
 
 
 def test_run_identity_changes_when_a_retried_catchup_has_a_new_watermark() -> None:
@@ -436,7 +447,7 @@ class _QualityBlockedJob(AnalyticsRefreshJob):
         if sql.lstrip().startswith("DECLARE event_partition_start"):
             return [
                 {
-                    "check_name": "current_final_without_persistence_measurement",
+                    "check_name": "run_manifest_accounting_mismatch",
                     "disposition": "batch_blocking",
                     "severity": "critical",
                     "failure_count": 1,
@@ -453,9 +464,7 @@ def test_blocking_quality_is_a_typed_failure_and_releases_the_lease() -> None:
         job.run(now=datetime(2026, 8, 2, 12, tzinfo=timezone.utc))
 
     assert raised.value.run_id.startswith("refresh_")
-    assert raised.value.checks[0]["check_name"] == (
-        "current_final_without_persistence_measurement"
-    )
+    assert raised.value.checks[0]["check_name"] == "run_manifest_accounting_mismatch"
     assert job.failed_marked is True
     assert job.lease_released is True
 

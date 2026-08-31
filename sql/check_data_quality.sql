@@ -718,19 +718,42 @@ WITH valid_trace_contract_registrations AS (
         'run_manifest_accounting_mismatch',
         'duplicate_question_event_id',
         'duplicate_answer_event_id',
-        'duplicate_answer_request_id',
+        'duplicate_answer_request_id'
+      ) THEN 'batch_blocking'
+      WHEN check_name IN (
+        'duplicate_source_question_event_id',
+        'duplicate_source_answer_event_id',
+        'source_event_missing_identity',
+        'source_event_missing_correlation',
+        'source_event_invalid_timestamp',
+        'source_event_ambiguous_roster',
+        'unsupported_event_family',
+        'source_question_without_roster',
+        'source_answer_without_roster'
+      ) THEN 'row_quarantined'
+      -- Correlation, lifecycle arrival and revision-ledger findings remain
+      -- visible for release verification, but a single missing or late event
+      -- cannot freeze unrelated users or the recurring watermark.
+      WHEN check_name IN (
         'accepted_http_without_question_event',
         'http_event_route_class_mismatch',
         'monitor_v2_question_completed_http_cardinality_mismatch',
         'monitor_v2_event_missing_http_correlation_fields',
         'unexpected_monitor_v2_revision_after_enforcement',
         'unexpected_accepted_business_http_revision_after_enforcement',
+        'legacy_unregistered_monitor_v2_revision',
         'monitor_v2_question_invalid_endpoint_class',
         'monitor_v2_http_missing_trace_context',
-        'monitor_v2_revision_contract_downgrade',
+        'http_trace_contract_unavailable',
         'invalid_current_question_event_contract',
         'question_without_terminal',
-        'answer_without_question',
+        'answer_without_question'
+      ) THEN 'coverage'
+      -- The semantic views already own measured/unmeasured admission per
+      -- axis. These findings therefore remove only the affected measurement
+      -- from its denominator while preserving valid usage and sibling axes.
+      WHEN check_name IN (
+        'monitor_v2_revision_contract_downgrade',
         'invalid_current_terminal_contract',
         'current_final_without_persistence_measurement',
         'current_final_without_demand_measurement',
@@ -749,29 +772,11 @@ WITH valid_trace_contract_registrations AS (
         'unknown_classification_reason_code',
         'unknown_product_resolution_status',
         'unknown_product_resolution_reason_code',
-        'unknown_classification_status'
-      ) THEN 'batch_blocking'
-      WHEN check_name IN (
-        'duplicate_source_question_event_id',
-        'duplicate_source_answer_event_id',
-        'source_event_missing_identity',
-        'source_event_missing_correlation',
-        'source_event_invalid_timestamp',
-        'source_event_ambiguous_roster',
-        'unsupported_event_family',
-        'source_question_without_roster',
-        'source_answer_without_roster'
-      ) THEN 'row_quarantined'
-      -- Current v2 producers own every analytics axis. Producer-invalid and
-      -- resolver-failed rows may remain visible in a failed-run diagnostic,
-      -- but they must never advance the published snapshot as a partial
-      -- current measurement. Historical rows with genuinely absent legacy
-      -- fields remain non-blocking through their separate history contract.
-      WHEN check_name IN (
+        'unknown_classification_status',
         'invalid_classification_producer',
         'invalid_task_producer',
         'invalid_product_producer'
-      ) THEN 'batch_blocking'
+      ) THEN 'axis_unmeasured'
       ELSE 'coverage'
     END AS disposition
   FROM checks

@@ -198,16 +198,12 @@ class AnalyticsRepository:
                 ]
             )
         else:
-            local_zone = ZoneInfo(window.timezone)
-            today = (window.end_utc - timedelta(microseconds=1)).astimezone(
-                local_zone
-            ).date()
             source = (
                 f"{self._view('dashboard_user_list')}"
-                "(@history_start_date, @today)"
+                "(@history_start_date, @as_of)"
             )
             parameters.append(
-                bigquery.ScalarQueryParameter("today", "DATE", today)
+                bigquery.ScalarQueryParameter("as_of", "TIMESTAMP", as_of)
             )
         return self._run(
             f"SELECT * FROM {source} ORDER BY last_active_at DESC",

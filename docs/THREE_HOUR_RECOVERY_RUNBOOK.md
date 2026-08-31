@@ -1,6 +1,6 @@
 # LCS 与 OurA Navi Monitor 三小时刷新最终收口手册
 
-更新日：2026-08-30
+更新日：2026-08-31
 
 ## 1. 真正目标
 
@@ -8,9 +8,9 @@
 
 1. LCS 遇到失效父消息时，不再一直返回“回答无法生成”，也不会把问题接到未来、
    当前或不确定的轮次；恢复后用户消息和回答都能真正保存，刷新页面仍然存在。
-2. Monitor 能连续接收旧 v1 和新 v2 事件；可隔离的旧记录或单轴未计测不会抹掉上一次成功
-   正文。当前 v2 producer 若违反必填合同，必须阻断下一批发布并保留失败诊断，但页面仍读取
-   上一次成功批次，不能把已经发布的正文清空。
+2. Monitor 能连续接收旧 v1 和新 v2 事件；可隔离记录、生命周期晚到或单轴未计测只影响
+   对应记录/测量轴。只有 manifest 对账和事实主键完整性损坏才阻断整批发布；未登记 revision
+   继续留下诊断，但不能冻结正常用户数据和 watermark。
 3. 缺失的两天由同一个 Refresh Job 按固定目标水位补齐，并做到来源事件、正式事实、
    去重和隔离逐项对账；不能靠手工插 0 或只看水位前进。
 4. 稳态只有一个自动发布 owner：`oura-navi-monitor-refresh`。新 Scheduler 每 3 小时
@@ -60,7 +60,7 @@ API 的 GET 响应。现在服务端对全部 `/api/` 返回 `no-store`，前端
 
 - 带 `published_run_id` 的 `dashboard_events_v2` / `dashboard_user_list_v2` 是当前唯一正式
   run-bound reader owner；旧两参数 `dashboard_events(start,end)` /
-  `dashboard_user_list(start,today)` 只是在旧有流量排空期间调用 v2 的兼容 wrapper，不拥有第二套
+  `dashboard_user_list(start,as_of)` 只是在旧有流量排空期间调用 v2 的兼容 wrapper，不拥有第二套
   语义。只有旧 reader revision 正流量归零、最长请求 drain 完成、依赖 inventory 为零且观察门
   通过后，才能另行授权退役 wrapper；本轮 additive 发布不得提前删除。
 - additive schema/函数发布与 destructive cleanup 已分开；旧对象删除脚本的 apply 已
@@ -277,15 +277,12 @@ traffic 仍必须精确只有 target revision=100%。最后才在 BigQuery 事�
 SHA 与 live readback SHA。已激活、部分写入、坏 registration/activation 行都拒绝；定时任务
 没有写权威版本或 cutover 时间的路径。
 
-质量 SQL 只从同时拥有合法 registration 和合法 activation 的唯一 ledger row 推导
-`MIN(enforcement_start)`。activation 前所有未知 v2/HTTP 只报 legacy coverage；activation 起，
-任何未登记 revision 的 v2 event 或业务 2xx HTTP 都是 batch blocking。LCS 流量、Monitor v2
-enforcement、Monitor 数据链和 Monitor Web 流量是独立授权门。activation 后第一轮
-正式补数/刷新必须证明 expected revision 的 2xx HTTP 精确对应 question event，所有已有
-question event 也能反向对应包括 5xx 在内的 completed HTTP；缺 trace/span、路由错标、
-contract 降级，以及 enforcement 后未登记 v2 revision / 业务 2xx HTTP 均为 0。activation
-前旧未登记 revision 的历史 coverage 不冒充 v2，也不删除历史事实；之后才允许启用三小时
-Scheduler。Monitor Web 仍保持 0%，直至三周期、
+质量 SQL 只从合法 registration/activation ledger 行决定哪些 revision 可以启用严格的
+HTTP correlation 计测。未登记 revision、缺 trace/span 或路由关联异常始终保留为 coverage/
+axis-unmeasured 诊断，不能让 recurring refresh 回滚整批。activation 后第一轮正式补数/刷新
+仍须证明 expected revision 的 2xx HTTP 与 question event 能精确对应；该证明用于发布验收，
+不再充当全体用户数据的运行时开关。旧未登记 revision 不冒充严格 v2 计测，也不删除其可证明
+的基础事实。Monitor Web 仍保持 0%，直至三周期、
 DTS 暂停观察和登录业务验收全部完成。
 
 ### D. 先冻结旧 15 分钟 Scheduler
@@ -595,10 +592,9 @@ API/acceptance 原始 bytes 的 SHA-256，必须仍与 durable intent 完全一�
   超时/失败：不激活 enforcement、不补数。
 - enforcement ledger row 不是由唯一合法 registration + promotion receipt + live readback
   一次写成，或已存在/部分写入：停止；不能手改时间、跳过 drain 或让定时任务自注册。
-- LCS 新 revision 任一业务路由缺少 trace/span，出现一请求多事件/多请求一事件，或
-  expected revision 出现 2xx 无 question、event 无 completed HTTP、路由错标、contract
-  降级，或 enforcement 后出现未注册 v2 revision / 未注册业务 2xx HTTP：不启用新 Scheduler。
-  activation 前旧 revision 只报 legacy coverage，不能被误称为 expected v2 通过。
+- LCS expected revision 任一业务路由缺少 trace/span，出现一请求多事件/多请求一事件，或
+  出现 2xx 无 question、event 无 completed HTTP、路由错标、contract 降级：该 revision
+  不通过正式发布验收；周期 refresh 仍记录 coverage/axis-unmeasured，并继续发布其他正常事实。
 - 三个运行不是 Scheduler-proven 正式窗口：不暂停旧 DTS。
 - 任一正式 execution 的实际 digest/identity/terminal state 不匹配，或匹配到失败的 Scheduler
   Attempt：不暂停旧 DTS。
