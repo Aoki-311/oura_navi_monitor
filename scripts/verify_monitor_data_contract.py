@@ -114,14 +114,12 @@ REQUIRED_TABLE_COLUMNS: dict[str, set[str]] = {
 }
 REQUIRED_SOURCE_VIEWS = {"monitor_event_source", "http_request_source"}
 REQUIRED_API_ROUTINES = {
-    "dashboard_events",
-    "dashboard_user_list",
     "dashboard_events_v2",
     "dashboard_user_list_v2",
 }
 API_READ_MAXIMUM_BYTES = 67_108_864
 REQUIRED_API_OUTPUT_COLUMNS: dict[str, set[str]] = {
-    "dashboard_events": {
+    "dashboard_events_v2": {
         "question_event_id",
         "question_ts",
         "question_date",
@@ -149,7 +147,7 @@ REQUIRED_API_OUTPUT_COLUMNS: dict[str, set[str]] = {
         "total_latency_ms",
         "answer_measurement_profile",
     },
-    "dashboard_user_list": {
+    "dashboard_user_list_v2": {
         "roster_id",
         "area_key",
         "area",
@@ -160,12 +158,6 @@ REQUIRED_API_OUTPUT_COLUMNS: dict[str, set[str]] = {
         "user_message_count_7",
     },
 }
-REQUIRED_API_OUTPUT_COLUMNS["dashboard_events_v2"] = set(
-    REQUIRED_API_OUTPUT_COLUMNS["dashboard_events"]
-)
-REQUIRED_API_OUTPUT_COLUMNS["dashboard_user_list_v2"] = set(
-    REQUIRED_API_OUTPUT_COLUMNS["dashboard_user_list"]
-)
 
 
 def _iso(value: Any) -> str:
@@ -359,43 +351,6 @@ def verify_data_contract(
     end_date = data_through.date()
     start_date = end_date - timedelta(days=1)
     api_reads = {
-        "dashboard_events": _read_api_routine(
-            client,
-            sql=f"""
-                SELECT *
-                FROM `{dataset_ref}.dashboard_events`(@start_date, @end_date)
-                WHERE question_date BETWEEN @start_date AND @end_date
-                ORDER BY question_ts DESC
-                LIMIT 1
-            """,
-            parameters=[
-                bigquery.ScalarQueryParameter("start_date", "DATE", start_date),
-                bigquery.ScalarQueryParameter("end_date", "DATE", end_date),
-            ],
-            required_columns=REQUIRED_API_OUTPUT_COLUMNS["dashboard_events"],
-            routine_name="dashboard_events",
-            location=location,
-        ),
-        "dashboard_user_list": _read_api_routine(
-            client,
-            sql=f"""
-                SELECT *
-                FROM `{dataset_ref}.dashboard_user_list`(@history_start_date, @as_of)
-                ORDER BY last_active_at DESC
-                LIMIT 1
-            """,
-            parameters=[
-                bigquery.ScalarQueryParameter(
-                    "history_start_date", "DATE", start_date
-                ),
-                bigquery.ScalarQueryParameter(
-                    "as_of", "TIMESTAMP", data_through
-                ),
-            ],
-            required_columns=REQUIRED_API_OUTPUT_COLUMNS["dashboard_user_list"],
-            routine_name="dashboard_user_list",
-            location=location,
-        ),
         "dashboard_events_v2": _read_api_routine(
             client,
             sql=f"""

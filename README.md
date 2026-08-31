@@ -21,8 +21,8 @@ fallback、旧 BigQuery 读取链或关键词分类器。
 - `app/`：FastAPI、IAP 管理员校验、分析 API、用户名单/标签管理、
   Firestore 会话读取和增量任务。
 - `frontend/`：三页面原生 ES Modules、Chart.js、日本 SVG 地图和响应式样式。
-- `sql/`：同一 `oura_navi_monitor` dataset 内的正式事实表、一个有日期参数的
-  `dashboard_events` 语义函数、一个用户列表函数和数据质量检查；不维护
+- `sql/`：同一 `oura_navi_monitor` dataset 内的正式事实表、唯一的
+  `dashboard_events_v2` / `dashboard_user_list_v2` run-bound 读取合同和数据质量检查；不维护
   `user_daily` 或第二套 dashboard 快照。
 - `scripts/`：默认仅输出 plan；需要云端写入的脚本必须同时提供精确参数、
   受批准凭据和 `--apply`。

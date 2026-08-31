@@ -139,8 +139,6 @@ class _Client:
         for routine_name in (
             "dashboard_events_v2",
             "dashboard_user_list_v2",
-            "dashboard_events",
-            "dashboard_user_list",
         ):
             columns = REQUIRED_API_OUTPUT_COLUMNS[routine_name]
             if routine_name in sql:
@@ -150,9 +148,9 @@ class _Client:
                         parameter.name: parameter
                         for parameter in job_config.query_parameters
                     }
-                    expected = {"history_start_date", "as_of"}
-                    if routine_name.endswith("_v2"):
-                        expected.add("published_run_id")
+                    expected = {
+                        "history_start_date", "as_of", "published_run_id"
+                    }
                     assert set(parameters) == expected
                     assert parameters["as_of"].type_ == "TIMESTAMP"
                     assert parameters["as_of"].value == datetime(
@@ -190,8 +188,6 @@ def test_data_contract_receipt_requires_tables_views_routines_and_publication() 
     assert receipt["publishedRunId"] == "run-1"
     assert receipt["dataThrough"] == "2026-08-29T00:00:00Z"
     assert receipt["apiReadMaximumBytes"] == API_READ_MAXIMUM_BYTES
-    assert receipt["apiRoutineReads"]["dashboard_events"]["readable"] is True
-    assert receipt["apiRoutineReads"]["dashboard_user_list"]["readable"] is True
     assert receipt["apiRoutineReads"]["dashboard_events_v2"]["readable"] is True
     assert receipt["apiRoutineReads"]["dashboard_user_list_v2"]["readable"] is True
     assert receipt["scopePolicyVersion"] == "summary_role_v1"

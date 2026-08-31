@@ -57,8 +57,8 @@ def test_canonical_sql_files_and_objects_exist_once() -> None:
         "pipeline_event_issues",
         "pipeline_run_event_manifest",
         "monitor_contract_revision_ledger",
-        "dashboard_events",
-        "dashboard_user_list",
+        "dashboard_events_v2",
+        "dashboard_user_list_v2",
     ):
         assert object_name in combined
 
@@ -571,11 +571,12 @@ def test_user_list_preserves_the_actual_last_question_timestamp() -> None:
     view_sql = _sql("create_api_views.sql").lower()
     assert "max(question_ts) as last_active_at" in view_sql
     assert "timestamp(last_seen.last_active_date" not in view_sql
-    assert "dashboard_user_list`" in view_sql
+    assert "dashboard_user_list_v2`" in view_sql
     assert "drop " not in view_sql
     retirement = _sql("retire_legacy_api_objects.sql").lower()
     assert "drop table if exists `${project_id}.${dataset_id}.user_daily`" in retirement
-    assert "drop table function" not in retirement
+    assert "drop table function if exists `${project_id}.${dataset_id}.dashboard_events`" in retirement
+    assert "drop table function if exists `${project_id}.${dataset_id}.dashboard_user_list`" in retirement
 
 
 def test_user_list_uses_an_exact_as_of_cutoff_not_a_date_only_snapshot() -> None:
@@ -583,10 +584,7 @@ def test_user_list_uses_an_exact_as_of_cutoff_not_a_date_only_snapshot() -> None
     user_list = view_sql.split(
         "create or replace table function `${project_id}.${dataset_id}.dashboard_user_list_v2`",
         maxsplit=1,
-    )[1].split(
-        "create or replace table function `${project_id}.${dataset_id}.dashboard_events`",
-        maxsplit=1,
-    )[0]
+    )[1]
 
     assert "p_as_of timestamp" in user_list
     assert "question_ts < p_as_of" in user_list
@@ -732,20 +730,16 @@ def test_invalid_current_v2_producer_axes_are_visible_and_axis_unmeasured() -> N
     assert "when 'axis_unmeasured' then 'producer_error'" in " ".join(sql.split())
 
 
-def test_versioned_api_routines_coexist_with_legacy_two_argument_contracts() -> None:
+def test_api_views_publish_only_one_run_versioned_reader_contract() -> None:
     sql = " ".join(_sql("create_api_views.sql").lower().split())
     assert "dashboard_events_v2`( p_start_date date, p_end_date date, p_run_id string" in sql
     assert "dashboard_user_list_v2`( p_history_start date, p_as_of timestamp, p_run_id string" in sql
-    assert "dashboard_events`( p_start_date date, p_end_date date" in sql
-    assert "dashboard_user_list`( p_history_start date, p_as_of timestamp" in sql
-    assert "dashboard_events_v2`( p_start_date, p_end_date," in sql
-    assert "dashboard_user_list_v2`( p_history_start, p_as_of," in sql
-    assert "p_run_id is null and scope.snapshot_run_id is null" in sql
-    assert "p_run_id is null and snapshot_run_id is null" in sql
-    assert "versioned_scope.snapshot_run_id = p_run_id" not in sql
-    assert sql.count("cast(null as string)") == 2
-    # The legacy wrapper keeps the broad event universe; only the new service's
-    # run-versioned roster owner applies the strict Summary role cohort.
+    assert "dashboard_events`( p_start_date date, p_end_date date" not in sql
+    assert "dashboard_user_list`( p_history_start date, p_as_of timestamp" not in sql
+    assert sql.count("create or replace table function") == 2
+    assert "p_run_id is null" not in sql
+    assert "scope.snapshot_run_id = p_run_id" in sql
+    assert "where snapshot_run_id = p_run_id" in sql
     assert "global_scope_enabled = true" not in sql
 
 

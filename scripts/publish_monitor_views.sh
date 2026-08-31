@@ -21,7 +21,7 @@ done
 [[ -n "${PROJECT_ID}" ]] || { echo "--project is required" >&2; exit 2; }
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "mode=$([[ "${APPLY}" == "true" ]] && echo apply || echo plan)"
-echo "publish backward-compatible canonical semantic table functions for ${PROJECT_ID}.${DATASET_ID}"
+echo "publish the canonical run-bound semantic table functions for ${PROJECT_ID}.${DATASET_ID}"
 if [[ "${APPLY}" != "true" ]]; then exit 0; fi
 python3 "${ROOT_DIR}/scripts/credential_preflight.py" \
   --credential-file "${CREDENTIAL_FILE}"

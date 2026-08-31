@@ -10,7 +10,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.domain.analytics_tasks import analytics_task, analytics_task_label
-from app.domain.analytics_roster_projection import project_user_scope
 from app.domain.analytics_snapshot import content_fingerprint, roster_fingerprint
 from app.domain.analysis_scopes import (
     AnalysisScope,
@@ -486,7 +485,7 @@ class AnalyticsService:
     @staticmethod
     def _run_versioned_snapshot_id(
         publication: dict[str, Any],
-    ) -> str | None:
+    ) -> str:
         receipt_fields = (
             "scope_policy_version",
             "global_roster_fingerprint",
@@ -499,7 +498,9 @@ class AnalyticsService:
             for field in receipt_fields
         }
         if not any(receipt_values.values()):
-            return None
+            raise AnalyticsSnapshotConflictError(
+                "published analytics scope receipt is unavailable"
+            )
         published_run_id = str(
             publication.get("published_run_id") or ""
         ).strip()
@@ -668,15 +669,9 @@ class AnalyticsService:
                 "published analytics scope receipt is unavailable"
             )
         published_run_id = self._run_versioned_snapshot_id(publication)
-        if published_run_id is None:
-            projection = project_user_scope(self._directory)
-            raw_rows = list(projection)
-            receipt_source = projection.fingerprints
-        else:
-            raw_rows = self._analytics.published_roster_snapshot(
-                published_run_id=published_run_id
-            )
-            receipt_source = publication
+        raw_rows = self._analytics.published_roster_snapshot(
+            published_run_id=published_run_id
+        )
         if not isinstance(raw_rows, list) or not raw_rows:
             raise AnalyticsSnapshotConflictError(
                 "published roster projection is unavailable"
@@ -690,10 +685,7 @@ class AnalyticsService:
                 )
             return values.pop()
 
-        if (
-            published_run_id is not None
-            and uniform_text("snapshot_run_id") != published_run_id
-        ):
+        if uniform_text("snapshot_run_id") != published_run_id:
             raise AnalyticsSnapshotConflictError(
                 "published roster projection run does not match pointer"
             )
@@ -829,9 +821,9 @@ class AnalyticsService:
             ) from exc
         if (
             roster_receipt
-            != str(receipt_source.get(f"{scope.value}_roster_fingerprint") or "")
+            != str(publication.get(f"{scope.value}_roster_fingerprint") or "")
             or content_receipt
-            != str(receipt_source.get(f"{scope.value}_content_fingerprint") or "")
+            != str(publication.get(f"{scope.value}_content_fingerprint") or "")
         ):
             raise AnalyticsSnapshotConflictError(
                 "published roster projection fingerprint does not match pointer"

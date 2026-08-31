@@ -147,8 +147,6 @@ for object in \
   }
 done
 for routine in \
-  dashboard_events \
-  dashboard_user_list \
   dashboard_events_v2 \
   dashboard_user_list_v2; do
   bq --project_id="${PROJECT_ID}" --location="${LOCATION}" show --routine \

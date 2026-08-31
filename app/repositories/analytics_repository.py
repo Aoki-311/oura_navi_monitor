@@ -25,12 +25,7 @@ class AnalyticsRepository:
         self,
         published_run_id: str | None,
     ) -> tuple[str, list[Any]]:
-        run_id = str(published_run_id or "").strip()
-        if not run_id:
-            return (
-                f"{self._view('dashboard_events')}(@start_date, @end_date)",
-                [],
-            )
+        run_id = self._required_published_run_id(published_run_id)
         return (
             f"{self._view('dashboard_events_v2')}(@start_date, @end_date, @published_run_id)",
             [
@@ -39,6 +34,13 @@ class AnalyticsRepository:
                 )
             ],
         )
+
+    @staticmethod
+    def _required_published_run_id(published_run_id: str | None) -> str:
+        run_id = str(published_run_id or "").strip()
+        if not run_id:
+            raise ValueError("published_run_id is required")
+        return run_id
 
     def _history_start_date(self):
         text = str(self._settings.monitor_analytics_start_at or "").strip()
@@ -177,34 +179,21 @@ class AnalyticsRepository:
         window: MetricsTimeWindow,
         published_run_id: str | None,
     ) -> list[dict[str, Any]]:
-        run_id = str(published_run_id or "").strip()
+        run_id = self._required_published_run_id(published_run_id)
         as_of = window.end_utc.astimezone(timezone.utc)
         parameters = [
             bigquery.ScalarQueryParameter(
                 "history_start_date", "DATE", self._history_start_date()
-            )
+            ),
+            bigquery.ScalarQueryParameter("as_of", "TIMESTAMP", as_of),
+            bigquery.ScalarQueryParameter(
+                "published_run_id", "STRING", run_id
+            ),
         ]
-        if run_id:
-            source = (
-                f"{self._view('dashboard_user_list_v2')}"
-                "(@history_start_date, @as_of, @published_run_id)"
-            )
-            parameters.extend(
-                [
-                    bigquery.ScalarQueryParameter("as_of", "TIMESTAMP", as_of),
-                    bigquery.ScalarQueryParameter(
-                        "published_run_id", "STRING", run_id
-                    ),
-                ]
-            )
-        else:
-            source = (
-                f"{self._view('dashboard_user_list')}"
-                "(@history_start_date, @as_of)"
-            )
-            parameters.append(
-                bigquery.ScalarQueryParameter("as_of", "TIMESTAMP", as_of)
-            )
+        source = (
+            f"{self._view('dashboard_user_list_v2')}"
+            "(@history_start_date, @as_of, @published_run_id)"
+        )
         return self._run(
             f"SELECT * FROM {source} ORDER BY last_active_at DESC",
             parameters,

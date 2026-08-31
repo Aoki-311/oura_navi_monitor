@@ -58,13 +58,10 @@ API 的 GET 响应。现在服务端对全部 `/api/` 返回 `no-store`，前端
 
 ## 3. 已形成的代码门禁
 
-- 带 `published_run_id` 的 `dashboard_events_v2` / `dashboard_user_list_v2` 是当前唯一正式
-  run-bound reader owner；旧两参数 `dashboard_events(start,end)` /
-  `dashboard_user_list(start,as_of)` 只是在旧有流量排空期间调用 v2 的兼容 wrapper，不拥有第二套
-  语义。只有旧 reader revision 正流量归零、最长请求 drain 完成、依赖 inventory 为零且观察门
-  通过后，才能另行授权退役 wrapper；本轮 additive 发布不得提前删除。
-- additive schema/函数发布与 destructive cleanup 已分开；旧对象删除脚本的 apply 已
-  永久硬停止。
+- 带 `published_run_id` 的 `dashboard_events_v2` / `dashboard_user_list_v2` 是唯一正式
+  run-bound reader owner；没有旧函数兼容 wrapper，也没有 Firestore 实时名单 fallback。
+- additive schema/函数发布与旧对象 retirement 分开执行；先验证 v2 与已发布
+  `user_scope`，再精确删除旧函数和旧 dashboard 对象。
 - Refresh Job 单任务、单 writer、固定命令、30 分钟 timeout、一次 Job retry；Scheduler
   60 秒 attempt deadline、0 次 Scheduler retry，避免同一次时点被控制面重复触发。
 - Monitor Web candidate 沿用并回读当前线上 runtime service account；代码 push 和自动
@@ -111,7 +108,7 @@ API 的 GET 响应。现在服务端对全部 `/api/` 返回 `no-store`，前端
 19. 旧 DTS 自动调度暂停；
 20. DTS 暂停后的 45 分钟与 72 小时观察；
 21. Monitor 最终流量；
-22. 未来旧对象删除。
+22. 最终 readback 再确认旧 API 函数与旧 dashboard 对象均不存在。
 
 所有会读取或改动 GCP 的运维入口都必须显式传入同一个批准 key 的规范化绝对路径；路径必须
 是当前用户拥有、权限精确为 `0600` 的普通文件，symlink 与任何其他权限一律拒绝。脚本只把
@@ -157,8 +154,10 @@ read/create/set/delete 权限（可由受控的 `roles/datastore.user` 或等价
 `<MONITOR_RUNTIME_SA>` 创建 `candidate` tag 且 `--no-traffic`，随后回读 revision、digest、
 Git SHA、Ready、身份和 0% 流量。
 
-先只发布 additive base/source/fact/schema 和两个正式 table function。不要运行
-`sql/retire_legacy_api_objects.sql`；旧 Monitor revision 尚有流量时尤其禁止 DROP。
+先发布 additive base/source/fact/schema 和两个正式 table function，执行一次 Refresh，
+并证明 published receipt、run-bound `user_scope` 与两个 v2 真实读取全部通过；随后渲染并
+精确执行 `sql/retire_legacy_api_objects.sql`。退役前不得删除，退役后不得保留旧函数当作
+fallback。
 
 三个入口按下列顺序先运行 plan；每个 apply 都是 BigQuery 写操作，必须对同一参数单独
 批准、逐命令注入批准 key 并加 `--apply`：
@@ -204,10 +203,9 @@ Monitor promotion 前必须完成，不能用只有 DDL 对象的检查冒充：
   --verify
 ```
 
-验证器会在 published 水位附近真实执行兼容 wrapper `dashboard_events` /
-`dashboard_user_list`，以及当前 runtime 唯一读取的 `dashboard_events_v2` /
-`dashboard_user_list_v2`，核对服务实际消费的输出字段；只看 routine 名称或类型不能通过。
-四条读取使用 64 MiB 的独立费用硬上限（当前 BigQuery 编译结果至少需要 30 MiB），不会
+验证器会在 published 水位附近真实执行 runtime 唯一读取的 `dashboard_events_v2` /
+`dashboard_user_list_v2`，并绑定已发布 `published_run_id` 核对服务实际消费的输出字段；
+只看 routine 名称或类型不能通过。两条读取使用 64 MiB 的独立费用硬上限，不会
 借验收脚本放开无界扫描。
 
 additive DDL 对同一张表的新增字段必须合并为一次 metadata update，避免触发 BigQuery
@@ -364,18 +362,16 @@ apply 时加 plan 输出的 `--confirm-backfill` 与 `--apply`。任务从已发
 相等。脚本还必须从本次 Cloud Run execution 本身回读相同 digest、writer identity 和
 terminal success，不能只相信执行前的可变 Job template。
 
-### G. 保持 0% candidate，验证共享 reader contract
+### G. 保持 0% candidate，验证唯一 reader contract
 
-2026-08-29 的旧基线快照显示 `4fefea4` reader 只调用 `dashboard_events` /
-`dashboard_user_list`，没有四张旧 DTS 表的 runtime 引用；这不是本轮的当前证明。
-本次必须先用最终提交 SHA 和真实线上 revision 重新盘点。candidate 在 DTS 观察完成前
-保持 0%；先验证 additive
-routine 对当前生产 reader 向后兼容，再通过 candidate tag 验证历史两天、部分日、失败质量
+本次必须用最终提交 SHA 和真实线上 revision 重新盘点。candidate 在数据验收完成前
+保持 0%；先验证唯一 v2 routine 能按 published run 同时读取历史与当前事实，再通过
+candidate tag 验证历史两天、部分日、失败质量
 提示、用户详情、三个独立分析轴和导出。保存绑定精确 revision/digest/SHA/身份的 API、
 登录浏览器与业务验收证据，但此阶段禁止切 traffic。
 
-如果只读 inventory 发现当前生产 reader 重新依赖任何 legacy DTS 表，或者 additive
-routine 不能向后兼容，立即 STOP；不能在旧 reader 未接管 canonical contract 时先停 DTS。
+如果只读 inventory 发现 runtime 依赖任何 legacy reader 或第二套名单来源，立即 STOP；
+不能用 fallback 掩盖 canonical contract 不完整。
 
 ### H. 启用新三小时 Scheduler
 

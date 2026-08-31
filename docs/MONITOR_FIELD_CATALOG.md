@@ -278,10 +278,10 @@ Web Writer 的机器注释如果缺失、格式错误或 demand ID 不完整，�
 所以刷新中间态仍完整读取旧 snapshot，不会把实时 Firestore 名单和已发布分析事实混用。
 
 旧两参数 `dashboard_events(start,end)` / `dashboard_user_list(history_start,as_of)`
-只是在旧 revision 排空期间保留的兼容 wrapper，不是当前 owner，也不是 v2 失败后的
-fallback。只有旧 revision 流量归零、最长请求排空、依赖清单确认和观察门通过后，才可
-通过独立授权退役。不存在 `user_daily` 或 overview/detail mega view 第二 owner；地区、
-回访、用户列表和产品矩阵都来自同一 published run 的正式问题事实与名单投影。
+已经退出正式合同，应用、验证器和部署前置条件均不得调用。历史日志与新日志都保留在同一
+套正式事实表中，由 v2 函数按同一 `published_run_id` 读取。不存在 `user_daily`、
+overview/detail mega view、实时 Firestore 名单或其他第二 owner；地区、回访、用户列表和
+产品矩阵都来自同一 published run 的正式问题事实与名单投影。
 
 历史 `record_origin` 只有 `firestore_history` 与 `legacy_audit_history`。旧审计表只
 迁移身份、时间、精确旧分类等可证明字段；旧 `answer_success_flag`、raw payload、

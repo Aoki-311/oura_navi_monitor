@@ -75,7 +75,7 @@
   正式 execution 均绑定同一 digest/identity。
 - [x] Monitor candidate 保持当前 runtime identity；Refresh writer 与 Scheduler invoker
   在数据切换时分离；Monitor 与 Job 镜像必须是同一 digest。
-- [x] additive table functions 与 destructive cleanup 分开；旧对象删除 apply 永久硬停止。
+- [x] additive v2 table functions 与旧对象 retirement 分开；验证 published run 后才精确执行 retirement。
 - [x] Monitor promotion 强制消费同一 activation → DTS pause → 45 分钟 → 72 小时收据链，
   并在切流前再次要求精确 candidate=0%，现场复核 Job/Scheduler/DTS 未漂移；LCS 仍使用
   其独立 promotion 门。

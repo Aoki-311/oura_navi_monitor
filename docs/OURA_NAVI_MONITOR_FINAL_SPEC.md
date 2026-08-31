@@ -5,9 +5,8 @@
 ## 0. 文档地位与当前结论
 
 本文件是 Monitor 产品口径、数据责任和切换顺序的唯一规范。产品不建立并行的 `v2`、
-`v3`、`legacy`、`shadow` 或 `backup` dashboard；内部 BigQuery reader 仍使用版本化函数完成
-不中断的 additive 切换。当前代码只读带 `published_run_id` 的 v2 函数，旧两参数函数只是
-旧 revision 排空期间的兼容 wrapper，不构成第二套产品或语义 owner。LCS 已公开的
+`v3`、`legacy`、`shadow` 或 `backup` dashboard。当前代码只读带 `published_run_id` 的两个
+v2 BigQuery 函数；旧两参数函数不属于正式合同，也不作为 fallback。LCS 已公开的
 `/v3/ask/stream` 是上游业务路由，不属于 Monitor 页面版本命名。
 
 本文件定义目标产品合同，不记录未经本轮重新读取的“当前线上状态”。代码、Git、build、
@@ -250,15 +249,14 @@ three dashboard pages with module-local state
 - `dashboard_events_v2(p_start_date, p_end_date, p_published_run_id)`
 - `dashboard_user_list_v2(p_history_start, p_today, p_published_run_id)`
 
-`dashboard_events(p_start_date, p_end_date)` 与
-`dashboard_user_list(p_history_start, p_today)` 在混合 revision 窗口继续作为旧 reader 的
-兼容 wrapper。wrapper 保持旧 revision 自洽的名单语义，但新代码不得调用，也不得把它当作
-失败 fallback。只有旧 reader 正流量为零、最长请求 drain 完成、依赖 inventory 为零且规定的
-观察门通过后，才可在独立授权步骤中退役；additive schema/routine 发布不得提前删除。
+旧两参数 `dashboard_events(p_start_date, p_end_date)` 与
+`dashboard_user_list(p_history_start, p_today)` 不再属于正式合同。Web runtime、数据合同验证器
+和 Refresh 激活前置检查只认上述两个 v2 函数；没有混合 revision wrapper，也没有失败
+fallback。历史与当前事实不按 reader 分叉，统一由同一个 `published_run_id` 读取。
 
 运行代码不存在 `user_daily`、`dashboard_overview`、`dashboard_user_detail` 或独立于
-`pipeline_state` + run-versioned `user_scope` 的第二个 snapshot owner；这些旧对象在依赖、
-流量和观察期完成前仍物理保留，但不再自动发布或作为 fallback。
+`pipeline_state` + run-versioned `user_scope` 的第二个 snapshot owner；旧 API 函数和旧
+dashboard 对象由独立 retirement SQL 删除，不能物理保留成潜在 fallback。
 `monitor_answer_events` 是一次性输入，不是页面 fallback；历史成功标志、raw payload、
 问题正文和邮箱均不迁移。历史 apply 和精确验证成功前不得删除它。
 

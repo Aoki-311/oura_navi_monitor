@@ -460,8 +460,6 @@ def _run(
                         "readable": routine_name != unreadable_schema_routine
                     }
                     for routine_name in (
-                        "dashboard_events",
-                        "dashboard_user_list",
                         "dashboard_events_v2",
                         "dashboard_user_list_v2",
                     )

@@ -217,13 +217,7 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events_v
       AND DATE_ADD(q.question_date, INTERVAL 1 DAY)
   LEFT JOIN `${PROJECT_ID}.${DATASET_ID}.user_scope` scope
     ON q.roster_id = scope.roster_id
-    AND (
-      scope.snapshot_run_id = p_run_id
-      OR (
-        p_run_id IS NULL
-        AND scope.snapshot_run_id IS NULL
-      )
-    )
+    AND scope.snapshot_run_id = p_run_id
 );
 
 -- The current USER_MAP roster reads the same question fact owner directly.
@@ -237,13 +231,7 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_user_lis
   WITH current_scope AS (
     SELECT *
     FROM `${PROJECT_ID}.${DATASET_ID}.user_scope`
-    WHERE (
-        snapshot_run_id = p_run_id
-        OR (
-          p_run_id IS NULL
-          AND snapshot_run_id IS NULL
-        )
-      )
+    WHERE snapshot_run_id = p_run_id
       AND is_active = TRUE AND user_map_scope_enabled = TRUE
   ), question_facts AS (
     SELECT roster_id, question_date, question_ts
@@ -273,72 +261,4 @@ CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_user_lis
     COALESCE(metrics.user_message_count_7, 0) AS user_message_count_7
   FROM current_scope scope
   LEFT JOIN metrics USING (roster_id)
-);
-
--- Compatibility owners for revisions that still call the original
--- two-parameter routines. They resolve the current published pointer and may
--- be retired only after those revisions have drained. New code calls the v2
--- routines with an already captured run id and never relies on this lookup.
-CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_events`(
-  p_start_date DATE,
-  p_end_date DATE
-) AS (
-  SELECT *
-  FROM `${PROJECT_ID}.${DATASET_ID}.dashboard_events_v2`(
-    p_start_date,
-    p_end_date,
-    IF(
-      EXISTS (
-        SELECT 1
-        FROM `${PROJECT_ID}.${DATASET_ID}.user_scope` versioned_scope
-        WHERE versioned_scope.snapshot_run_id = (
-          SELECT published_run_id
-          FROM `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
-          WHERE source = 'published' AND status = 'succeeded'
-          ORDER BY updated_at DESC
-          LIMIT 1
-        )
-      ),
-      (
-        SELECT published_run_id
-        FROM `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
-        WHERE source = 'published' AND status = 'succeeded'
-        ORDER BY updated_at DESC
-        LIMIT 1
-      ),
-      CAST(NULL AS STRING)
-    )
-  )
-);
-
-CREATE OR REPLACE TABLE FUNCTION `${PROJECT_ID}.${DATASET_ID}.dashboard_user_list`(
-  p_history_start DATE,
-  p_as_of TIMESTAMP
-) AS (
-  SELECT *
-  FROM `${PROJECT_ID}.${DATASET_ID}.dashboard_user_list_v2`(
-    p_history_start,
-    p_as_of,
-    IF(
-      EXISTS (
-        SELECT 1
-        FROM `${PROJECT_ID}.${DATASET_ID}.user_scope` versioned_scope
-        WHERE versioned_scope.snapshot_run_id = (
-          SELECT published_run_id
-          FROM `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
-          WHERE source = 'published' AND status = 'succeeded'
-          ORDER BY updated_at DESC
-          LIMIT 1
-        )
-      ),
-      (
-        SELECT published_run_id
-        FROM `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
-        WHERE source = 'published' AND status = 'succeeded'
-        ORDER BY updated_at DESC
-        LIMIT 1
-      ),
-      CAST(NULL AS STRING)
-    )
-  )
 );

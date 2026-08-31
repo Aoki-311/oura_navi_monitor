@@ -167,7 +167,7 @@ class _PublishedScopePipeline:
         return snapshot
 
 
-class _LegacyPublicationPipeline:
+class _MissingScopeReceiptPipeline:
     @staticmethod
     def publication_snapshot():
         return {
@@ -241,7 +241,7 @@ def _window(now: datetime) -> MetricsTimeWindow:
     )
 
 
-def test_legacy_publication_selects_live_roster_and_stable_analytics_together() -> None:
+def test_missing_scope_receipt_never_selects_a_second_roster_or_reader() -> None:
     now = datetime.now(timezone.utc)
     directory = _Directory()
     for user in directory.users:
@@ -249,16 +249,18 @@ def test_legacy_publication_selects_live_roster_and_stable_analytics_together() 
     analytics = _ContractRecordingAnalytics()
     service = _ProductionAnalyticsService(
         analytics=analytics,
-        pipeline=_LegacyPublicationPipeline(),
+        pipeline=_MissingScopeReceiptPipeline(),
         directory=directory,
         settings=Settings(),
     )
 
-    payload = service.overview(window=_window(now))
+    with pytest.raises(
+        AnalyticsSnapshotConflictError,
+        match="scope receipt is unavailable",
+    ):
+        service.overview(window=_window(now))
 
-    assert payload["publishedRunId"] == "legacy-run"
-    assert payload["scopeUserCount"] == 1
-    assert analytics.query_run_ids == [None, None]
+    assert analytics.query_run_ids == []
 
 
 def test_partial_run_versioned_receipt_never_mixes_contracts() -> None:
