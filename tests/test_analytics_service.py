@@ -167,6 +167,30 @@ class _PublishedScopePipeline:
         return snapshot
 
 
+class _LegacyPublicationPipeline:
+    @staticmethod
+    def publication_snapshot():
+        return {
+            "publication_state_available": True,
+            "data_through": datetime.now(timezone.utc),
+            "published_run_id": "legacy-run",
+        }
+
+
+class _ContractRecordingAnalytics(_Analytics):
+    def __init__(self):
+        super().__init__([])
+        self.query_run_ids: list[str | None] = []
+
+    def overview_events(self, **kwargs):
+        self.query_run_ids.append(kwargs.get("published_run_id"))
+        return []
+
+    def activity_events(self, **kwargs):
+        self.query_run_ids.append(kwargs.get("published_run_id"))
+        return []
+
+
 def AnalyticsService(*, analytics, pipeline, directory, settings):
     """Build production service tests around a frozen published projection.
 
@@ -215,6 +239,39 @@ def _window(now: datetime) -> MetricsTimeWindow:
         requested_days=7,
         bucket_minutes=1440,
     )
+
+
+def test_legacy_publication_selects_live_roster_and_stable_analytics_together() -> None:
+    now = datetime.now(timezone.utc)
+    directory = _Directory()
+    for user in directory.users:
+        user["updated_at"] = datetime(2026, 8, 30, tzinfo=timezone.utc)
+    analytics = _ContractRecordingAnalytics()
+    service = _ProductionAnalyticsService(
+        analytics=analytics,
+        pipeline=_LegacyPublicationPipeline(),
+        directory=directory,
+        settings=Settings(),
+    )
+
+    payload = service.overview(window=_window(now))
+
+    assert payload["publishedRunId"] == "legacy-run"
+    assert payload["scopeUserCount"] == 1
+    assert analytics.query_run_ids == [None, None]
+
+
+def test_partial_run_versioned_receipt_never_mixes_contracts() -> None:
+    with pytest.raises(
+        AnalyticsSnapshotConflictError,
+        match="scope receipt is incomplete",
+    ):
+        _ProductionAnalyticsService._run_versioned_snapshot_id(
+            {
+                "published_run_id": "run-partial",
+                "scope_policy_version": SCOPE_POLICY_VERSION,
+            }
+        )
 
 
 def _single_day_window() -> MetricsTimeWindow:

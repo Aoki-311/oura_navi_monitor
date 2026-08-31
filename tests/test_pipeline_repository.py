@@ -67,6 +67,8 @@ def test_publication_snapshot_reads_watermark_and_quality_from_one_published_run
     publication_sql = " ".join(client.calls[0][0].lower().split())
     diagnostics_sql = " ".join(client.calls[1][0].lower().split())
     assert "pipeline_state" in publication_sql
+    assert "to_json_string(publication)" in publication_sql
+    assert "'$.scope_policy_version'" in publication_sql
     assert "pipeline_runs" not in publication_sql
     assert "pipeline_event_issues" not in publication_sql
     assert "pipeline_quality_events" not in publication_sql

@@ -21,6 +21,25 @@ class AnalyticsRepository:
     def _view(self, name: str) -> str:
         return f"`{self._dataset}.{name}`"
 
+    def _events_source(
+        self,
+        published_run_id: str | None,
+    ) -> tuple[str, list[Any]]:
+        run_id = str(published_run_id or "").strip()
+        if not run_id:
+            return (
+                f"{self._view('dashboard_events')}(@start_date, @end_date)",
+                [],
+            )
+        return (
+            f"{self._view('dashboard_events_v2')}(@start_date, @end_date, @published_run_id)",
+            [
+                bigquery.ScalarQueryParameter(
+                    "published_run_id", "STRING", run_id
+                )
+            ],
+        )
+
     def _history_start_date(self):
         text = str(self._settings.monitor_analytics_start_at or "").strip()
         if not text:
@@ -86,12 +105,15 @@ class AnalyticsRepository:
         self,
         *,
         window: MetricsTimeWindow,
-        published_run_id: str,
+        published_run_id: str | None,
         area_key: str = "",
     ) -> list[dict[str, Any]]:
+        events_source, contract_parameters = self._events_source(
+            published_run_id
+        )
         sql = f"""
         SELECT *
-        FROM {self._view('dashboard_events_v2')}(@start_date, @end_date, @published_run_id)
+        FROM {events_source}
         WHERE question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts
           AND question_ts < @end_ts
@@ -105,9 +127,7 @@ class AnalyticsRepository:
                 bigquery.ScalarQueryParameter("start_ts", "TIMESTAMP", window.start_utc),
                 bigquery.ScalarQueryParameter("end_ts", "TIMESTAMP", window.end_utc),
                 bigquery.ScalarQueryParameter("area_key", "STRING", area_key),
-                bigquery.ScalarQueryParameter(
-                    "published_run_id", "STRING", published_run_id
-                ),
+                *contract_parameters,
                 *self._partition_parameters(window),
             ],
         )
@@ -116,12 +136,15 @@ class AnalyticsRepository:
         self,
         *,
         end: datetime,
-        published_run_id: str,
+        published_run_id: str | None,
         area_key: str = "",
     ) -> list[dict[str, Any]]:
+        events_source, contract_parameters = self._events_source(
+            published_run_id
+        )
         sql = f"""
         SELECT roster_id, question_ts, question_date, area_key, area, role
-        FROM {self._view('dashboard_events_v2')}(@start_date, @end_date, @published_run_id)
+        FROM {events_source}
         WHERE question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts
           AND question_ts < @end_ts
@@ -143,9 +166,7 @@ class AnalyticsRepository:
                 bigquery.ScalarQueryParameter("start_ts", "TIMESTAMP", window.start_utc),
                 bigquery.ScalarQueryParameter("end_ts", "TIMESTAMP", end),
                 bigquery.ScalarQueryParameter("area_key", "STRING", area_key),
-                bigquery.ScalarQueryParameter(
-                    "published_run_id", "STRING", published_run_id
-                ),
+                *contract_parameters,
                 *self._partition_parameters(window),
             ],
         )
@@ -154,24 +175,43 @@ class AnalyticsRepository:
         self,
         *,
         window: MetricsTimeWindow,
-        published_run_id: str,
+        published_run_id: str | None,
     ) -> list[dict[str, Any]]:
-        # ``dashboard_user_list`` contains rolling seven-day fields. Bind its
-        # exact exclusive cutoff to the same immutable window receipt as the
-        # rest of the page; a delayed CSV replay must never include later
-        # events from the same local date.
+        run_id = str(published_run_id or "").strip()
         as_of = window.end_utc.astimezone(timezone.utc)
+        parameters = [
+            bigquery.ScalarQueryParameter(
+                "history_start_date", "DATE", self._history_start_date()
+            )
+        ]
+        if run_id:
+            source = (
+                f"{self._view('dashboard_user_list_v2')}"
+                "(@history_start_date, @as_of, @published_run_id)"
+            )
+            parameters.extend(
+                [
+                    bigquery.ScalarQueryParameter("as_of", "TIMESTAMP", as_of),
+                    bigquery.ScalarQueryParameter(
+                        "published_run_id", "STRING", run_id
+                    ),
+                ]
+            )
+        else:
+            local_zone = ZoneInfo(window.timezone)
+            today = (window.end_utc - timedelta(microseconds=1)).astimezone(
+                local_zone
+            ).date()
+            source = (
+                f"{self._view('dashboard_user_list')}"
+                "(@history_start_date, @today)"
+            )
+            parameters.append(
+                bigquery.ScalarQueryParameter("today", "DATE", today)
+            )
         return self._run(
-            f"SELECT * FROM {self._view('dashboard_user_list_v2')}(@history_start_date, @as_of, @published_run_id) ORDER BY last_active_at DESC",
-            [
-                bigquery.ScalarQueryParameter(
-                    "history_start_date", "DATE", self._history_start_date()
-                ),
-                bigquery.ScalarQueryParameter("as_of", "TIMESTAMP", as_of),
-                bigquery.ScalarQueryParameter(
-                    "published_run_id", "STRING", published_run_id
-                ),
-            ],
+            f"SELECT * FROM {source} ORDER BY last_active_at DESC",
+            parameters,
         )
 
     def user_detail_events(
@@ -179,11 +219,14 @@ class AnalyticsRepository:
         *,
         roster_id: str,
         window: MetricsTimeWindow,
-        published_run_id: str,
+        published_run_id: str | None,
     ) -> list[dict[str, Any]]:
+        events_source, contract_parameters = self._events_source(
+            published_run_id
+        )
         sql = f"""
         SELECT *
-        FROM {self._view('dashboard_events_v2')}(@start_date, @end_date, @published_run_id)
+        FROM {events_source}
         WHERE roster_id = @roster_id
           AND question_date BETWEEN @start_date AND @end_date
           AND question_ts >= @start_ts
@@ -197,9 +240,7 @@ class AnalyticsRepository:
                 bigquery.ScalarQueryParameter("roster_id", "STRING", roster_id),
                 bigquery.ScalarQueryParameter("start_ts", "TIMESTAMP", window.start_utc),
                 bigquery.ScalarQueryParameter("end_ts", "TIMESTAMP", window.end_utc),
-                bigquery.ScalarQueryParameter(
-                    "published_run_id", "STRING", published_run_id
-                ),
+                *contract_parameters,
                 *self._partition_parameters(window),
             ],
         )

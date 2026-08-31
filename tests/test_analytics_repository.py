@@ -89,3 +89,39 @@ def test_published_roster_snapshot_is_read_only_from_the_captured_run() -> None:
     assert "labels_json" in sql
     parameters = {item.name: item.value for item in config.query_parameters}
     assert parameters == {"published_run_id": "run-42"}
+
+
+def test_legacy_publication_uses_the_existing_stable_routines_as_one_contract() -> None:
+    client = _Client()
+    repository = AnalyticsRepository(
+        Settings(monitor_analytics_start_at="2026-03-16T00:00:00Z"),
+        client=client,
+    )
+
+    repository.overview_events(window=_window(), published_run_id=None)
+    repository.activity_events(
+        end=_window().end_utc,
+        published_run_id=None,
+    )
+    repository.user_detail_events(
+        roster_id="roster_1",
+        window=_window(),
+        published_run_id=None,
+    )
+    repository.user_metrics(window=_window(), published_run_id=None)
+
+    assert len(client.calls) == 4
+    for sql, config, _location in client.calls[:3]:
+        assert ".dashboard_events`(@start_date, @end_date)" in sql
+        assert "dashboard_events_v2" not in sql
+        parameters = {item.name: item.value for item in config.query_parameters}
+        assert "published_run_id" not in parameters
+    metrics_sql, metrics_config, _location = client.calls[3]
+    assert ".dashboard_user_list`(@history_start_date, @today)" in metrics_sql
+    assert "dashboard_user_list_v2" not in metrics_sql
+    metric_parameters = {
+        item.name: item for item in metrics_config.query_parameters
+    }
+    assert metric_parameters["today"].type_ == "DATE"
+    assert str(metric_parameters["today"].value) == "2026-08-24"
+    assert "published_run_id" not in metric_parameters

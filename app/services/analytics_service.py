@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.domain.analytics_tasks import analytics_task, analytics_task_label
+from app.domain.analytics_roster_projection import project_user_scope
 from app.domain.analytics_snapshot import content_fingerprint, roster_fingerprint
 from app.domain.analysis_scopes import (
     AnalysisScope,
@@ -472,10 +473,7 @@ class AnalyticsService:
     ) -> None:
         self._analytics = analytics
         self._pipeline = pipeline
-        # User Management owns live Firestore. Analytics intentionally does
-        # not retain that repository: every roster/label read comes from the
-        # run-versioned BigQuery projection selected by pipeline_state.
-        del directory
+        self._directory = directory
         self._settings = settings
 
     def _publication_snapshot(self) -> dict[str, Any]:
@@ -484,6 +482,36 @@ class AnalyticsService:
             snapshot = snapshot_reader()
             return dict(snapshot) if isinstance(snapshot, dict) else {}
         return {"data_through": self._pipeline.data_through()}
+
+    @staticmethod
+    def _run_versioned_snapshot_id(
+        publication: dict[str, Any],
+    ) -> str | None:
+        receipt_fields = (
+            "scope_policy_version",
+            "global_roster_fingerprint",
+            "global_content_fingerprint",
+            "user_map_roster_fingerprint",
+            "user_map_content_fingerprint",
+        )
+        receipt_values = {
+            field: str(publication.get(field) or "").strip()
+            for field in receipt_fields
+        }
+        if not any(receipt_values.values()):
+            return None
+        published_run_id = str(
+            publication.get("published_run_id") or ""
+        ).strip()
+        if (
+            receipt_values["scope_policy_version"] != SCOPE_POLICY_VERSION
+            or not published_run_id
+            or any(not receipt_values[field] for field in receipt_fields[1:])
+        ):
+            raise AnalyticsSnapshotConflictError(
+                "published analytics scope receipt is incomplete"
+            )
+        return published_run_id
 
     @staticmethod
     def _source_pipeline_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -635,18 +663,20 @@ class AnalyticsService:
         *,
         publication: dict[str, Any],
     ) -> _RosterSnapshot:
-        published_run_id = str(publication.get("published_run_id") or "").strip()
-        if (
-            not published_run_id
-            or str(publication.get("scope_policy_version") or "").strip()
-            != SCOPE_POLICY_VERSION
-        ):
+        if publication.get("publication_state_available") is False:
             raise AnalyticsSnapshotConflictError(
                 "published analytics scope receipt is unavailable"
             )
-        raw_rows = self._analytics.published_roster_snapshot(
-            published_run_id=published_run_id
-        )
+        published_run_id = self._run_versioned_snapshot_id(publication)
+        if published_run_id is None:
+            projection = project_user_scope(self._directory)
+            raw_rows = list(projection)
+            receipt_source = projection.fingerprints
+        else:
+            raw_rows = self._analytics.published_roster_snapshot(
+                published_run_id=published_run_id
+            )
+            receipt_source = publication
         if not isinstance(raw_rows, list) or not raw_rows:
             raise AnalyticsSnapshotConflictError(
                 "published roster projection is unavailable"
@@ -660,7 +690,10 @@ class AnalyticsService:
                 )
             return values.pop()
 
-        if uniform_text("snapshot_run_id") != published_run_id:
+        if (
+            published_run_id is not None
+            and uniform_text("snapshot_run_id") != published_run_id
+        ):
             raise AnalyticsSnapshotConflictError(
                 "published roster projection run does not match pointer"
             )
@@ -796,9 +829,9 @@ class AnalyticsService:
             ) from exc
         if (
             roster_receipt
-            != str(publication.get(f"{scope.value}_roster_fingerprint") or "")
+            != str(receipt_source.get(f"{scope.value}_roster_fingerprint") or "")
             or content_receipt
-            != str(publication.get(f"{scope.value}_content_fingerprint") or "")
+            != str(receipt_source.get(f"{scope.value}_content_fingerprint") or "")
         ):
             raise AnalyticsSnapshotConflictError(
                 "published roster projection fingerprint does not match pointer"
@@ -889,7 +922,7 @@ class AnalyticsService:
             item for item in self._analytics.overview_events(
                 window=window,
                 area_key=area_key,
-                published_run_id=str(publication["published_run_id"]),
+                published_run_id=self._run_versioned_snapshot_id(publication),
             )
             if str(item.get("roster_id") or "") in roster_ids and bool(item.get("valid_question", True))
         ]
@@ -897,7 +930,7 @@ class AnalyticsService:
             item for item in self._analytics.activity_events(
                 end=window.end_utc,
                 area_key=area_key,
-                published_run_id=str(publication["published_run_id"]),
+                published_run_id=self._run_versioned_snapshot_id(publication),
             )
             if str(item.get("roster_id") or "") in roster_ids
         ]
@@ -1113,7 +1146,7 @@ class AnalyticsService:
         events = [
             item for item in self._analytics.overview_events(
                 window=window,
-                published_run_id=str(publication["published_run_id"]),
+                published_run_id=self._run_versioned_snapshot_id(publication),
             )
             if str(item.get("roster_id") or "") in roster_ids and bool(item.get("valid_question", True))
         ]
@@ -1188,7 +1221,7 @@ class AnalyticsService:
             str(item.get("roster_id") or ""): item
             for item in self._analytics.user_metrics(
                 window=window,
-                published_run_id=str(publication["published_run_id"]),
+                published_run_id=self._run_versioned_snapshot_id(publication),
             )
         }
         activity_times: dict[str, list[datetime]] = defaultdict(list)
@@ -1196,7 +1229,7 @@ class AnalyticsService:
         for item in self._analytics.activity_events(
             end=window.end_utc,
             area_key=area_key,
-            published_run_id=str(publication["published_run_id"]),
+            published_run_id=self._run_versioned_snapshot_id(publication),
         ):
             roster_id = str(item.get("roster_id") or "")
             timestamp = _as_datetime(item.get("question_ts"))
@@ -1206,7 +1239,7 @@ class AnalyticsService:
         for item in self._analytics.overview_events(
             window=window,
             area_key=area_key,
-            published_run_id=str(publication["published_run_id"]),
+            published_run_id=self._run_versioned_snapshot_id(publication),
         ):
             if str(item.get("roster_id") or "") in roster_ids and bool(item.get("valid_question", True)):
                 completion_by_user[str(item.get("roster_id") or "")].append(item)
@@ -1354,7 +1387,7 @@ class AnalyticsService:
         events = self._analytics.user_detail_events(
             roster_id=roster_id,
             window=window,
-            published_run_id=str(publication["published_run_id"]),
+            published_run_id=self._run_versioned_snapshot_id(publication),
         )
         events = [item for item in events if bool(item.get("valid_question", True))]
         label_rows, label_diagnostics = self._label_catalog(
@@ -1419,7 +1452,7 @@ class AnalyticsService:
                 item
                 for item in self._analytics.user_metrics(
                     window=window,
-                    published_run_id=str(publication["published_run_id"]),
+                    published_run_id=self._run_versioned_snapshot_id(publication),
                 )
                 if str(item.get("roster_id") or "") == roster_id
             ),
@@ -1430,7 +1463,7 @@ class AnalyticsService:
         peer_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in self._analytics.overview_events(
             window=window,
-            published_run_id=str(publication["published_run_id"]),
+            published_run_id=self._run_versioned_snapshot_id(publication),
         ):
             peer_id = str(item.get("roster_id") or "")
             if peer_id in peer_ids and bool(item.get("valid_question", True)):

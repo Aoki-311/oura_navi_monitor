@@ -135,13 +135,28 @@ class PipelineRepository:
                     SELECT
                       data_through,
                       published_run_id,
-                      scope_policy_version,
-                      global_roster_fingerprint,
-                      global_content_fingerprint,
-                      user_map_roster_fingerprint,
-                      user_map_content_fingerprint,
+                      JSON_VALUE(
+                        TO_JSON_STRING(publication),
+                        '$.scope_policy_version'
+                      ) AS scope_policy_version,
+                      JSON_VALUE(
+                        TO_JSON_STRING(publication),
+                        '$.global_roster_fingerprint'
+                      ) AS global_roster_fingerprint,
+                      JSON_VALUE(
+                        TO_JSON_STRING(publication),
+                        '$.global_content_fingerprint'
+                      ) AS global_content_fingerprint,
+                      JSON_VALUE(
+                        TO_JSON_STRING(publication),
+                        '$.user_map_roster_fingerprint'
+                      ) AS user_map_roster_fingerprint,
+                      JSON_VALUE(
+                        TO_JSON_STRING(publication),
+                        '$.user_map_content_fingerprint'
+                      ) AS user_map_content_fingerprint,
                       updated_at
-                    FROM {self._table}
+                    FROM {self._table} AS publication
                     WHERE source = 'published' AND status = 'succeeded'
                     ORDER BY updated_at DESC
                     LIMIT 1
