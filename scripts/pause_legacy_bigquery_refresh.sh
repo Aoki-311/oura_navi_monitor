@@ -65,6 +65,7 @@ JOB_NAME="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import 
 SCHEDULER_NAME="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_name)')"
 OLD_SCHEDULER_NAME="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.legacy_scheduler_name)')"
 SCHEDULER_CRON="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_cron)')"
+SCHEDULER_TRIGGER_SOURCE="scheduler_hourly"
 SCHEDULER_TIMEZONE="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.timezone)')"
 SCHEDULER_ATTEMPT_DEADLINE_SECONDS="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_attempt_deadline_seconds)')"
 SCHEDULER_MAX_RETRY_ATTEMPTS="$(PYTHONPATH="${ROOT_DIR}" python3 -c 'from app.refresh_policy import REFRESH_POLICY; print(REFRESH_POLICY.scheduler_max_retry_attempts)')"
@@ -423,7 +424,7 @@ expected = {
     "retries": int(retries),
 }
 if actual != expected:
-    raise SystemExit(f"canonical three-hour scheduler does not match governed policy: {actual}")
+    raise SystemExit(f"canonical hourly scheduler does not match governed policy: {actual}")
 print(
     f"{actual['state']},{actual['schedule']},{actual['timezone']},"
     f"{actual['uri']},{actual['service_account']},"
@@ -458,7 +459,7 @@ query_canonical_gate() {
      AND started_at >= @canonical_start_at
      AND source = 'published'
      AND status = 'succeeded'
-     AND trigger_source = 'scheduler_three_hour'
+     AND trigger_source = '${SCHEDULER_TRIGGER_SOURCE}'
      AND NULLIF(execution_id, '') IS NOT NULL
      AND NOT STARTS_WITH(execution_id, 'local-')
    ORDER BY started_at"

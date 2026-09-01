@@ -26,6 +26,10 @@ test("overview renders seven analytics modules and preserves charts after refres
   for (const title of ["主要KPI", "利用環境・モード", "利用推移", "活性度分布", "ユーザー一覧", "日本利用マップ", "製品ニーズ"]) await expect(page.locator("main")).toContainText(title);
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator('[data-module="usage"]')).toContainText("途中集計");
+  await expect(page.locator('[data-module="usage"]')).not.toContainText("反映済み時刻");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("公開済みの集計データを表示しています");
+  await expect(page.locator("[data-freshness-banner]")).not.toContainText("反映済み");
+  await expect(page.locator("[data-freshness-banner]")).not.toContainText("2026/08/23");
   await expect(page.locator("#overviewUsers tbody tr")).toHaveCount(2);
   await expect(page.locator('[data-module="tasks"] h3')).toHaveText("質問種類");
   await expect(page.locator("main")).toContainText("製品 × 質問種類");
@@ -1184,7 +1188,8 @@ test("stale freshness metadata never hides otherwise available data", async ({ p
   });
   await page.goto("/dashboard");
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("3時間ごと");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("反映済み");
+  await expect(page.locator("[data-freshness-banner]")).not.toContainText("反映済み");
+  await expect(page.locator("[data-freshness-banner]")).not.toContainText("2026/08/20");
   await expect(page.locator("[data-freshness-banner]")).toContainText("更新が遅れています");
   await expect(page.locator("[data-freshness-banner]")).toContainText("元イベント 2件");
   await expect(page.locator("[data-freshness-banner]")).toContainText("重複配信 3件");
@@ -1320,7 +1325,9 @@ test("rolling compatibility and independent region-user metadata failures preser
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.locator("#regionRanking")).toContainText("関西");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("反映済み");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("公開済みの集計データを表示しています");
+  await expect(page.locator("[data-freshness-banner]")).not.toContainText("反映済み");
+  await expect(page.locator("[data-freshness-banner]")).not.toContainText("2026/08/23");
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("3時間ごと");
 });
 

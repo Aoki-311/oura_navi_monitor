@@ -1,17 +1,16 @@
 import { escapeHtml } from "./dom.js";
-import { displayCount, displayDateTime } from "../viewModels/formatters.js";
+import { displayCount } from "../viewModels/formatters.js";
 
 export function renderFreshnessBanner(target, freshness, quality = null, metadataIssues = []) {
   if (!target) return;
   const resolvedFreshness = freshness && typeof freshness === "object" ? freshness : null;
-  const through = resolvedFreshness?.dataThrough ? displayDateTime(resolvedFreshness.dataThrough) : "未取得";
   const reflection = resolvedFreshness
-    ? `反映済み: ${through}`
+    ? "公開済みの集計データを表示しています。"
     : "更新情報を確認できません。表示中の集計値は保持しています。";
   const stale = resolvedFreshness?.state === "stale"
-    ? `更新が遅れています。データは ${through} までです。これ以降の 0 や空欄は「利用なし」を意味しません。`
+    ? "更新が遅れています。直近分が未反映のため、0件や空欄を「利用なし」とは判断できません。"
     : resolvedFreshness?.state === "unknown"
-      ? "公開済みデータの時刻を確認できないため、0件表示を利用なしとは判断できません。"
+      ? "公開済みデータの状態を確認できないため、0件表示を利用なしとは判断できません。"
       : "";
   const isolated = quality?.isolatedEventCount > 0
     ? `利用回数と回答結果は集計済みですが、${displayCount(quality.isolatedEventCount)}件は分類・質問種類・製品のいずれかを隔離し、該当グラフから除外しています。`

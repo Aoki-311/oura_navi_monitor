@@ -19,7 +19,7 @@ def test_release_configuration_removes_the_legacy_identity_secret_binding() -> N
     assert "--set-secrets" not in cloudbuild
     assert "--remove-secrets=MONITOR_IDENTITY_HMAC_KEY" in cloudbuild
     policy = (root / "app" / "refresh_policy.py").read_text(encoding="utf-8")
-    assert 'scheduler_cron: str = "5 */3 * * *"' in policy
+    assert 'scheduler_cron: str = "5 * * * *"' in policy
     assert "max_window_hours: int = 24" in policy
     assert "MONITOR_REFRESH_MAX_WINDOW_HOURS" not in runtime_files
 

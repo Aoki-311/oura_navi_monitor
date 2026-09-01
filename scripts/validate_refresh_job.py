@@ -76,7 +76,7 @@ def validate_refresh_job(
         "app.jobs.refresh_analytics",
         "--apply",
         "--trigger-source",
-        "scheduler_three_hour",
+        "scheduler_hourly",
     ]
     if command != ["python"] or args != expected_args:
         raise ValueError("refresh Job command is not the governed scheduler owner")

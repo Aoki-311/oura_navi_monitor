@@ -38,7 +38,7 @@ LOCK_COLLECTION = "monitor_release_locks"
 def _scheduler_json() -> dict:
     return {
         "state": "ENABLED",
-        "schedule": "5 */3 * * *",
+        "schedule": "5 * * * *",
         "timeZone": "Asia/Tokyo",
         "attemptDeadline": "60s",
         "retryConfig": {"retryCount": 0},
@@ -70,7 +70,7 @@ def _job_json(image: str = IMAGE) -> dict:
                             "app.jobs.refresh_analytics",
                             "--apply",
                             "--trigger-source",
-                            "scheduler_three_hour",
+                            "scheduler_hourly",
                         ],
                         "env": [
                             {"name": "MONITOR_PROJECT_ID", "value": PROJECT},
@@ -887,7 +887,7 @@ def test_promotion_binds_acceptance_identity_and_exact_traffic_readback(
     assert len(receipt["dts72hReceiptSha256"]) == 64
     assert receipt["firestoreDatabase"] == FIRESTORE_DATABASE
     assert receipt["releaseLockCollection"] == LOCK_COLLECTION
-    assert receipt["canonicalSchedulerGovernance"]["schedule"] == "5 */3 * * *"
+    assert receipt["canonicalSchedulerGovernance"]["schedule"] == "5 * * * *"
     assert receipt["canonicalJobGovernance"]["serviceAccount"] == REFRESH_SERVICE_ACCOUNT
     assert receipt["legacyTransferGovernance"]["disabled"] is True
     assert set(receipt["initialGovernanceEvidence"]) == {

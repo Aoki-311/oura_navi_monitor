@@ -50,7 +50,7 @@ def _refresh_job_json(image: str) -> dict[str, object]:
                             "app.jobs.refresh_analytics",
                             "--apply",
                             "--trigger-source",
-                            "scheduler_three_hour",
+                            "scheduler_hourly",
                         ],
                         "env": [
                             {
@@ -117,7 +117,7 @@ def _validated_refresh_contract(image: str) -> dict[str, object]:
             "app.jobs.refresh_analytics",
             "--apply",
             "--trigger-source",
-            "scheduler_three_hour",
+            "scheduler_hourly",
         ],
         "environment": {
             "MONITOR_PROJECT_ID": "test-project",
@@ -163,10 +163,10 @@ def _successful_reconciliation(
     ]
 
 
-def test_three_hour_policy_is_the_single_timing_owner() -> None:
+def test_hourly_policy_is_the_single_timing_owner() -> None:
     settings = Settings()
 
-    assert REFRESH_POLICY.scheduler_cron == "5 */3 * * *"
+    assert REFRESH_POLICY.scheduler_cron == "5 * * * *"
     assert REFRESH_POLICY.job_name == "oura-navi-monitor-refresh"
     assert REFRESH_POLICY.scheduler_name == "oura-navi-monitor-refresh-three-hour"
     assert REFRESH_POLICY.legacy_scheduler_name == (
@@ -178,12 +178,14 @@ def test_three_hour_policy_is_the_single_timing_owner() -> None:
     assert REFRESH_POLICY.legacy_scheduler_attempt_deadline_seconds == 30
     assert REFRESH_POLICY.scheduler_max_retry_attempts == 0
     assert REFRESH_POLICY.timezone == "Asia/Tokyo"
-    assert REFRESH_POLICY.cadence_minutes == 180
+    assert REFRESH_POLICY.cadence_minutes == 60
     assert REFRESH_POLICY.expected_delay_minutes == 5
     assert REFRESH_POLICY.event_future_tolerance_minutes == 10
     assert REFRESH_POLICY.overlap_minutes == 240
     assert REFRESH_POLICY.max_window_hours == 24
-    assert REFRESH_POLICY.freshness_stale_after_minutes == 240
+    assert REFRESH_POLICY.freshness_stale_after_minutes == 120
+    assert REFRESH_POLICY.no_success_warning_minutes == 120
+    assert REFRESH_POLICY.no_success_critical_minutes == 180
     assert REFRESH_POLICY.lease_ttl_minutes == 45
     for legacy_override in (
         "monitor_refresh_cadence_minutes",
@@ -207,7 +209,7 @@ def test_next_refresh_uses_the_five_minute_japan_boundary() -> None:
         2026, 8, 27, 15, 5, tzinfo=timezone.utc
     )
     assert next_scheduled_refresh(now=at_midnight_boundary) == datetime(
-        2026, 8, 27, 18, 5, tzinfo=timezone.utc
+        2026, 8, 27, 16, 5, tzinfo=timezone.utc
     )
 
 
@@ -244,7 +246,7 @@ def test_bootstrap_and_alerts_read_the_governed_policy() -> None:
     assert "REFRESH_POLICY.no_success_warning_minutes" in alerts
     assert "REFRESH_POLICY.no_success_critical_minutes" in alerts
     assert "refresh-every-15m" not in bootstrap
-    assert "--trigger-source,scheduler_three_hour" in bootstrap
+    assert "--trigger-source,scheduler_hourly" in bootstrap
     assert 'PYTHON_BIN="python3"' in bootstrap
     assert '--python) PYTHON_BIN="$2"' in bootstrap
     assert bootstrap.count("python3") == 1
@@ -275,7 +277,7 @@ def test_refresh_job_deploy_requires_exact_confirmation_and_writes_receipt(
     )
     scheduler = {
         "state": "PAUSED",
-        "schedule": "5 */3 * * *",
+        "schedule": "5 * * * *",
         "timeZone": "Asia/Tokyo",
         "attemptDeadline": "60s",
         "retryConfig": {"retryCount": 0},
@@ -431,7 +433,7 @@ def test_legacy_dts_pause_defaults_to_a_read_only_plan() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "mode=plan" in result.stdout
-    assert "schedule=5 */3 * * *" in result.stdout
+    assert "schedule=5 * * * *" in result.stdout
     assert "pause automatic scheduling only" in result.stdout
 
 
@@ -572,7 +574,7 @@ if [[ " $* " == *" scheduler jobs describe "* ]]; then
     deadline="30s"
     service_account="${FAKE_OLD_SCHEDULER_SERVICE_ACCOUNT}"
   else
-    schedule="5 */3 * * *"
+    schedule="5 * * * *"
     deadline="60s"
     service_account="${FAKE_NEW_SCHEDULER_SERVICE_ACCOUNT}"
   fi
@@ -700,7 +702,7 @@ if [[ " $* " == *" scheduler jobs describe "* ]]; then
   else
     state="PAUSED"
     [[ ! -e "${FAKE_NEW_ENABLED}" ]] || state="ENABLED"
-    schedule="5 */3 * * *"
+    schedule="5 * * * *"
     deadline="60s"
     service_account="${FAKE_NEW_SCHEDULER_SERVICE_ACCOUNT}"
   fi
@@ -1184,7 +1186,7 @@ CREATE OR REPLACE TABLE `test-project.oura_navi_monitor.monitor_dashboard_snapsh
     job_uri = "https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/test-project/jobs/oura-navi-monitor-refresh:run"
     scheduler_readback = {
         "state": "ENABLED",
-        "schedule": "5 */3 * * *",
+        "schedule": "5 * * * *",
         "timeZone": "Asia/Tokyo",
         "attemptDeadline": "60s",
         "retryConfig": {"retryCount": 0},
@@ -1442,7 +1444,8 @@ def test_legacy_dts_pause_requires_three_distinct_spaced_fresh_executions(
     pause_script = (ROOT / "scripts" / "pause_legacy_bigquery_refresh.sh").read_text(
         encoding="utf-8"
     )
-    assert "trigger_source = 'scheduler_three_hour'" in pause_script
+    assert "trigger_source = '${SCHEDULER_TRIGGER_SOURCE}'" in pause_script
+    assert 'SCHEDULER_TRIGGER_SOURCE="scheduler_hourly"' in pause_script
 
     snapshot_path = tmp_path / "legacy-transfer.json"
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))

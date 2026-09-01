@@ -135,7 +135,7 @@ def test_pipeline_run_records_a_closed_scheduler_or_backfill_trigger_source() ->
     assert "add column if not exists trigger_source string" in schema
     assert "trigger_source = @trigger_source" in refresh
     assert "--trigger-source" in refresh
-    assert "scheduler_three_hour" in refresh
+    assert "scheduler_hourly" in refresh
     assert "manual_backfill" in refresh
 
 

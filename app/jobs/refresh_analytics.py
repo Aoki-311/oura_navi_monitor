@@ -24,7 +24,7 @@ from app.refresh_policy import REFRESH_POLICY
 
 SQL_DIR = Path(__file__).resolve().parents[2] / "sql"
 _UNSET = object()
-_TRIGGER_SOURCES = {"manual", "manual_backfill", "scheduler_three_hour"}
+_TRIGGER_SOURCES = {"manual", "manual_backfill", "scheduler_hourly"}
 
 
 class LeaseUnavailableError(RuntimeError):

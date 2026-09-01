@@ -187,7 +187,7 @@ require_paused_scheduler_if_present "${SCHEDULER_REFRESH}"
 
 gcloud --project="${PROJECT_ID}" run jobs deploy "${JOB_NAME}" \
   --region="${REGION}" --image="${IMAGE}" --service-account="${RUNTIME_SERVICE_ACCOUNT}" \
-  --command=python --args=-m,app.jobs.refresh_analytics,--apply,--trigger-source,scheduler_three_hour \
+  --command=python --args=-m,app.jobs.refresh_analytics,--apply,--trigger-source,scheduler_hourly \
   --env-vars-file="${RUNTIME_ENV}" \
   --tasks=1 --parallelism=1 --max-retries=1 \
   --task-timeout="${JOB_TIMEOUT_MINUTES}m"
@@ -250,7 +250,7 @@ expected = {
     "retries": int(retries),
 }
 if actual != expected:
-    raise SystemExit(f"three-hour scheduler readback does not match governed policy: {actual}")
+    raise SystemExit(f"canonical scheduler readback does not match governed policy: {actual}")
 PY
 DEPLOYED_JOB_JSON="${DEPLOYED_JOB_JSON}" \
 DEPLOYED_JOB_CONTRACT="${DEPLOYED_JOB_CONTRACT}" \
@@ -301,5 +301,5 @@ with open(output, "x", encoding="utf-8") as handle:
     handle.write("\n")
 PY
 echo "refresh_job_candidate=ready image=${IMAGE}"
-echo "three_hour_scheduler=PAUSED schedule=${SCHEDULER_CRON} timezone=${SCHEDULER_TIMEZONE}"
+echo "hourly_scheduler=PAUSED schedule=${SCHEDULER_CRON} timezone=${SCHEDULER_TIMEZONE}"
 echo "refresh_job_deploy_receipt=${DEPLOY_RECEIPT_OUTPUT}"

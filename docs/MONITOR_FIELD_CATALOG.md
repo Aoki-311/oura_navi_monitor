@@ -259,7 +259,7 @@ Web Writer 的机器注释如果缺失、格式错误或 demand ID 不完整，�
 | `activeDays7` | 最近 7 日使用了几天 |
 | `questionCount7` | 最近 7 日用户消息/问题数 |
 | `activity` | high、middle、low、dormant |
-| `dataThrough` | 最后一个完整发布批次处理到的时间 |
+| `dataThrough` | 最后一个完整发布批次处理到的内部边界；API 保留，前端不直接显示具体时间 |
 | `usageTrend[].isPartial` | 该日只统计到 `dataThrough`，当天柱形不能当作完整日 |
 | `analyticsQuality.sourcePipeline.publishedRunId` | 页面当前数据所属的最后一次成功发布 |
 | `analyticsQuality.sourcePipeline.latestRunStatus` | 最新一次刷新实际是 running、succeeded 还是 failed |

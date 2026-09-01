@@ -1,10 +1,10 @@
-# LCS 与 OurA Navi Monitor 三小时刷新最终收口手册
+# LCS 与 OurA Navi Monitor 小时级刷新最终收口手册
 
-更新日：2026-08-31
+更新日：2026-09-01
 
 ## 1. 真正目标
 
-这次要交付的不是“把一个定时器从 15 分钟改成 3 小时”，而是以下完整能力：
+这次要交付的不是“只把一个 cron 改成每小时”，而是以下完整能力：
 
 1. LCS 遇到失效父消息时，不再一直返回“回答无法生成”，也不会把问题接到未来、
    当前或不确定的轮次；恢复后用户消息和回答都能真正保存，刷新页面仍然存在。
@@ -13,15 +13,15 @@
    继续留下诊断，但不能冻结正常用户数据和 watermark。
 3. 缺失的两天由同一个 Refresh Job 按固定目标水位补齐，并做到来源事件、正式事实、
    去重和隔离逐项对账；不能靠手工插 0 或只看水位前进。
-4. 稳态只有一个自动发布 owner：`oura-navi-monitor-refresh`。新 Scheduler 每 3 小时
+4. 稳态只有一个自动发布 owner：`oura-navi-monitor-refresh`。canonical Scheduler 每小时
    运行一次；旧 15 分钟 Scheduler 永久保持暂停。
 5. 旧 BigQuery scheduled query 只有在新链连续运行、依赖为零并形成证据收据后才暂停
    自动调度。配置、旧表和 raw 表继续保留观察，不在本次删除。
 
-新 Scheduler 为 `oura-navi-monitor-refresh-three-hour`，日本时间每天
-`00:05、03:05、06:05、09:05、12:05、15:05、18:05、21:05` 运行。3 小时不是
-“页面三小时才变一次”：页面随每个成功发布批次更新，只显示业务需要的 `dataThrough`、
-当天是否为部分日以及最新运行是否失败；前端不展示刷新频率或下一计划时间。
+canonical Scheduler 继续使用历史资源 ID `oura-navi-monitor-refresh-three-hour`，但实际
+频率唯一由 `app/refresh_policy.py` 所有，并按日本时间每小时 `05` 分运行。保留历史 ID
+可以避免新建第二个 Scheduler。API 继续保留 `dataThrough` 作为发布边界；前端只显示
+不含具体时刻的状态、部分日和失败说明，不展示水位、刷新频率或下一计划时间。
 
 ## 2. 根因白话说明
 
@@ -319,7 +319,7 @@ apply 时再加入 plan 输出的 `--confirm-cutover` 和 `--apply`。脚本暂�
 apply 时逐命令注入批准 key，并加入 plan 输出的精确 `--confirm-activate` 与 `--apply`。
 只有旧、新 Scheduler 都不是 ENABLED 时才
 允许更新 Job。新 Scheduler 首次创建后立即暂停，再写入正式
-`5 */3 * * * / Asia/Tokyo`；最终必须读回 PAUSED、60 秒 deadline、0 retry、精确 URI
+`5 * * * * / Asia/Tokyo`；最终必须读回 PAUSED、60 秒 deadline、0 retry、精确 URI
 和 `<SCHEDULER_INVOKER_SA>`。脚本用不可覆盖 receipt 保存 Job image、writer identity、
 Scheduler identity、环境和两个资源的实际 readback；后续 backfill 必须消费这张 receipt。
 
@@ -373,7 +373,7 @@ candidate tag 验证历史两天、部分日、失败质量
 如果只读 inventory 发现 runtime 依赖任何 legacy reader 或第二套名单来源，立即 STOP；
 不能用 fallback 掩盖 canonical contract 不完整。
 
-### H. 启用新三小时 Scheduler
+### H. 启用唯一小时级 Scheduler
 
 ```bash
 ./scripts/cutover_refresh_scheduler.sh \
@@ -490,7 +490,7 @@ Job/Scheduler/digest/身份没变且水位继续新鲜。
 
 先重新通过 candidate tag 验证 API/IAP/登录浏览器/历史数据/导出和业务场景，并再次回读
 candidate 仍为 Ready、相同 SHA/digest/runtime identity、production traffic=0%。promotion
-脚本还会在切流前现场复核 canonical Job 的 digest/identity/命令、三小时 Scheduler 合同以及
+脚本还会在切流前现场复核 canonical Job 的 digest/identity/命令、小时级 Scheduler 合同以及
 旧 DTS 仍 disabled；它不只相信 72 小时收据中的旧快照。随后运行：
 
 ```bash
@@ -605,11 +605,11 @@ API/acceptance 原始 bytes 的 SHA-256，必须仍与 durable intent 完全一�
 
 - 原用户故障在 LCS candidate 和生产都不再复现，刷新后回答仍可读；
 - 两天及全部真实缺口进入 canonical，来源/事实/隔离/去重逐项对账；
-- Monitor 三页显示正确 `dataThrough`、部分日和最新失败，不再画假 0；
+- Monitor 三页继续按内部 `dataThrough` 正确计算部分日且不再画假 0，但前端不显示具体水位；
 - 问题主题、产品、依頼任务分别显示 measured/partial/not_measured；
 - 当前 canonical reader 保持生产可读；LCS v2 writer 的六条业务路由先完成精确
   revision+trace+span 端到端验证；72 小时门通过后新 Monitor revision 才接管 Web 流量；
-- 旧 15 分钟 Scheduler=PAUSED，新三小时 Scheduler=ENABLED；
+- 旧 15 分钟 Scheduler=PAUSED，唯一小时级 Scheduler=ENABLED；
 - 三次 Scheduler-proven 正式运行成功；
 - 依赖收据为零，旧 DTS 自动调度 disabled；45 分钟和 72 小时观察通过；
 - Git SHA、Cloud Build、revision、image digest、runtime identity、IAP 验收和 traffic 分别

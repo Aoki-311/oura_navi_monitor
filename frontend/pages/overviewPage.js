@@ -690,7 +690,7 @@ export class OverviewPage {
     const body = this.body("usage");
     if (!Array.isArray(model.rows)) { body.innerHTML = moduleMessage("利用推移を確認できません。", "error"); return; }
     const partial = model.rows.find((row) => row.isPartial);
-    body.innerHTML = `<div class="chartBox primaryChart"><canvas id="usageChart"></canvas></div>${partial ? `<p class="measurementNote">${escapeHtml(partial.date)} は反映済み時刻までの途中集計です。</p>` : ""}${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
+    body.innerHTML = `<div class="chartBox primaryChart"><canvas id="usageChart"></canvas></div>${partial ? `<p class="measurementNote">${escapeHtml(partial.date)} は公開済み範囲までの途中集計です。</p>` : ""}${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
     usageTrendChart(body.querySelector("#usageChart"), model.rows);
   }
 

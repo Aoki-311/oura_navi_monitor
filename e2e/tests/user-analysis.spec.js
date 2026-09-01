@@ -48,9 +48,12 @@ test("historical mode and device gaps are explained without fake unknown charts"
     },
   });
   await page.goto("/dashboard?page=user&roster=roster_1");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("反映済み");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("公開済みの集計データを表示しています");
+  await expect(page.locator("[data-freshness-banner]")).not.toContainText("反映済み");
+  await expect(page.locator("[data-freshness-banner]")).not.toContainText("2026/08/23");
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("3時間ごと");
   await expect(page.locator('[data-module="trend"]')).toContainText("途中集計");
+  await expect(page.locator('[data-module="trend"]')).not.toContainText("反映済み時刻");
   const needs = page.locator('[data-module="needs"]');
   await expect(needs).toContainText("モード");
   await expect(needs).toContainText("デバイス");

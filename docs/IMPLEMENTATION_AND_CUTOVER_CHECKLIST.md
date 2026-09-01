@@ -67,7 +67,7 @@
 - [x] `pipeline_run_event_manifest` 与 `pipeline_event_issues` 保存逐事件哈希化去向。
 - [x] 质量阻断回滚 facts，但独立保留诊断和 latest failed run；旧成功页面继续可读。
 - [x] overview、用户选择和个人页共享鲜度/质量 banner；当天部分日明确标记。
-- [x] 3 小时 timing 只有 `app/refresh_policy.py` 一个 owner，Scheduler retry 为 0。
+- [x] 小时级 timing 只有 `app/refresh_policy.py` 一个 owner，Scheduler retry 为 0。
 - [x] freeze 等待 Cloud Run execution 与 BigQuery DML；补数绑定固定目标和逐项对账。
 - [x] Job deploy、activation、backfill、DTS pause preflight/apply、45 分钟/72 小时验证均
   产生受控 receipt；首次 DTS apply 在 60 分钟内消费 preflight、先落 intent 且重跑全部
@@ -295,7 +295,7 @@ git diff --check
 | Monitor 业务验收 | 未执行 |
 | BigQuery/Firestore/Logging apply | 本轮未执行；线上已有此前 backfill 与刷新结果 |
 | 历史 backfill | 基线 manual backfill execution 已成功到 `2026-08-29T14:30:49Z`；不能作为下一 digest 的 receipt |
-| Scheduler | 旧 quarter-hour、新 three-hour Scheduler 与 DTS 状态仅有历史快照；本次 source commit 尚未完成三窗口与 DTS pause 真实取证 |
+| Scheduler | 旧 quarter-hour 与 canonical Scheduler 均需上线前重新 readback；canonical 保留历史 three-hour 资源 ID，但正式 cron 为每小时 `05` 分 |
 | LCS revision | 本轮未构建或部署新 revision |
 | Monitor/LCS production traffic | 本轮未改变；Monitor `oura-navi-monitor-4fefea4`=100%，下一版 traffic 未授权 |
 

@@ -10,23 +10,25 @@ class RefreshPolicy:
     """Single owner for the Monitor refresh, freshness, lease and alert timings."""
 
     job_name: str = "oura-navi-monitor-refresh"
+    # Preserve the deployed resource ID so the cadence change cannot create a
+    # second Scheduler. The schedule and cadence below are the timing authority.
     scheduler_name: str = "oura-navi-monitor-refresh-three-hour"
     legacy_scheduler_name: str = "oura-navi-monitor-refresh-quarter-hour"
-    scheduler_cron: str = "5 */3 * * *"
+    scheduler_cron: str = "5 * * * *"
     legacy_scheduler_cron: str = "*/15 * * * *"
     scheduler_bootstrap_lead_days: int = 2
     scheduler_attempt_deadline_seconds: int = 60
     legacy_scheduler_attempt_deadline_seconds: int = 30
     scheduler_max_retry_attempts: int = 0
     timezone: str = "Asia/Tokyo"
-    cadence_minutes: int = 180
+    cadence_minutes: int = 60
     expected_delay_minutes: int = 5
     event_future_tolerance_minutes: int = 10
     overlap_minutes: int = 240
     max_window_hours: int = 24
-    freshness_stale_after_minutes: int = 240
-    no_success_warning_minutes: int = 240
-    no_success_critical_minutes: int = 420
+    freshness_stale_after_minutes: int = 120
+    no_success_warning_minutes: int = 120
+    no_success_critical_minutes: int = 180
     lease_ttl_minutes: int = 45
     job_timeout_minutes: int = 30
 
@@ -80,7 +82,7 @@ def next_scheduled_refresh(
     now: datetime | None = None,
     timezone_name: str | None = None,
 ) -> datetime:
-    """Return the next three-hour scheduler boundary as an aware UTC datetime."""
+    """Return the next governed scheduler boundary as an aware UTC datetime."""
 
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     local_zone = ZoneInfo(timezone_name or REFRESH_POLICY.timezone)

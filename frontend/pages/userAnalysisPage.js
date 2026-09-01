@@ -508,7 +508,7 @@ export class UserAnalysisPage {
   renderTrend(model, { strictRender = false } = {}) {
     const body = this.body("trend");
     const partial = model.rows.find((row) => row.isPartial);
-    body.innerHTML = `<div class="chartBox tall"><canvas id="personalTrend"></canvas></div>${partial ? `<p class="measurementNote">${escapeHtml(partial.date)} は反映済み時刻までの途中集計です。</p>` : ""}${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
+    body.innerHTML = `<div class="chartBox tall"><canvas id="personalTrend"></canvas></div>${partial ? `<p class="measurementNote">${escapeHtml(partial.date)} は公開済み範囲までの途中集計です。</p>` : ""}${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
     const canvas = body.querySelector("#personalTrend");
     this.renderChart(
       canvas,

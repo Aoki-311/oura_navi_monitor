@@ -72,7 +72,7 @@ OurA Navi Monitor 是 LCS RAG APP 的用户数据分析平台，不是工程告�
 | 增量发布与水位 | `app/jobs/refresh_analytics.py` | DTS 全量重建、两个同时启用或永久并存的 scheduler |
 | 源事件逐项去向 | `pipeline_run_event_manifest` + `pipeline_event_issues` | 只有批次总数、丢弃后无重放线索 |
 | 质量账与最新运行状态 | `pipeline_quality_events` + `pipeline_runs` | 失败时回滚诊断、页面只读旧成功状态 |
-| 三小时控制面 | `app/refresh_policy.py` + cutover/backfill/receipt scripts | YAML、env、Scheduler、告警各写一套时间常量 |
+| 小时级控制面 | `app/refresh_policy.py` + cutover/backfill/receipt scripts | YAML、env、Scheduler、告警各写一套时间常量 |
 | 页面事实语义 | BigQuery `dashboard_events_v2` / `dashboard_user_list_v2`（精确绑定 published run） | overview/detail 各自复制公式或运行时读取实时 Firestore 名单 |
 | 页面组装 | `app/services/analytics_service.py` | JavaScript 重算 KPI |
 | 完整交付率的可比较样本 | `AnalyticsService` 的封闭 measurement profile | 把仅记录失败的历史子集当作代表性分母 |
@@ -340,7 +340,7 @@ POST/GET /api/export/jobs...
    正文保留；四条 debug 路由只进入 debug 分类；
 6. 独立授权 LCS 流量后，用同一个增量 owner 以最长 24 小时窗口把缺失两天追到冻结当前水位；
 7. 新 revision 的精确一请求一事件合同、`http_trace_contract_unavailable=0`、水位、两天趋势
-   和独立分析轴通过后，只启用新 3 小时 Scheduler；
+   和独立分析轴通过后，只启用唯一小时级 Scheduler；
 8. 新 Scheduler 完成 3 次不同 execution ID、不同窗口且有 Scheduler Attempt 佐证的真实定时执行；
 9. 通过至少 30 天 jobs/Data Access/外部 owner 依赖门后只暂停旧 DTS 自动调度；
 10. 暂停后完成 45 分钟和 72 小时观察，保留 transfer config、旧表和 raw 表；

@@ -49,7 +49,7 @@ def _job_json() -> dict[str, object]:
                                 "app.jobs.refresh_analytics",
                                 "--apply",
                                 "--trigger-source",
-                                "scheduler_three_hour",
+                                "scheduler_hourly",
                             ],
                             "env": [
                                 {
@@ -88,7 +88,7 @@ def _validated_job_contract() -> dict[str, object]:
             "app.jobs.refresh_analytics",
             "--apply",
             "--trigger-source",
-            "scheduler_three_hour",
+            "scheduler_hourly",
         ],
         "environment": {
             "MONITOR_PROJECT_ID": "test-project",
@@ -156,7 +156,7 @@ if [[ " $* " == *" scheduler jobs describe "* ]]; then
   else
     state="PAUSED"
     [[ ! -e "${FAKE_NEW_ENABLED}" ]] || state="ENABLED"
-    schedule="${FAKE_NEW_SCHEDULE:-5 */3 * * *}"
+    schedule="${FAKE_NEW_SCHEDULE:-5 * * * *}"
     deadline="60s"
     service_account="${FAKE_NEW_SCHEDULER_SERVICE_ACCOUNT}"
   fi

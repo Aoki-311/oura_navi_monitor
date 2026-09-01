@@ -523,4 +523,4 @@ with open(path, "x", encoding="utf-8") as handle:
 PY
 
 echo "backfill=complete receipt=${RECEIPT_OUTPUT}"
-echo "next_gate=activate the three-hour scheduler with the freeze snapshot"
+echo "next_gate=activate the hourly scheduler with the freeze snapshot"
