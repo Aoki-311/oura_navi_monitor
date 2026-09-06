@@ -24,7 +24,7 @@ test("an initial cross-module window mismatch isolates the mismatched module and
 
   await expect(page.locator('[data-module="kpis"] .kpiCard').first()).toContainText("24");
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
-  await expect(page.locator('[data-module="ranking"]')).toContainText("同じ公開データ版を取得できませんでした");
+  await expect(page.locator('[data-module="ranking"]')).toContainText("データを更新できませんでした");
   await expect(page.locator('[data-module="ranking"]')).not.toContainText("異なる期間の地域");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
 });
@@ -49,7 +49,7 @@ test("a later user-window mismatch preserves the committed Summary body and disa
 
   await page.locator("#overviewUserSearch").fill("window-mismatch");
 
-  await expect(page.locator("[data-freshness-banner]")).toContainText("同じ公開データ版を取得できませんでした");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("データを更新できませんでした");
   await expect(page.locator('[data-module="kpis"] .kpiCard').first()).toContainText("24");
   await expect(page.locator("#regionRanking")).toContainText(regions.regions[0].area);
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");

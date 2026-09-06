@@ -241,6 +241,45 @@ def _window(now: datetime) -> MetricsTimeWindow:
     )
 
 
+def test_independent_usage_panels_share_overview_formulas_without_activity_query():
+    now = datetime.now(timezone.utc)
+    rows = [
+        {"roster_id": "field_1", "valid_question": True,
+         "question_ts": now - timedelta(hours=2), "question_date": now.date().isoformat(),
+         "device_class": "desktop", "mode": "internal"},
+        {"roster_id": "field_1", "valid_question": True,
+         "question_ts": now - timedelta(hours=1), "question_date": now.date().isoformat(),
+         "device_class": "mobile", "mode": "websearch"},
+    ]
+    analytics = _Analytics(rows)
+    service = AnalyticsService(analytics=analytics, pipeline=_Pipeline(), directory=_Directory(), settings=Settings())
+    expected = service.overview(window=_window(now))
+
+    def unexpected_activity(**kwargs):
+        raise AssertionError("independent usage panel must not reload activity")
+
+    analytics.activity_events = unexpected_activity
+    environment = service.environment(window=_window(now))
+    trend = service.trend(window=_window(now))
+    for key in ("hourlyQuestions", "deviceDistribution", "modeDistribution"):
+        assert environment[key] == expected[key]
+    assert "kpis" not in environment and "activityDistribution" not in environment
+    assert trend["usageTrend"] == expected["usageTrend"]
+    assert "deviceDistribution" not in trend
+
+
+def test_user_period_counts_come_from_selected_events_not_seven_day_metrics():
+    now = datetime.now(timezone.utc)
+    rows = [{"roster_id": "field_1", "valid_question": True,
+             "question_ts": now - timedelta(hours=1), "question_date": now.date().isoformat()} for _ in range(2)]
+    analytics = _Analytics(rows, metrics=[{"roster_id": "field_1", "active_days_7": 6, "user_message_count_7": 99}])
+    service = AnalyticsService(analytics=analytics, pipeline=_Pipeline(), directory=_Directory(), settings=Settings())
+    user = service.overview_users(window=_window(now))["users"][0]
+    assert user["activeDaysInPeriod"] == 1
+    assert user["userMessageCountInPeriod"] == 2
+    assert user["userMessageCount7"] == 99
+
+
 def test_missing_scope_receipt_never_selects_a_second_roster_or_reader() -> None:
     now = datetime.now(timezone.utc)
     directory = _Directory()

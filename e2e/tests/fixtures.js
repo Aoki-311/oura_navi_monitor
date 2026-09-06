@@ -100,8 +100,8 @@ const overview = {
 };
 
 const users = { ...scopeMetadata("user_map"), contentDiagnostics: completeContentDiagnostics, scopeUserCount: 80, freshness, users: [
-  { rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", role: "本社MR", department: "DM専任", workplace: "大阪", area: "関西", areaKey: "関西", labels: [{ labelId: "label_1", name: "重点", color: "#23d28f" }], lastActiveAt: "2026-08-23T01:00:00Z", activeDays7: 4, userMessageCount7: 12, completeDelivery: measurement(.92, 11, 12), activity: "high", activityLabel: "高アクティブ" },
-  { rosterId: "roster_2", name: "佐藤 花子", email: "user2@example.com", role: "コントラクトMR", department: "DM本社", workplace: "虎ノ門", area: "本社", areaKey: "本社・虎ノ門", labels: [], lastActiveAt: "", activeDays7: 0, userMessageCount7: 0, completeDelivery: measurement(null, 0, 0), activity: "dormant", activityLabel: "休眠ユーザー" },
+  { rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", role: "本社MR", department: "DM専任", workplace: "大阪", area: "関西", areaKey: "関西", labels: [{ labelId: "label_1", name: "重点", color: "#23d28f" }], lastActiveAt: "2026-08-23T01:00:00Z", activeDays7: 4, userMessageCount7: 12, activeDaysInPeriod: 4, userMessageCountInPeriod: 12, completeDelivery: measurement(.92, 11, 12), activity: "high", activityLabel: "高アクティブ" },
+  { rosterId: "roster_2", name: "佐藤 花子", email: "user2@example.com", role: "コントラクトMR", department: "DM本社", workplace: "虎ノ門", area: "本社", areaKey: "本社・虎ノ門", labels: [], lastActiveAt: "", activeDays7: 0, userMessageCount7: 0, activeDaysInPeriod: 0, userMessageCountInPeriod: 0, completeDelivery: measurement(null, 0, 0), activity: "dormant", activityLabel: "休眠ユーザー" },
 ] };
 const overviewUsers = { ...users, ...scopeMetadata("global"), scopeUserCount: 69 };
 
@@ -134,6 +134,17 @@ const detail = {
   deviceMeasurement: measurement(null, 16, 20),
 };
 
+const newsUsage = {
+  contractVersion: "news_usage_dashboard_v1", scope: "global", rosterId: "",
+  windowStart: "2026-08-16T15:00:00Z", windowEnd: "2026-08-23T01:00:00Z", windowTimezone: "Asia/Tokyo",
+  publishedRunId: "news_pub_1", rosterFingerprint: "roster_fixture", contentFingerprint: "news_fixture", scopePolicyVersion: "summary_role_v1",
+  state: { availability: "available", freshness: "fresh" },
+  totals: { tabViews: 10, newsTabViews: 6, societyTabViews: 4, contentClicks: 14, newsContentClicks: 9, societyContentClicks: 5, newsDomesticClicks: 6, newsOverseasClicks: 3, newsUnknownGeographyClicks: 0 },
+  trend: [{ date: "2026-08-23", tabViews: 10, newsTabViews: 6, societyTabViews: 4, contentClicks: 14, newsContentClicks: 9, societyContentClicks: 5 }],
+  newsCategories: [{ key: "regulatory_safety", label: "規制・安全", clicks: 9, domesticClicks: 6, overseasClicks: 3, unknownGeographyClicks: 0 }],
+  societyCategories: [{ key: "糖尿病関連", label: "糖尿病関連", clicks: 5, sources: [{ key: "jds", label: "日本糖尿病学会", clicks: 5 }] }],
+};
+
 const conversations = { status: "ready", conversations: [{ conversationId: "conv_1", title: "製品情報の確認", messageCount: 4, updatedAt: "2026-08-23T01:00:00Z", updatedAtJst: "2026-08-23 10:00:00" }] };
 const managedUsers = { users: [{ rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", area: "関西", areaKey: "関西", workplace: "大阪", role: "本社MR", department: "DM専任", mrExperience: "10年", labelIds: ["label_1"], isActive: true, identityBound: true, globalScopeEnabled: true, userMapScopeEnabled: true, scopePolicyVersion: "summary_role_v1", rosterIssues: [], updatedAt: "2026-08-23T01:00:00Z", updatedBy: "admin@example.com" }] };
 const managedLabels = { labels: [{ labelId: "label_1", name: "重点", color: "#23d28f", usageCount: 1, isActive: true, labelIssues: [], updatedAt: "2026-08-23T01:00:00Z", updatedBy: "admin@example.com" }] };
@@ -156,6 +167,8 @@ function makeAnalyticsUsers(count = 80) {
     labels: index % 4 === 0 ? [{ labelId: "label_1", name: "重点", color: "#23d28f" }] : [],
     lastActiveAt: index < 60 ? `2026-08-${String(23 - (index % 7)).padStart(2, "0")}T01:00:00Z` : "",
     activeDays7: index % 7,
+    activeDaysInPeriod: index % 7,
+    userMessageCountInPeriod: index % 13,
     userMessageCount7: index % 13,
     completeDelivery: measurement(index % 3 === 0 ? null : .9, index % 3 === 0 ? 0 : 9, 10),
     activity: ["high", "middle", "low", "dormant"][index % 4],
@@ -196,6 +209,8 @@ async function installApiMocks(page, {
   failScopePreview = false,
   managementUserConflict = false,
   invalidExportResponse = false,
+  newsUsageOverride = {},
+  failNewsUsage = false,
   overviewOverride = {},
   overviewByPreset = {},
   overviewDelayByPreset = {},
@@ -208,6 +223,7 @@ async function installApiMocks(page, {
   managedLabelsOverride = {},
   managementMetadataOverride = {},
   exportCreateDelay = 0,
+  beforeExportCreateResponse = null,
   exportDownloadDelay = 0,
   exportDeleteDelay = 0,
   exportDownloadFailures = 0,
@@ -230,11 +246,16 @@ async function installApiMocks(page, {
     const values = [jobId, body.q, body.activity, body.sort, body.areaKey, body.preset, body.idempotencyKey];
     return `\ufeff${columns.join(",")}\n${values.map(csvCell).join(",")}\n`;
   };
-  await page.route(/\/api\/(analytics|trace|admin|export)\//, async (route) => {
+  await page.route(/\/api\/(analytics|trace|admin|export|news-usage)\//, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     requests.push({ method: request.method(), path: url.pathname, search: url.search, body: request.postDataJSON?.() });
-    if (url.pathname === "/api/analytics/overview") {
+    if (url.pathname.startsWith("/api/news-usage/")) {
+      if (failNewsUsage) return route.fulfill({ status: 503, json: { detail: "News usage unavailable" } });
+      const userScope = url.pathname.startsWith("/api/news-usage/users/");
+      return route.fulfill({ json: { ...newsUsage, scope: userScope ? "user_map" : "global", rosterId: userScope ? url.pathname.split("/").at(-1) : "", ...newsUsageOverride } });
+    }
+    if (["/api/analytics/overview", "/api/analytics/environment", "/api/analytics/trend"].includes(url.pathname)) {
       const preset = url.searchParams.get("preset") || "last_7d";
       const delay = Number(overviewDelayByPreset[preset] || 0);
       if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
@@ -376,6 +397,7 @@ async function installApiMocks(page, {
       };
       exportJobs.set(jobId, job);
       await wait(exportCreateDelay);
+      await beforeExportCreateResponse?.(job);
       return route.fulfill({ status: 201, json: invalidExportResponse
         ? { jobId, status: "ready", filename: job.filename, rowCount: 1, expiresAt: "2099-08-23T02:00:00Z", downloadUrl: "https://evil.invalid/export.csv" }
         : { jobId, status: "ready", filename: job.filename, rowCount: 1, expiresAt: "2099-08-23T02:00:00Z", downloadUrl: `/api/export/jobs/${jobId}/download` } });
@@ -403,5 +425,5 @@ async function installApiMocks(page, {
 
 module.exports = {
   overview, users, overviewUsers, regions, detail, conversations, managedUsers, managedLabels,
-  managementMetadata, makeAnalyticsUsers, makeManagedUsers, installApiMocks,
+  managementMetadata, makeAnalyticsUsers, makeManagedUsers, installApiMocks, newsUsage,
 };

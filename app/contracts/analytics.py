@@ -182,6 +182,8 @@ class UserRow(AnalyticsModel):
     lastActiveAt: str
     activeDays7: int
     userMessageCount7: int
+    activeDaysInPeriod: int = Field(ge=0)
+    userMessageCountInPeriod: int = Field(ge=0)
     completeDelivery: RateMeasurement
     activity: Literal["high", "middle", "low", "dormant"] | None
     activityLabel: str
@@ -234,6 +236,33 @@ class ConversationRow(AnalyticsModel):
     messageCount: int
     updatedAt: str
     updatedAtJst: str
+
+
+class UsagePanelResponse(AnalyticsModel):
+    scope: Literal["global"]
+    scopePolicyVersion: str
+    rosterFingerprint: str
+    contentFingerprint: str
+    publishedRunId: str
+    windowStart: str
+    windowEnd: str
+    windowTimezone: str
+    scopeUserCount: int
+    freshness: DataFreshness
+
+
+class EnvironmentResponse(UsagePanelResponse):
+    hourlyQuestions: list[HourlyQuestion]
+    deviceDistribution: list[DistributionRow]
+    deviceMeasurement: MeasurementCoverage
+    modeDistribution: list[DistributionRow]
+    modeMeasurement: MeasurementCoverage
+
+
+class TrendResponse(UsagePanelResponse):
+    usageTrend: list[UsageTrendRow]
+    requestTasks: list[DistributionRow]
+    taskMeasurement: MeasurementCoverage
 
 
 class OverviewResponse(AnalyticsModel):

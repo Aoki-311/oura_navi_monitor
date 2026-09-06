@@ -1,0 +1,154 @@
+{
+  "schemaVersion": "news_usage_catalog_v1",
+  "societyCatalogVersion": "dci_source_catalog_20260905_v1",
+  "sourceSha256": {
+    "service.py": "b4df66bb4d88af2788220f00e532f5a605556ca8ea557f32ff7ae6ac03ff5adb",
+    "society_source_catalog.json": "eebca09875576779350c62dd7c0b92fa95eded382453d9ebfbd52fb40999dbad"
+  },
+  "newsEventTypes": [
+    {
+      "key": "regulatory_safety",
+      "label": "規制・安全"
+    },
+    {
+      "key": "clinical_evidence_use",
+      "label": "臨床・実使用エビデンス"
+    },
+    {
+      "key": "product_portfolio_update",
+      "label": "製品・ポートフォリオ更新"
+    },
+    {
+      "key": "market_access_pricing",
+      "label": "償還・価格"
+    },
+    {
+      "key": "commercial_market_trend",
+      "label": "市場・商業動向"
+    },
+    {
+      "key": "financial_results_guidance",
+      "label": "決算・業績"
+    },
+    {
+      "key": "corporate_strategy_ecosystem",
+      "label": "提携・競争戦略"
+    },
+    {
+      "key": "litigation_ip",
+      "label": "訴訟・知財"
+    }
+  ],
+  "societyCategories": [
+    {
+      "key": "糖尿病関連",
+      "label": "糖尿病関連"
+    },
+    {
+      "key": "看護関連",
+      "label": "看護関連"
+    },
+    {
+      "key": "医療情報関連",
+      "label": "医療情報関連"
+    },
+    {
+      "key": "病院経営関連",
+      "label": "病院経営関連"
+    },
+    {
+      "key": "臨床検査関連",
+      "label": "臨床検査関連"
+    }
+  ],
+  "societySources": [
+    {
+      "key": "jds",
+      "label": "一般社団法人日本糖尿病学会"
+    },
+    {
+      "key": "jadec",
+      "label": "公益社団法人日本糖尿病協会"
+    },
+    {
+      "key": "jaden",
+      "label": "一般社団法人日本糖尿病教育・看護学会"
+    },
+    {
+      "key": "jspad",
+      "label": "日本小児・思春期糖尿病学会"
+    },
+    {
+      "key": "jsidm",
+      "label": "日本糖尿病インフォマティクス学会"
+    },
+    {
+      "key": "jsdc",
+      "label": "日本糖尿病合併症学会"
+    },
+    {
+      "key": "jsod",
+      "label": "日本糖尿病眼学会"
+    },
+    {
+      "key": "jad_t1d",
+      "label": "日本先進糖尿病治療・1型糖尿病研究会"
+    },
+    {
+      "key": "jsdp",
+      "label": "日本糖尿病・妊娠学会年次学術集会"
+    },
+    {
+      "key": "jspe",
+      "label": "日本小児内分泌学会"
+    },
+    {
+      "key": "jpds",
+      "label": "日本くすりと糖尿病学会"
+    },
+    {
+      "key": "eiyou",
+      "label": "日本病態栄養学会"
+    },
+    {
+      "key": "jds_progress",
+      "label": "糖尿病学の進歩"
+    },
+    {
+      "key": "janap",
+      "label": "日本看護管理学会"
+    },
+    {
+      "key": "jsn",
+      "label": "日本看護学会"
+    },
+    {
+      "key": "jami_ni",
+      "label": "日本医療情報学会看護部会"
+    },
+    {
+      "key": "jsqsh",
+      "label": "医療の質・安全学会"
+    },
+    {
+      "key": "noma_hs",
+      "label": "国際モダンホスピタルショウ"
+    },
+    {
+      "key": "jami",
+      "label": "日本医療情報学会"
+    },
+    {
+      "key": "jhm",
+      "label": "日本医療マネジメント学会"
+    },
+    {
+      "key": "zbkeikan",
+      "label": "全国病院経営管理学会"
+    },
+    {
+      "key": "jaclas",
+      "label": "一般社団法人日本臨床検査機器・試薬・システム振興協会"
+    }
+  ]
+}

@@ -461,6 +461,64 @@ def _measured_dimension(item: dict[str, Any], field: str) -> str | None:
     return value if value and value != "unknown" else None
 
 
+def _usage_axes(
+    events: list[dict[str, Any]], *, window: MetricsTimeWindow,
+    data_through: datetime | None,
+) -> dict[str, Any]:
+    """The shared formulas for overview and independently dated usage panels."""
+    hourly: Counter[str] = Counter()
+    date_users: dict[str, set[str]] = defaultdict(set)
+    date_questions: Counter[str] = Counter()
+    tasks: Counter[str] = Counter()
+    devices: Counter[str] = Counter()
+    modes: Counter[str] = Counter()
+    task_measured = device_measured = mode_measured = 0
+    display_timezone = ZoneInfo(window.timezone)
+    for item in events:
+        timestamp = _as_datetime(item.get("question_ts"))
+        if timestamp is not None:
+            hourly[f"{timestamp.astimezone(display_timezone).hour:02d}:00"] += 1
+        day = str(item.get("question_date") or "")
+        date_users[day].add(str(item.get("roster_id") or ""))
+        date_questions[day] += 1
+        item_tasks = _tasks_for_measured_item(item)
+        if item_tasks:
+            task_measured += 1
+            tasks.update(item_tasks)
+        if device := _measured_dimension(item, "device_class"):
+            devices[device] += 1
+            device_measured += 1
+        if mode := _measured_dimension(item, "mode"):
+            modes[mode] += 1
+            mode_measured += 1
+    partial_date = _partial_published_date(window, data_through=data_through)
+    return {
+        "hourlyQuestions": [
+            {"hour": hour, "count": hourly.get(hour, 0)}
+            for hour in _visible_hour_axis(window, data_through=data_through, observed_hours=set(hourly))
+        ],
+        "deviceDistribution": _distribution(devices, {"desktop": "PC", "mobile": "モバイル"}),
+        "deviceMeasurement": _measurement_coverage(
+            device_measured, len(events),
+            unmeasured_rows=[item for item in events if _measured_dimension(item, "device_class") is None],
+        ),
+        "modeDistribution": _distribution(modes, {"internal": "社内モード", "websearch": "Web検索モード"}),
+        "modeMeasurement": _measurement_coverage(
+            mode_measured, len(events),
+            unmeasured_rows=[item for item in events if _measured_dimension(item, "mode") is None],
+        ),
+        "usageTrend": [
+            {"date": day, "activeUsers": len(date_users[day]), "questions": date_questions[day], "isPartial": day == partial_date}
+            for day in _visible_date_axis(window, data_through=data_through, observed_dates=set(date_questions))
+        ],
+        "requestTasks": _distribution(tasks, {key: analytics_task_label(key) for key in tasks}),
+        "taskMeasurement": _measurement_coverage(
+            task_measured, len(events),
+            unmeasured_rows=[item for item in events if not _tasks_for_measured_item(item)],
+        ),
+    }
+
+
 class AnalyticsService:
     def __init__(
         self,
@@ -891,14 +949,44 @@ class AnalyticsService:
             "issues": issues,
         }
 
+    def _usage_panel(self, *, window: MetricsTimeWindow, area_key: str = "") -> dict[str, Any]:
+        publication = self._publication_snapshot()
+        freshness = self._freshness(publication)
+        scope_snapshot = self._roster_snapshot(AnalysisScope.GLOBAL, publication=publication)
+        roster_ids = {
+            str(row["roster_id"]) for row in scope_snapshot.rows
+            if not area_key or str(row.get("area_key") or "") == area_key
+        }
+        events = [
+            row for row in self._analytics.overview_events(
+                window=window, area_key=area_key,
+                published_run_id=self._run_versioned_snapshot_id(publication),
+            )
+            if str(row.get("roster_id") or "") in roster_ids and bool(row.get("valid_question", True))
+        ]
+        return {
+            **self._scope_metadata(scope=AnalysisScope.GLOBAL, snapshot=scope_snapshot, publication=publication, window=window),
+            "scopeUserCount": len(roster_ids),
+            "freshness": freshness,
+            **_usage_axes(events, window=window, data_through=_as_datetime(freshness.get("dataThrough"))),
+        }
+
+    def environment(self, *, window: MetricsTimeWindow, area_key: str = "") -> dict[str, Any]:
+        payload = self._usage_panel(window=window, area_key=area_key)
+        for field in ("usageTrend", "requestTasks", "taskMeasurement"):
+            payload.pop(field)
+        return payload
+
+    def trend(self, *, window: MetricsTimeWindow, area_key: str = "") -> dict[str, Any]:
+        payload = self._usage_panel(window=window, area_key=area_key)
+        for field in ("hourlyQuestions", "deviceDistribution", "deviceMeasurement", "modeDistribution", "modeMeasurement"):
+            payload.pop(field)
+        return payload
+
     def overview(self, *, window: MetricsTimeWindow, area_key: str = "") -> dict[str, Any]:
         publication = self._publication_snapshot()
         freshness = self._freshness(publication)
         data_through = _as_datetime(freshness.get("dataThrough"))
-        partial_date = _partial_published_date(
-            window,
-            data_through=data_through,
-        )
         scope_snapshot = self._roster_snapshot(
             AnalysisScope.GLOBAL,
             publication=publication,
@@ -937,41 +1025,14 @@ class AnalyticsService:
         for item in events:
             roster_id = str(item.get("roster_id") or "")
             days_by_user[roster_id].add(str(item.get("question_date") or ""))
-        hourly = Counter()
-        date_users: dict[str, set[str]] = defaultdict(set)
-        date_questions = Counter()
-        tasks = Counter()
-        devices = Counter()
-        modes = Counter()
         products = Counter()
         matrix = Counter()
-        task_measured_count = 0
-        device_measured_count = 0
-        mode_measured_count = 0
         product_measured_count = 0
         product_candidate_count = 0
         product_resolved_count = 0
         product_unresolved_questions = 0
-        display_timezone = ZoneInfo(window.timezone)
         for item in events:
-            timestamp = _as_datetime(item.get("question_ts"))
-            hour = timestamp.astimezone(display_timezone).hour if timestamp else None
-            if hour is not None:
-                hourly[f"{hour:02d}:00"] += 1
-            day = str(item.get("question_date") or "")
-            date_users[day].add(str(item.get("roster_id") or ""))
-            date_questions[day] += 1
             item_tasks = _tasks_for_measured_item(item)
-            if item_tasks:
-                task_measured_count += 1
-                for task in item_tasks:
-                    tasks[task] += 1
-            if device := _measured_dimension(item, "device_class"):
-                devices[device] += 1
-                device_measured_count += 1
-            if mode := _measured_dimension(item, "mode"):
-                modes[mode] += 1
-                mode_measured_count += 1
             if _product_is_measured(item):
                 product_measured_count += 1
                 candidate_count = int(item.get("product_candidate_count") or 0)
@@ -1031,56 +1092,7 @@ class AnalyticsService:
                 "completeDelivery": _complete_delivery_measurement(events),
                 "p95Latency": _complete_latency_measurement(events),
             },
-            "hourlyQuestions": [
-                {"hour": key, "count": hourly.get(key, 0)}
-                for key in _visible_hour_axis(
-                    window,
-                    data_through=data_through,
-                    observed_hours=set(hourly),
-                )
-            ],
-            "deviceDistribution": _distribution(devices, {"desktop": "PC", "mobile": "モバイル"}),
-            "deviceMeasurement": _measurement_coverage(
-                device_measured_count,
-                len(events),
-                unmeasured_rows=[
-                    item
-                    for item in events
-                    if _measured_dimension(item, "device_class") is None
-                ],
-            ),
-            "modeDistribution": _distribution(modes, {"internal": "社内モード", "websearch": "Web検索モード"}),
-            "modeMeasurement": _measurement_coverage(
-                mode_measured_count,
-                len(events),
-                unmeasured_rows=[
-                    item
-                    for item in events
-                    if _measured_dimension(item, "mode") is None
-                ],
-            ),
-            "usageTrend": [
-                {
-                    "date": day,
-                    "activeUsers": len(date_users[day]),
-                    "questions": date_questions[day],
-                    "isPartial": day == partial_date,
-                }
-                for day in _visible_date_axis(
-                    window,
-                    data_through=data_through,
-                    observed_dates=set(date_questions),
-                )
-            ],
-            "requestTasks": _distribution(
-                tasks,
-                {key: analytics_task_label(key) for key in tasks},
-            ),
-            "taskMeasurement": _measurement_coverage(
-                task_measured_count,
-                len(events),
-                unmeasured_rows=[item for item in events if not _tasks_for_measured_item(item)],
-            ),
+            **_usage_axes(events, window=window, data_through=data_through),
             "activityDistribution": [
                 {"key": key, "label": _ACTIVITY_LABELS[key], "count": activity_counter.get(key, 0), "rate": _rate(activity_counter.get(key, 0), len(roster))}
                 for key in _ACTIVITY_ORDER
@@ -1274,6 +1286,8 @@ class AnalyticsService:
                 ),
                 "activeDays7": int(metric.get("active_days_7") or 0),
                 "userMessageCount7": int(metric.get("user_message_count_7") or 0),
+                "activeDaysInPeriod": len({str(item.get("question_date")) for item in selected_events if item.get("question_date")}),
+                "userMessageCountInPeriod": len(selected_events),
                 "completeDelivery": _complete_delivery_measurement(selected_events),
                 "activity": level,
                 "activityLabel": _ACTIVITY_LABELS[level],
@@ -1283,7 +1297,7 @@ class AnalyticsService:
         elif sort == "messages_desc":
             rows.sort(
                 key=lambda item: (
-                    int(item.get("userMessageCount7") or 0),
+                    int(item.get("userMessageCountInPeriod") or 0),
                     str(item.get("lastActiveAt") or ""),
                     str(item.get("name") or ""),
                 ),

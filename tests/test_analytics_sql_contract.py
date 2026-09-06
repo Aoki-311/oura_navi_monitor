@@ -1,4 +1,6 @@
+import json
 import re
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +29,64 @@ def _checks_for_disposition(disposition: str) -> set[str]:
         if resolved_disposition.lower() == disposition.lower():
             checks.update(re.findall(r"'([^']+)'", clause))
     return checks
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_chat", "expected_news"),
+    [
+        ({"monitor_event": True, "event_family": family}, True, False)
+        for family in (
+            "question_received",
+            "answer_completed",
+            "message_persisted",
+            "answer_action",
+            "future_chat_family",
+            "",
+            None,
+        )
+    ]
+    + [
+        ({"monitor_event": True}, True, False),
+        ({"monitor_event": True, "event_family": "news_usage"}, False, True),
+        (
+            {
+                "monitor_event": True,
+                "event_family": "news_usage",
+                "monitor_contract_version": "invalid",
+            },
+            False,
+            True,
+        ),
+        ({"monitor_event": False, "event_family": "news_usage"}, False, False),
+        ({"event_family": "question_received"}, False, False),
+    ],
+)
+def test_source_predicates_route_news_separately_without_hiding_unknown_chat_families(
+    payload: dict, expected_chat: bool, expected_news: bool
+) -> None:
+    # Execute the production WHERE expressions locally. JSON_VALUE is the only
+    # BigQuery function in this slice; the rest uses ordinary SQL null semantics.
+    def json_value(encoded: str, path: str) -> str | None:
+        value = json.loads(encoded).get(path.removeprefix("$."))
+        if value is None or isinstance(value, (dict, list)):
+            return None
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    with sqlite3.connect(":memory:") as connection:
+        connection.create_function("JSON_VALUE", 2, json_value)
+        for source, expected in (
+            ("create_source_tables.sql", expected_chat),
+            ("create_news_usage_source.sql", expected_news),
+        ):
+            first_view = _sql(source).split(";", maxsplit=1)[0]
+            predicate = first_view.rsplit("FROM normalized", maxsplit=1)[1]
+            result = connection.execute(
+                "SELECT 1 FROM (SELECT ? AS event_payload) " + predicate,
+                (json.dumps(payload),),
+            ).fetchone()
+            assert (result is not None) is expected, source
 
 
 def test_canonical_sql_files_and_objects_exist_once() -> None:

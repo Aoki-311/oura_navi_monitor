@@ -12,6 +12,7 @@ from app.routers.admin import router as admin_router
 from app.routers.analytics import router as analytics_router
 from app.routers.export import router as export_router
 from app.routers.health import router as health_router
+from app.routers.news_usage import router as news_usage_router
 from app.routers.trace import router as trace_router
 from app.security.auth import AdminIdentity, require_admin
 from app.settings import get_settings
@@ -35,6 +36,7 @@ app.include_router(analytics_router)
 app.include_router(admin_router)
 app.include_router(trace_router)
 app.include_router(export_router)
+app.include_router(news_usage_router)
 
 frontend_dir = Path(__file__).resolve().parents[1] / "frontend"
 if frontend_dir.exists():
@@ -50,11 +52,14 @@ async def add_security_headers(request: Request, call_next) -> Response:
     response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
     if (
         request.url.path == "/dashboard"
-        or request.url.path.startswith("/dashboard-assets/")
         or request.url.path.startswith("/api/")
     ):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
+    elif request.url.path.startswith("/dashboard-assets/"):
+        # StaticFiles supplies ETag/Last-Modified. Revalidation keeps updated
+        # releases correct while avoiding another full chart/map asset download.
+        response.headers["Cache-Control"] = "private, no-cache"
     return response
 
 

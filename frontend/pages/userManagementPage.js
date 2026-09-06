@@ -16,7 +16,7 @@ import {
   scopePreviewModel,
   managementUsersModel,
 } from "../adapters/managementAdapter.js";
-import { chips, escapeHtml, installDialogLifecycle, moduleMessage, setBusy } from "../components/dom.js";
+import { chips, compareJapaneseNames, escapeHtml, installDialogLifecycle, moduleMessage, setBusy } from "../components/dom.js";
 import { bindPagination, bindResponsiveCollection, compareNullable, paginate, paginationMarkup } from "../components/collection.js";
 import { displayDateTime } from "../viewModels/formatters.js";
 import {
@@ -71,7 +71,7 @@ export class UserManagementPage {
     this.labelCatalogUsable = false;
     this.labelRelationIssueCount = 0;
     setBusy(this.root, true);
-    this.root.innerHTML = `<div class="pageHeading"><div><p class="eyebrow">Monitor内だけで使用する名簿と分析ラベル</p><h2>ユーザー管理</h2><p>役割は全体サマリー対象に影響し、分析ラベルは画面内の分類だけに使用します。</p></div></div><div id="managementBody">${moduleMessage("読み込み中…")}</div><div id="drawerHost"></div>`;
+    if (!this.root.querySelector("#managementBody")) this.root.innerHTML = `<div class="pageHeading"><div><h2>ユーザー管理</h2></div></div><div id="managementBody">${moduleMessage("読み込み中…", "loading")}</div><div id="drawerHost"></div>`;
     const results = await Promise.allSettled([
       getManagedUsers({ include_inactive: true }, { signal: this.signal }),
       getManagedLabels({ include_inactive: true }, { signal: this.signal }),
@@ -319,7 +319,7 @@ export class UserManagementPage {
       return;
     }
     panel.innerHTML = `
-      <div class="panelHead"><div><h3>登録ユーザー</h3><small>現在の名簿と停用済みユーザーを同じ履歴として管理します。</small></div><button id="newUser" class="primaryButton" ${this.metadata && this.labelCatalogUsable ? "" : "disabled"}>ユーザーを追加</button></div>
+      <div class="panelHead"><div><h3>登録ユーザー</h3></div><button id="newUser" class="primaryButton" ${this.metadata && this.labelCatalogUsable ? "" : "disabled"}>ユーザーを追加</button></div>
       ${this.errors.metadata ? moduleMessage(`編集用の選択肢を読み込めません: ${this.errors.metadata}`, "error") : ""}
       ${!this.labelCatalogUsable ? moduleMessage(`分析ラベルの台帳を確認できないため、ラベル関係の編集と新規ユーザー登録を停止しています。${this.errors.labels ? ` ${this.errors.labels}` : ""}`, "error") : ""}
       ${this.labelCatalogUsable && this.labelRelationIssueCount ? moduleMessage(`${this.labelRelationIssueCount}件の未解決ラベル関係があります。該当ユーザーを編集して保存すると、存在しないラベル参照だけを削除できます。`, "error") : ""}
@@ -355,7 +355,7 @@ export class UserManagementPage {
     const labelFor = (id) => labelMap.get(id) || { labelId: id, name: `未解決: ${id}`, color: "#5f6285" };
     const rows = this.filteredUsers();
     const sorters = {
-      name_asc: (a, b) => compareNullable(a.name, b.name, "asc"),
+      name_asc: (a, b) => compareJapaneseNames(a.name, b.name) || compareJapaneseNames(a.email, b.email),
       updated_desc: (a, b) => compareNullable(a.updatedAt, b.updatedAt),
       area_asc: (a, b) => compareNullable(`${a.area} ${a.name}`, `${b.area} ${b.name}`, "asc"),
     };
@@ -448,7 +448,7 @@ export class UserManagementPage {
       ${isNew ? '<label class="switchRow"><input name="is_active" type="checkbox" checked>登録時から有効</label>' : `<label class="switchRow"><input name="is_active" type="checkbox" ${user.isActive ? "checked" : ""}>このユーザーを有効にする</label>`}
       <p class="scopeImpact" id="scopeImpact" role="status"></p><p class="formError" id="userFormError" role="alert" hidden></p>
       <div class="formActions"><button type="button" class="ghostButton" id="cancelUser">キャンセル</button><button type="submit" class="primaryButton" disabled>保存</button></div>
-    </form><p class="drawerNote">全体サマリー対象は役割・部門・有効状態からサーバーが判定します。分析ラベルはMonitor内の表示だけに使用し、分析対象や権限を変更しません。</p></aside></div>`;
+    </form></aside></div>`;
     const form = host.querySelector("#userForm");
     const lifecycle = this.installDrawer(form, form.elements.name);
     const submitButton = form.querySelector('[type="submit"]');
@@ -646,7 +646,7 @@ export class UserManagementPage {
         ? moduleMessage("同名として判定されたラベルがあります。対象行は名称の修復だけ可能です。新規追加・削除・色や状態・ユーザーとの関係変更は停止しています。", "error")
         : moduleMessage(`${this.issues.labels.length}件のラベル異常を検出したため、ラベル編集を停止しています。`, "error")
       : "";
-    panel.innerHTML = `<div class="panelHead"><div><h3>分析ラベル</h3><small>Monitor画面内だけで使用します。権限や分析対象には影響しません。</small></div><button id="newLabel" class="primaryButton" ${this.metadata && this.labelCatalogUsable ? "" : "disabled"}>ラベルを追加</button></div>${this.errors.metadata ? moduleMessage(`色の選択肢を読み込めません: ${this.errors.metadata}`, "error") : ""}${catalogIssue}<div class="labelCards">${this.labels.map((row) => `<article class="labelCard ${row.isActive ? "" : "isInactive"}"><span class="labelSwatch" style="--chip:${escapeHtml(row.color)}"></span><div><strong>${escapeHtml(row.name)}</strong><small>${row.usageCount}名で使用 · ${row.isActive ? "有効" : "停用"}</small>${row.labelIssues.length ? `<small>${escapeHtml(row.labelIssues.join(" / "))}</small>` : ""}</div><button data-edit-label="${escapeHtml(row.labelId)}" class="linkButton" ${this.labelCatalogUsable || this.isRepairableLabel(row) ? "" : "disabled"}>${this.isRepairableLabel(row) ? "名称を修復" : "編集"}</button></article>`).join("") || moduleMessage("ラベルはありません")}</div>`;
+    panel.innerHTML = `<div class="panelHead"><div><h3>分析ラベル</h3></div><button id="newLabel" class="primaryButton" ${this.metadata && this.labelCatalogUsable ? "" : "disabled"}>ラベルを追加</button></div>${this.errors.metadata ? moduleMessage(`色の選択肢を読み込めません: ${this.errors.metadata}`, "error") : ""}${catalogIssue}<div class="labelCards">${this.labels.map((row) => `<article class="labelCard ${row.isActive ? "" : "isInactive"}"><span class="labelSwatch" style="--chip:${escapeHtml(row.color)}"></span><div><strong>${escapeHtml(row.name)}</strong><small>${row.usageCount}名で使用 · ${row.isActive ? "有効" : "停用"}</small>${row.labelIssues.length ? `<small>${escapeHtml(row.labelIssues.join(" / "))}</small>` : ""}</div><button data-edit-label="${escapeHtml(row.labelId)}" class="linkButton" ${this.labelCatalogUsable || this.isRepairableLabel(row) ? "" : "disabled"}>${this.isRepairableLabel(row) ? "名称を修復" : "編集"}</button></article>`).join("") || moduleMessage("ラベルはありません")}</div>`;
     panel.querySelector("#newLabel")?.addEventListener("click", () => this.openLabel(null));
     panel.querySelectorAll("[data-edit-label]").forEach((button) => button.addEventListener("click", () => this.openLabel(this.labels.find((row) => row.labelId === button.dataset.editLabel))));
   }

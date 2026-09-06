@@ -4,7 +4,8 @@ const { installApiMocks, makeManagedUsers, managedLabels, managedUsers } = requi
 test("user management edits roster fields, labels and active state without scope controls", async ({ page }) => {
   const requests = []; await installApiMocks(page, { requests }); await page.goto("/dashboard?page=management&roster=roster_1");
   await expect(page.locator(".drawer")).toBeVisible();
-  await expect(page.locator(".drawer")).toContainText("全体サマリー対象は役割・部門・有効状態からサーバーが判定");
+  await expect(page.locator("#scopeImpact")).toContainText("全体サマリーとユーザー分析");
+  await expect(page.locator(".drawer")).not.toContainText("サーバーが判定");
   await expect(page.locator('input[name="scope"]')).toHaveCount(0);
   await expect(page.locator('input[name="email"]')).toHaveAttribute("readonly", "");
   await page.locator('input[name="name"]').fill("山田 太郎 更新");
@@ -122,7 +123,7 @@ test("a concurrent update keeps the drawer open with a stable inline error", asy
   expect(requests.filter((row) => row.method === "PATCH" && row.path === "/api/admin/users/roster_1")).toHaveLength(1);
 });
 
-test("dirty user edits guard navigation, refresh, preset changes, history, and browser unload", async ({ page }) => {
+test("dirty user edits guard navigation, refresh, hidden date controls, history, and browser unload", async ({ page }) => {
   await installApiMocks(page);
   await page.goto("/dashboard");
   await page.getByRole("button", { name: "ユーザー管理" }).click();
@@ -146,15 +147,10 @@ test("dirty user edits guard navigation, refresh, preset changes, history, and b
   await expect(page).toHaveURL(/page=management/);
   await expect(name).toHaveValue("破棄していない編集");
 
-  await dismissDiscard(() => page.evaluate(() => document.querySelector("#refreshButton").click()));
+  await dismissDiscard(() => page.evaluate(() => document.querySelector("#managementRefreshButton").click()));
   await expect(name).toHaveValue("破棄していない編集");
 
-  await dismissDiscard(() => page.evaluate(() => {
-    const select = document.querySelector("#analysisPreset");
-    select.value = "last_30d";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  }));
-  await expect(page.locator("#analysisPreset")).toHaveValue("last_7d");
+  await expect(page.locator("#mainDateRange")).toBeHidden();
   await expect(name).toHaveValue("破棄していない編集");
 
   const unload = await page.evaluate(() => {
@@ -226,7 +222,7 @@ test("a user save is a hard leave barrier until its verified response and readba
   releaseReadback();
   await expect(page.locator(".drawer")).toHaveCount(0);
   await page.getByRole("button", { name: "全体サマリー" }).click();
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL((url) => url.pathname === "/dashboard" && !url.searchParams.has("page") && url.searchParams.has("start") && url.searchParams.has("end"));
 });
 
 test("a committed user write with a failed readback can only retry the GET verification", async ({ page }) => {

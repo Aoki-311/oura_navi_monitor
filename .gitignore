@@ -9,6 +9,7 @@ venv/
 .env.local
 credentials/
 *.json
+!app/contracts/news_usage_catalog.json
 *.log
 .pytest_cache/
 .DS_Store
@@ -16,5 +17,6 @@ node_modules/
 e2e/node_modules/
 e2e/playwright-report/
 e2e/test-results/
+/outputs/
 !e2e/package.json
 !e2e/package-lock.json

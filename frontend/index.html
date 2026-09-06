@@ -23,11 +23,11 @@
         <button data-page="management">ユーザー管理</button>
       </nav>
       <div class="headerTools">
-        <label id="presetControl">期間<select id="analysisPreset"><option value="today">今日</option><option value="last_7d" selected>過去7日</option><option value="last_14d">過去14日</option><option value="last_30d">過去30日</option><option value="last_60d">過去60日</option><option value="all">全期間</option></select></label>
         <button id="exportButton" class="ghostButton">CSV</button>
-        <button id="refreshButton" class="primaryButton">再読込</button>
+        <button id="managementRefreshButton" class="iconButton" aria-label="再読込" title="再読込" hidden>↻</button>
       </div>
     </header>
+    <div class="mainDateRange" id="mainDateRange"></div>
     <main id="pageRoot" class="pageRoot" tabindex="-1"></main>
     <div id="toast" class="toast" aria-live="polite" hidden></div>
   </body>

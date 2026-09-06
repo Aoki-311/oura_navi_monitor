@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.contracts.analytics import UserDetailResponse, UsersResponse
+from app.csv_safety import safe_csv_cell
 from app.dependencies import get_analytics_service, get_export_job_repository
 from app.repositories.export_jobs import ExportJobRepository
 from app.security.auth import AdminIdentity, require_admin
@@ -82,10 +83,7 @@ _MEASUREMENT_REASON_LABELS = {
 
 
 def _csv_cell(value: object) -> str:
-    text = "" if value is None else str(value)
-    if text.lstrip().startswith(("=", "+", "-", "@")):
-        return f"'{text}"
-    return text
+    return safe_csv_cell(value)
 
 
 def _csv_text(headers: list[str], rows: list[list[object]]) -> str:
@@ -252,7 +250,7 @@ def _create_content(
                 item.rosterId, item.name, item.email, item.role, item.department,
                 item.area, item.workplace, "; ".join(label.name for label in item.labels),
                 item.lastActiveAt,
-                item.activeDays7, item.userMessageCount7,
+                item.activeDaysInPeriod, item.userMessageCountInPeriod,
                 _percent(item.completeDelivery.value),
                 item.completeDelivery.measurementState,
                 _MEASUREMENT_LABELS[item.completeDelivery.measurementState],
@@ -275,7 +273,7 @@ def _create_content(
             _safe_filename(f"monitor_summary_{request.preset or 'custom'}_{stamp}.csv"),
             _csv_text([
                 "roster_id", "社員名", "メール", "役割", "部門", "エリア", "勤務地", "分析ラベル",
-                "最終利用", "直近7日利用日数", "直近7日消息数", "回答成功率", "measurement_state",
+                "最終利用", "期間内利用日数", "期間内質問数", "回答成功率", "measurement_state",
                 "計測状態", "measurement_reason", "計測理由", "計測済み件数", "対象件数",
                 "活性度", "データ反映時点", "公開Run", "対象ポリシー",
                 "分析開始時刻", "分析終了時刻", "分析タイムゾーン",

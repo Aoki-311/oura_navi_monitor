@@ -97,6 +97,8 @@ export function usersModel(payload, expectedScope = "user_map") {
         lastActiveAt: optionalText(row?.lastActiveAt),
         activeDays7,
         userMessageCount7,
+        activeDaysInPeriod: requiredNumber(row?.activeDaysInPeriod, "期間内利用日数", { integer: true }),
+        userMessageCountInPeriod: requiredNumber(row?.userMessageCountInPeriod, "期間内質問数", { integer: true }),
         completeDelivery,
         activity,
         activityLabel: activity ? requiredText(row?.activityLabel, "活性度ラベル") : "未測定",

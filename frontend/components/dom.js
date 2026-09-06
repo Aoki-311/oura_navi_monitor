@@ -5,18 +5,8 @@ export function escapeHtml(value) {
 }
 
 export function moduleMessage(message = "データ取得不可", type = "info") {
+  if (type === "loading" || /読み込み中|読込中|読み込んで/.test(message)) return `<div class="moduleMessage moduleLoading" role="status" data-state="loading"><span class="loadingSpinner" aria-hidden="true"></span><span>${escapeHtml(message)}</span><div class="skeletonLines" aria-hidden="true"><i></i><i></i><i></i></div></div>`;
   return `<div class="moduleMessage" role="${type === "error" ? "alert" : "status"}" data-state="${escapeHtml(type)}">${escapeHtml(message)}</div>`;
-}
-
-export function measurementContent(measurement, {
-  content,
-  noUsageMessage = "この期間に利用記録はありません。",
-  notMeasuredMessage,
-  partialMessage = "",
-} = {}) {
-  if (measurement?.measurementState === "no_usage") return moduleMessage(noUsageMessage, "empty");
-  if (measurement?.measurementState === "not_measured") return moduleMessage(notMeasuredMessage, "not_measured");
-  return `${content || ""}${measurement?.measurementState === "partial" && partialMessage ? `<p class="measurementNote">${escapeHtml(partialMessage)}</p>` : ""}`;
 }
 
 export function chips(values) {
@@ -26,6 +16,12 @@ export function chips(values) {
 
 export function setBusy(root, busy) {
   root?.setAttribute("aria-busy", busy ? "true" : "false");
+  root?.classList.toggle("isLoading", busy);
+}
+
+export function compareJapaneseNames(a, b) {
+  const text = (value) => String(value || "").normalize("NFKC").replace(/\s+/g, " ").trim();
+  return text(a).localeCompare(text(b), "ja-JP", { numeric: true, sensitivity: "base" });
 }
 
 export function installDialogLifecycle(dialog, { onClose, initialFocus } = {}) {

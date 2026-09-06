@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.contracts.analytics import OverviewResponse, RegionsResponse, UserDetailResponse, UsersResponse
+from app.contracts.analytics import EnvironmentResponse, TrendResponse, OverviewResponse, RegionsResponse, UserDetailResponse, UsersResponse
 from app.dependencies import get_analytics_service
 from app.security.auth import AdminIdentity, require_admin
 from app.services.analytics_service import (
@@ -56,6 +56,44 @@ def overview(
     window = analytics_window(settings=settings, days=days, preset=preset, start=start, end=end, as_of=as_of)
     try:
         return service.overview(window=window, area_key=area_key)
+    except AnalyticsSnapshotConflictError as exc:
+        raise _snapshot_conflict(exc) from exc
+
+
+@router.get("/environment", response_model=EnvironmentResponse)
+def environment(
+    days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default=""),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    as_of: str = Query(default="", max_length=80),
+    area_key: str = Query(default="", max_length=80),
+    _admin: AdminIdentity = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+    service: AnalyticsService = Depends(get_analytics_service),
+) -> dict:
+    window = analytics_window(settings=settings, days=days, preset=preset, start=start, end=end, as_of=as_of)
+    try:
+        return service.environment(window=window, area_key=area_key)
+    except AnalyticsSnapshotConflictError as exc:
+        raise _snapshot_conflict(exc) from exc
+
+
+@router.get("/trend", response_model=TrendResponse)
+def trend(
+    days: int = Query(default=7, ge=1, le=365),
+    preset: str = Query(default=""),
+    start: str = Query(default=""),
+    end: str = Query(default=""),
+    as_of: str = Query(default="", max_length=80),
+    area_key: str = Query(default="", max_length=80),
+    _admin: AdminIdentity = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+    service: AnalyticsService = Depends(get_analytics_service),
+) -> dict:
+    window = analytics_window(settings=settings, days=days, preset=preset, start=start, end=end, as_of=as_of)
+    try:
+        return service.trend(window=window, area_key=area_key)
     except AnalyticsSnapshotConflictError as exc:
         raise _snapshot_conflict(exc) from exc
 

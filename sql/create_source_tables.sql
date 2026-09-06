@@ -48,7 +48,10 @@ SELECT
   JSON_VALUE(event_payload, '$.build_id') AS build_id,
   JSON_VALUE(event_payload, '$.payload_json') AS payload_json
 FROM normalized
-WHERE JSON_VALUE(event_payload, '$.monitor_event') = 'true';
+WHERE JSON_VALUE(event_payload, '$.monitor_event') = 'true'
+  -- News/Society owns its source and validation. All other families, including
+  -- missing or unknown ones, remain visible to the Chat pipeline's validator.
+  AND COALESCE(JSON_VALUE(event_payload, '$.event_family'), '') != 'news_usage';
 
 CREATE OR REPLACE VIEW `${PROJECT_ID}.${DATASET_ID}.http_request_source` AS
 WITH serialized AS (

@@ -1,7 +1,13 @@
 const { test, expect } = require("@playwright/test");
+const { applyPreset } = require("./date-range-helpers");
 const {
   installApiMocks, makeAnalyticsUsers, overview, overviewUsers, regions,
 } = require("./fixtures");
+
+
+async function applyPeriod(page, preset) {
+  await applyPreset(page.locator("#mainPeriod"), preset);
+}
 
 const snapshotReceipt = (suffix) => ({
   scopePolicyVersion: "summary_role_v1",
@@ -25,9 +31,9 @@ test("overview renders seven analytics modules and preserves charts after refres
   await page.goto("/dashboard");
   for (const title of ["主要KPI", "利用環境・モード", "利用推移", "活性度分布", "ユーザー一覧", "日本利用マップ", "製品ニーズ"]) await expect(page.locator("main")).toContainText(title);
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
-  await expect(page.locator('[data-module="usage"]')).toContainText("途中集計");
+  await expect(page.locator('[data-module="usage"]')).not.toContainText("途中集計");
   await expect(page.locator('[data-module="usage"]')).not.toContainText("反映済み時刻");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("公開済みの集計データを表示しています");
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("反映済み");
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("2026/08/23");
   await expect(page.locator("#overviewUsers tbody tr")).toHaveCount(2);
@@ -36,7 +42,7 @@ test("overview renders seven analytics modules and preserves charts after refres
   await expect(page.locator("main")).not.toContainText("依頼タイプ");
   await expect(page.locator("main")).not.toContainText("質問の目的");
   expect(await page.locator("canvas").count()).toBeGreaterThanOrEqual(9);
-  for (let index = 0; index < 6; index += 1) await page.getByRole("button", { name: "再読込" }).click();
+  for (let index = 0; index < 6; index += 1) await page.locator("#mainPeriod [data-range-refresh]").click();
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
 });
 
@@ -70,7 +76,7 @@ test("manual refresh keeps the committed DOM mounted until a failed transaction 
   await page.locator('[data-module="kpis"]').evaluate((element) => { element.dataset.committedDom = "kept"; });
 
   failRefresh = true;
-  await page.getByRole("button", { name: "再読込" }).click();
+  await page.locator("#mainPeriod [data-range-refresh]").click();
   await expect.poll(() => pendingRequests).toBe(3);
   expect(refreshAnchors.every(Boolean)).toBeTruthy();
   expect(new Set(refreshAnchors).size).toBe(1);
@@ -127,7 +133,7 @@ test("page changes made during a full snapshot refresh commit on the latest page
   await page.goto("/dashboard");
   await expect(page.locator('[data-module="users"]')).toContainText("1–15 / 80名");
   refreshStarted = true;
-  await page.getByRole("button", { name: "再読込" }).click();
+  await page.locator("#mainPeriod [data-range-refresh]").click();
   await expect.poll(() => pendingRefreshResponses).toBe(3);
   await page.getByRole("button", { name: "次のページ" }).click();
   await expect(page).toHaveURL(/overview_page=2/);
@@ -180,7 +186,7 @@ test("a shrinking full snapshot clamps both the visible page and its URL", async
   await page.goto("/dashboard?overview_page=6");
   await expect(page.locator('[data-module="users"]')).toContainText("76–80 / 80名");
   shrinkStarted = true;
-  await page.getByRole("button", { name: "再読込" }).click();
+  await page.locator("#mainPeriod [data-range-refresh]").click();
   await expect.poll(() => pendingShrinkResponses).toBe(3);
   releaseShrink();
 
@@ -207,11 +213,11 @@ test("a failed preset transaction restores the committed preset and keeps every 
   await expect(page.locator("#regionRanking")).toContainText("関西");
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
 
-  await page.locator("#analysisPreset").selectOption("last_14d");
+  await applyPeriod(page, "last_14d");
   await expect(page.locator("[data-freshness-banner] [data-overview-refresh-error]")).toHaveText(
     "最新データを取得できませんでした。表示中の内容を保持しています。",
   );
-  await expect(page.locator("#analysisPreset")).toHaveValue("last_7d");
+  await expect(page.locator('#mainPeriod [data-range-preset="last_7d"]')).toHaveAttribute("aria-pressed", "true");
   await expect(page).not.toHaveURL(/preset=last_14d/);
   await expect(page.locator('[data-module="kpis"] .kpiCard').first()).toContainText("24");
   await expect(page.locator('[data-module="kpis"]')).not.toContainText("14");
@@ -333,7 +339,7 @@ test("a malformed refreshed overview payload is rejected before any committed mo
   await page.locator('[data-module="kpis"]').evaluate((element) => { element.dataset.adapterDom = "kept"; });
 
   malformedRefresh = true;
-  await page.getByRole("button", { name: "再読込" }).click();
+  await page.locator("#mainPeriod [data-range-refresh]").click();
   await expect(page.locator("[data-freshness-banner] [data-overview-refresh-error]")).toHaveText(
     "最新データを取得できませんでした。表示中の内容を保持しています。",
   );
@@ -356,7 +362,7 @@ test("a failed staged map refresh keeps the committed SVG and disables CSV", asy
   await page.locator("#japanMap").evaluate((element) => { element.dataset.committedMap = "kept"; });
 
   failMapRefresh = true;
-  await page.getByRole("button", { name: "再読込" }).click();
+  await page.locator("#mainPeriod [data-range-refresh]").click();
   await expect(page.locator("[data-freshness-banner] [data-overview-refresh-error]")).toHaveText(
     "最新データを取得できませんでした。表示中の内容を保持しています。",
   );
@@ -378,7 +384,7 @@ test("a detached chart render exception cannot destroy or replace committed char
     window.Chart = function BrokenChart() { throw new Error("chart render failed"); };
   });
 
-  await page.getByRole("button", { name: "再読込" }).click();
+  await page.locator("#mainPeriod [data-range-refresh]").click();
   await expect(page.locator("[data-freshness-banner] [data-overview-refresh-error]")).toHaveText(
     "最新データを取得できませんでした。表示中の内容を保持しています。",
   );
@@ -405,7 +411,7 @@ test("a DOM commit fault cannot destroy the previously committed Overview charts
     pageRoot.replaceChildren = () => { throw new Error("overview DOM commit failed"); };
   });
 
-  await page.getByRole("button", { name: "再読込" }).click();
+  await page.locator("#mainPeriod [data-range-refresh]").click();
 
   await expect(page.locator("[data-freshness-banner] [data-overview-refresh-error]")).toHaveText(
     "最新データを取得できませんでした。表示中の内容を保持しています。",
@@ -436,7 +442,7 @@ test("an initial adapter failure stays inside its module and cannot publish an e
   await page.goto("/dashboard");
 
   await expect(page.locator('[data-module="kpis"]')).toContainText("主要KPIを表示できません");
-  await expect(page.locator('[data-module="usage"]')).toContainText("途中集計");
+  await expect(page.locator('[data-module="usage"]')).not.toContainText("途中集計");
   await expect(page.locator("#regionRanking")).toContainText("関西");
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
@@ -488,14 +494,14 @@ for (const diagnosticsCase of [
     await page.goto("/dashboard");
 
     await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
-    await expect(page.locator('[data-module="users"] [data-content-diagnostics]')).toHaveText(diagnosticsCase.message);
+    await expect(page.locator('[data-module="users"] [data-content-diagnostics]')).toHaveCount(0);
     await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
     await expect(page.locator("#regionRanking")).toContainText("関西");
     await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
   });
 }
 
-test("partial roster diagnostics keep valid users visible, disclose isolation and disable export", async ({ page }) => {
+test("partial roster diagnostics keep valid users visible, keep diagnostics out of the page and disable export", async ({ page }) => {
   await installApiMocks(page, {
     usersOverride: {
       contentDiagnostics: {
@@ -511,15 +517,13 @@ test("partial roster diagnostics keep valid users visible, disclose isolation an
   await page.goto("/dashboard");
 
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
-  await expect(page.locator('[data-module="users"] [data-content-diagnostics]')).toContainText(
-    "名簿データの不備により 1件を除外しました。残りの利用状況は表示しています。",
-  );
+  await expect(page.locator('[data-module="users"] [data-content-diagnostics]')).toHaveCount(0);
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator("#regionRanking")).toContainText("関西");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
 });
 
-test("Overview roster isolation is disclosed directly without hiding valid KPI bodies", async ({ page }) => {
+test("Overview roster isolation remains internal without hiding valid KPI bodies", async ({ page }) => {
   await installApiMocks(page, {
     overviewOverride: {
       contentDiagnostics: {
@@ -535,15 +539,13 @@ test("Overview roster isolation is disclosed directly without hiding valid KPI b
   await page.goto("/dashboard");
 
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
-  await expect(page.locator("[data-freshness-banner]")).toContainText(
-    "名簿データの不備により 2件を除外しました。残りの利用状況は表示しています。",
-  );
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
   await expect(page.locator("#regionRanking")).toContainText("関西");
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
 });
 
-test("Regions roster isolation is disclosed beside the ranking and keeps the map data visible", async ({ page }) => {
+test("Regions roster isolation remains internal beside the ranking and keeps the map data visible", async ({ page }) => {
   await installApiMocks(page, {
     regionsOverride: {
       contentDiagnostics: {
@@ -559,9 +561,7 @@ test("Regions roster isolation is disclosed beside the ranking and keeps the map
   await page.goto("/dashboard");
 
   await expect(page.locator("#regionRanking")).toContainText("関西");
-  await expect(page.locator('[data-module="ranking"] [data-region-content-diagnostics]')).toContainText(
-    "名簿データの不備により 1件を除外しました。残りの利用状況は表示しています。",
-  );
+  await expect(page.locator('[data-module="ranking"] [data-region-content-diagnostics]')).toHaveCount(0);
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
@@ -590,9 +590,9 @@ test("contradictory or rolling-old roster diagnostics keep bodies but fail expor
   await page.goto("/dashboard");
 
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
-  await expect(page.locator("[data-freshness-banner]")).toContainText("診断情報の整合性を確認できないためCSV出力を停止しています");
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
   await expect(page.locator("#regionRanking")).toContainText("関西");
-  await expect(page.locator('[data-module="ranking"] [data-region-content-diagnostics]')).toContainText("名簿診断情報を確認できません");
+  await expect(page.locator('[data-module="ranking"] [data-region-content-diagnostics]')).toHaveCount(0);
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
 });
@@ -618,11 +618,11 @@ test("an A/A/B mismatch retries three times and commits only the overview-owned 
   });
   await page.goto("/dashboard");
 
-  await expect(page.locator("[data-freshness-banner]")).toContainText("同じ公開データ版を取得できませんでした");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("データを更新できませんでした");
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.locator("#regionRanking")).toHaveCount(0);
-  await expect(page.locator('[data-module="ranking"]')).toContainText("同じ公開データ版を取得できませんでした");
+  await expect(page.locator('[data-module="ranking"]')).toContainText("データを更新できませんでした");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
   expect(requestCounts).toEqual({ overview: 3, regions: 3, users: 3 });
   expect(transactionAnchors.every(Boolean)).toBeTruthy();
@@ -657,7 +657,7 @@ test("a transient snapshot mismatch converges within the bounded retry and commi
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator("#regionRanking")).toContainText("関西");
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
-  await expect(page.locator("[data-freshness-banner]")).not.toContainText("同じ公開データ版を取得できませんでした");
+  await expect(page.locator("[data-freshness-banner]")).not.toContainText("データを更新できませんでした");
   await expect(page.getByRole("button", { name: "CSV" })).toBeEnabled();
   expect(requestCounts).toEqual({ overview: 2, regions: 2, users: 2 });
 });
@@ -671,7 +671,7 @@ test("a content-only A/B mismatch fails the sibling locally and disables CSV", a
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.locator("#regionRanking")).toHaveCount(0);
-  await expect(page.locator('[data-module="ranking"]')).toContainText("同じ公開データ版を取得できませんでした");
+  await expect(page.locator('[data-module="ranking"]')).toContainText("データを更新できませんでした");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
 });
 
@@ -694,8 +694,8 @@ test("a content-only mismatch on refresh preserves the verified Summary body", a
   await page.goto("/dashboard");
   await expect(page.locator("#regionRanking")).toContainText("関西");
 
-  await page.getByRole("button", { name: "再読込" }).click();
-  await expect(page.locator("[data-freshness-banner]")).toContainText("同じ公開データ版を取得できませんでした");
+  await page.locator("#mainPeriod [data-range-refresh]").click();
+  await expect(page.locator("[data-freshness-banner]")).toContainText("データを更新できませんでした");
   await expect(page.locator("#regionRanking")).toContainText("関西");
   await expect(page.locator("#regionRanking")).not.toContainText("不整合地域");
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
@@ -714,7 +714,7 @@ test("new and legacy receipts select the complete sibling majority without co-co
   await page.goto("/dashboard");
 
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(0);
-  await expect(page.locator('[data-module="kpis"]')).toContainText("同じ公開データ版を取得できませんでした");
+  await expect(page.locator('[data-module="kpis"]')).toContainText("データを更新できませんでした");
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.locator("#regionRanking")).toContainText("関西");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
@@ -731,8 +731,8 @@ test("an A/B/C mismatch keeps only the overview owner and rejects both sibling b
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator("#regionRanking")).toHaveCount(0);
   await expect(page.locator("#overviewUsers")).toHaveCount(0);
-  await expect(page.locator('[data-module="ranking"]')).toContainText("同じ公開データ版を取得できませんでした");
-  await expect(page.locator('[data-module="users"]')).toContainText("同じ公開データ版を取得できませんでした");
+  await expect(page.locator('[data-module="ranking"]')).toContainText("データを更新できませんでした");
+  await expect(page.locator('[data-module="users"]')).toContainText("データを更新できませんでした");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
 });
 
@@ -773,7 +773,7 @@ test("a persistent mismatch on a later refresh preserves the previously committe
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
 
   await page.locator("#overviewUserSearch").fill("persistent");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("同じ公開データ版を取得できませんでした");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("データを更新できませんでした");
   await expect(page.locator('[data-module="kpis"] .kpiCard').first()).toContainText("24");
   await expect(page.locator('[data-module="kpis"]')).not.toContainText("999");
   await expect(page.locator("#regionRanking")).toContainText("関西");
@@ -800,7 +800,7 @@ test("a complete-to-legacy user refresh transition runs the full transaction and
   await expect(page.getByRole("button", { name: "CSV" })).toBeEnabled();
 
   await page.locator("#overviewUserSearch").fill("new-to-legacy");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("同じ公開データ版を取得できませんでした");
+  await expect(page.locator("[data-freshness-banner]")).toContainText("データを更新できませんでした");
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.locator("#overviewUsers")).not.toContainText("混在した旧形式ユーザー");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
@@ -927,7 +927,7 @@ test("an all-legacy Overview preserves usable bodies but fails CSV closed", asyn
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.locator("#regionRanking")).toContainText("関西");
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
-  await expect(page.locator("[data-freshness-banner]")).toContainText("旧形式");
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
   expect(requests.filter((row) => row.path === "/api/analytics/overview")).toHaveLength(1);
   expect(requests.filter((row) => row.path === "/api/analytics/regions")).toHaveLength(1);
@@ -978,8 +978,8 @@ test("an all-legacy refresh cannot overwrite a previously verified Overview snap
   await expect(page.getByRole("button", { name: "CSV" })).toBeEnabled();
 
   serveLegacy = true;
-  await page.getByRole("button", { name: "再読込" }).click();
-  await expect(page.locator("[data-freshness-banner]")).toContainText("同じ公開データ版を取得できませんでした");
+  await page.locator("#mainPeriod [data-range-refresh]").click();
+  await expect(page.locator("[data-freshness-banner]")).toContainText("データを更新できませんでした");
   await expect(page.locator('[data-module="kpis"] .kpiCard').first()).toContainText("24");
   await expect(page.locator('[data-module="kpis"]')).not.toContainText("999");
   await expect(page.locator("#regionRanking")).toContainText("関西");
@@ -1008,13 +1008,11 @@ test("a refresh failure cannot erase initially rendered legacy bodies", async ({
   await expect(page.locator('[data-module="kpis"] .kpiCard').first()).toContainText("24");
   await expect(page.locator("#regionRanking")).toContainText("関西");
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("旧形式");
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
 
   failRefresh = true;
-  await page.getByRole("button", { name: "再読込" }).click();
-  await expect(page.locator("[data-freshness-banner]")).toContainText(
-    "最新データを取得できませんでした。表示中の内容を保持しています。",
-  );
+  await page.locator("#mainPeriod [data-range-refresh]").click();
+  await expect(page.locator("[data-freshness-banner]")).toContainText("最新データを取得できませんでした。表示中の内容を保持しています。");
   await expect(page.locator('[data-module="kpis"] .kpiCard').first()).toContainText("24");
   await expect(page.locator("#regionRanking")).toContainText("関西");
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
@@ -1055,7 +1053,7 @@ test("historical environment gaps are explained without fake unknown charts", as
   });
   await page.goto("/dashboard");
   const environment = page.locator('[data-module="environment"]');
-  await expect(environment.getByText("過去データにはこの項目が保存されていません")).toHaveCount(2);
+  await expect(environment.getByText("の記録はありません。", { exact: false })).toHaveCount(2);
   await expect(environment.locator("#deviceChart")).toHaveCount(0);
   await expect(environment.locator("#modeChart")).toHaveCount(0);
   await expect(page.locator('[data-module="kpis"] .kpiCard')).toHaveCount(6);
@@ -1072,7 +1070,7 @@ test("one broken environment axis cannot erase valid hourly and device analytics
   const environment = page.locator('[data-module="environment"]');
   await expect(environment.locator("#hourChart")).toHaveCount(1);
   await expect(environment.locator("#deviceChart")).toHaveCount(1);
-  await expect(environment).toContainText("モード分析の計測範囲");
+  await expect(environment).not.toContainText("モード分析の計測範囲");
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
 });
 
@@ -1092,13 +1090,13 @@ test("one malformed product or trend row is isolated without erasing valid rows"
   await page.goto("/dashboard");
 
   await expect(page.locator('[data-module="usage"] #usageChart')).toHaveCount(1);
-  await expect(page.locator('[data-module="usage"]')).toContainText("2行目");
+  await expect(page.locator('[data-module="usage"]')).not.toContainText("2行目");
   await expect(page.locator('[data-module="products"] #productChart')).toHaveCount(1);
   await expect(page.locator('[data-module="products"] #productMatrix')).toContainText("テルフュージョン");
-  await expect(page.locator('[data-module="products"]')).toContainText("製品マトリクス 2行目");
+  await expect(page.locator('[data-module="products"]')).not.toContainText("製品マトリクス 2行目");
 });
 
-test("unresolved product candidates are disclosed beside product analytics", async ({ page }) => {
+test("unresolved product candidates do not add technical notes beside product analytics", async ({ page }) => {
   await installApiMocks(page, {
     overviewOverride: {
       productResolution: {
@@ -1114,9 +1112,7 @@ test("unresolved product candidates are disclosed beside product analytics", asy
     },
   });
   await page.goto("/dashboard");
-  await expect(page.locator('[data-module="products"]')).toContainText(
-    "正式な製品名を確認できなかった質問 2件",
-  );
+  await expect(page.locator('[data-module="products"]')).not.toContainText("正式な製品名を確認できなかった質問 2件");
 });
 
 test("an unknown historical category is shown as unclassified without hiding valid modules", async ({ page }) => {
@@ -1147,6 +1143,8 @@ test("one user with missing analytics does not hide other valid users", async ({
         lastActiveAt: "",
         activeDays7: 0,
         userMessageCount7: 0,
+        activeDaysInPeriod: 0,
+        userMessageCountInPeriod: 0,
         completeDelivery: { value: null, measuredCount: 0, totalCount: 0, measurementState: "no_usage", measurementReason: "no_usage" },
         activity: "dormant",
         activityLabel: "休眠ユーザー",
@@ -1163,6 +1161,8 @@ test("one user with missing analytics does not hide other valid users", async ({
         lastActiveAt: "",
         activeDays7: 0,
         userMessageCount7: 0,
+        activeDaysInPeriod: 0,
+        userMessageCountInPeriod: 0,
         completeDelivery: { value: null, measuredCount: 0, totalCount: 0, measurementState: "no_usage", measurementReason: "no_usage" },
         activityLabel: "休眠ユーザー",
       }],
@@ -1172,7 +1172,7 @@ test("one user with missing analytics does not hide other valid users", async ({
   await expect(page.locator("#overviewUsers")).toContainText("正常ユーザー");
   await expect(page.locator("#overviewUsers")).toContainText("契約欠落");
   await expect(page.locator("#overviewUsers")).toContainText("未測定");
-  await expect(page.locator('[data-module="users"]')).toContainText("契約上の欠落を 1件");
+  await expect(page.locator('[data-module="users"]')).not.toContainText("契約上の欠落を 1件");
   await expect(page.locator("#regionRanking")).toContainText("関西");
 });
 
@@ -1190,10 +1190,10 @@ test("stale freshness metadata never hides otherwise available data", async ({ p
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("3時間ごと");
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("反映済み");
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("2026/08/20");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("更新が遅れています");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("元イベント 2件");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("重複配信 3件");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("重複ファクト 1件");
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.locator("#regionRanking")).toContainText("関西");
@@ -1209,10 +1209,10 @@ test("malformed update metadata is isolated and never erases valid overview modu
   });
   await page.goto("/dashboard");
 
-  await expect(page.locator("[data-freshness-banner]")).toContainText("更新情報を確認できません");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("表示中の集計値は保持しています");
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
-  await expect(page.locator('[data-module="usage"]')).toContainText("途中集計");
+  await expect(page.locator('[data-module="usage"]')).not.toContainText("途中集計");
   await expect(page.locator('[data-module="products"]')).toContainText("テルフュージョン");
 });
 
@@ -1243,10 +1243,10 @@ test("rolling old response fields keep valid bodies visible but never enable an 
 
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator('[data-module="kpis"]')).toContainText("回答成功率");
-  await expect(page.locator('[data-module="kpis"]')).toContainText("P95応答時間: 計測範囲を確認できません");
+  await expect(page.locator('[data-module="kpis"]')).not.toContainText("P95応答時間: 計測範囲を確認できません");
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.locator("#regionRanking")).toContainText("関西");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("旧形式");
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
 });
 
@@ -1258,7 +1258,7 @@ test("an invalid analysis window cannot be co-committed with complete summary re
 
   await expect(page.locator('[data-module="kpis"]')).toContainText("24");
   await expect(page.locator("#overviewUsers")).toHaveCount(0);
-  await expect(page.locator('[data-module="users"]')).toContainText("同じ公開データ版を取得できませんでした");
+  await expect(page.locator('[data-module="users"]')).toContainText("データを更新できませんでした");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
 });
 
@@ -1276,7 +1276,7 @@ test("one broken KPI field cannot erase valid sibling KPI cards", async ({ page 
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator('[data-module="kpis"]')).toContainText("91.0%");
   await expect(page.locator('[data-module="kpis"]')).toContainText("計測情報なし");
-  await expect(page.locator('[data-module="usage"]')).toContainText("途中集計");
+  await expect(page.locator('[data-module="usage"]')).not.toContainText("途中集計");
 });
 
 test("unavailable pipeline diagnostics are explicit while published facts remain visible", async ({ page }) => {
@@ -1301,8 +1301,8 @@ test("unavailable pipeline diagnostics are explicit while published facts remain
   await installApiMocks(page, { overviewOverride: { analyticsQuality } });
   await page.goto("/dashboard");
 
-  await expect(page.locator("[data-freshness-banner]")).toContainText("診断情報を確認できません");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("表示中の集計値は保持しています");
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
 });
 
@@ -1325,7 +1325,7 @@ test("rolling compatibility and independent region-user metadata failures preser
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
   await expect(page.locator("#overviewUsers")).toContainText("山田 太郎");
   await expect(page.locator("#regionRanking")).toContainText("関西");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("公開済みの集計データを表示しています");
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("反映済み");
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("2026/08/23");
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("3時間ごと");
@@ -1347,8 +1347,8 @@ test("a blocked latest refresh keeps the previous published dashboard and explai
   await installApiMocks(page, { overviewOverride: { analyticsQuality } });
   await page.goto("/dashboard");
 
-  await expect(page.locator("[data-freshness-banner]")).toContainText("品質チェック 2件");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("直前の成功データ");
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
   await expect(page.locator("#kpis .kpiCard")).toHaveCount(6);
 });
 
@@ -1363,9 +1363,9 @@ test("a slower obsolete period request cannot overwrite the latest selection", a
     },
   });
   await page.goto("/dashboard");
-  await page.locator("#analysisPreset").selectOption("last_30d");
+  await applyPeriod(page, "last_30d");
   await expect.poll(() => requests.some((row) => row.path === "/api/analytics/overview" && row.search.includes("last_30d"))).toBeTruthy();
-  await page.locator("#analysisPreset").selectOption("last_14d");
+  await applyPeriod(page, "last_14d");
   await expect(page.locator('[data-module="kpis"] .kpiCard').first()).toContainText("14");
   await page.waitForTimeout(800);
   await expect(page.locator('[data-module="kpis"] .kpiCard').first()).toContainText("14");

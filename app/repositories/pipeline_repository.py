@@ -18,6 +18,7 @@ from google.api_core.exceptions import (
 from google.cloud import bigquery
 
 from app.settings import Settings
+from app.repositories.read_cache import PublishedReadCache
 
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class PipelineRepository:
         self._runs_table = f"`{dataset}.pipeline_runs`"
         self._quality_table = f"`{dataset}.pipeline_quality_events`"
         self._issue_table = f"`{dataset}.pipeline_event_issues`"
+        self._reads = PublishedReadCache()
 
     def _query_config(
         self,
@@ -117,6 +119,11 @@ class PipelineRepository:
         return values
 
     def publication_snapshot(self) -> dict[str, Any]:
+        # Parallel page modules share only an in-flight lookup. A later refresh
+        # re-reads the pointer and latest-run diagnostics even after a failure.
+        return self._reads.read("publication", self._publication_snapshot, retain=False)
+
+    def _publication_snapshot(self) -> dict[str, Any]:
         """Return stable publication state plus independently available diagnostics.
 
         The published watermark is the authority that bounds visible facts. Optional

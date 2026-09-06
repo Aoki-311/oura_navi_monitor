@@ -1,23 +1,25 @@
-import { getOverview, getOverviewUsers, getRegions, isCancellation } from "../api/client.js";
+import { getOverview, getOverviewUsers, getRegions, getEnvironment, getUsageTrend, getNewsUsageOverview, isCancellation } from "../api/client.js";
 import {
   activityModel, environmentModel, kpisModel, overviewEnvelope,
   productsModel, regionsModel, taskModel, usageTrendModel,
 } from "../adapters/overviewAdapter.js";
 import { usersModel } from "../adapters/usersAdapter.js";
+import { newsUsageDashboardModel } from "../adapters/newsUsageDashboardAdapter.js";
+import { newsDashboardTrendChart, newsDashboardShareChart, newsCategoryRankingChart } from "../components/newsUsageCharts.js";
+import { renderDateRangeControl, bindDateRangeControl, normalizeDateRange, requestDateRange, periodLabel } from "../components/dateRangeControl.js";
 import {
   barChart, destroyChartCanvases, destroyChartsInRoot, doughnutChart, stackedChart, usageTrendChart,
 } from "../components/charts.js";
 import { bindPagination, bindResponsiveCollection, paginate, paginationMarkup } from "../components/collection.js";
-import { chips, escapeHtml, measurementContent, moduleMessage, setBusy } from "../components/dom.js";
-import { renderFreshnessBanner } from "../components/freshnessBanner.js";
+import { chips, escapeHtml, moduleMessage, setBusy } from "../components/dom.js";
 import { renderJapanMap } from "../components/japanMap.js";
 import { renderProductMatrix } from "../components/productMatrix.js";
 import {
   displayCount, displayDateTime, displayMeasuredDuration, displayMeasuredRate,
-  displayRate, measurementCoverage, measurementReasonLabel, measurementStateLabel,
+  displayRate,
 } from "../viewModels/formatters.js";
 
-const OVERVIEW_MODULES = ["kpis", "environment", "usage", "tasks", "activity", "products"];
+const OVERVIEW_MODULES = ["kpis", "activity", "products"];
 const MAX_SNAPSHOT_ATTEMPTS = 3;
 const MAX_COMMITTED_ANCHOR_AGE_MS = 4 * 60 * 1000;
 
@@ -26,23 +28,22 @@ function capturedModel(create) {
   catch (reason) { return { status: "rejected", reason }; }
 }
 
-function periodLabel(preset) {
-  return {
-    today: "今日", last_7d: "過去7日", last_14d: "過去14日",
-    last_30d: "過去30日", last_60d: "過去60日", all: "全期間",
-  }[preset] || "選択期間";
-}
-
-function coverageNote(measurement) {
-  const reason = measurementReasonLabel(measurement);
-  return `<span class="measurementBadge ${escapeHtml(measurement.measurementState)}">${escapeHtml(measurementStateLabel(measurement))}</span><small>${escapeHtml(measurementCoverage(measurement))}${reason ? ` · ${escapeHtml(reason)}` : ""}</small>`;
-}
-
 export class OverviewPage {
   constructor(root, { navigate, state, signal, isCurrent, setArea, setAnalyticsSnapshot }) {
     this.root = root;
     this.navigate = navigate;
     this.preset = state.preset;
+    this.start = state.start || "";
+    this.end = state.end || "";
+    this.moduleRanges = {
+      environment: normalizeDateRange(state.environmentRange || state),
+      usage: normalizeDateRange(state.trendRange || state),
+    };
+    this.moduleRequests = new Map();
+    this.moduleModels = new Map();
+    this.moduleErrors = new Map();
+    this.moduleDateControls = new Map();
+    this.refreshSequence = 0;
     this.areaKey = state.area;
     this.signal = signal;
     this.isCurrent = isCurrent;
@@ -66,21 +67,65 @@ export class OverviewPage {
     this.committedAsOf = "";
     this.stagedRenderFailed = false;
     this.initialContext = this.contextFromState(state);
-    this.signal.addEventListener("abort", () => window.clearTimeout(this.userSearchTimer), { once: true });
+    this.signal.addEventListener("abort", () => {
+      window.clearTimeout(this.userSearchTimer);
+      for (const request of this.moduleRequests.values()) request.controller.abort();
+      this.moduleDateControls.forEach((control) => control?.destroy());
+    }, { once: true });
     this.compactCollection = bindResponsiveCollection(this.signal, () => this.renderUserRows());
   }
 
   async load() {
-    return this.runSnapshotTransaction(this.initialContext);
+    this.root.innerHTML = this.shell();
+    this.installUserControls();
+    this.installModuleDateControls();
+    return this.refreshAll(this.initialContext);
   }
 
   async refresh(state) {
-    return this.runSnapshotTransaction(this.contextFromState(state));
+    const previous = JSON.stringify(this.moduleRanges);
+    if (state.environmentRange) this.moduleRanges.environment = normalizeDateRange(state.environmentRange);
+    if (state.trendRange) this.moduleRanges.usage = normalizeDateRange(state.trendRange);
+    const rangesChanged = previous !== JSON.stringify(this.moduleRanges);
+    return this.refreshAll(this.contextFromState(state), { rangesChanged });
+  }
+
+  async refreshAll(context, { rangesChanged = false } = {}) {
+    const sequence = ++this.refreshSequence;
+    const independent = !this.hasCommittedBody || context.areaKey !== this.areaKey || rangesChanged;
+    const modules = independent ? ["environment", "usage", "news"] : ["news"];
+    const results = await Promise.allSettled([
+      this.runSnapshotTransaction(context),
+      ...modules.map((name) => this.refreshModule(name, name === "news" ? context : this.moduleRanges[name], { deferCommit: true, areaKey: context.areaKey })),
+    ]);
+    if (!this.isCurrent() || sequence !== this.refreshSequence) return false;
+    const canCommitAuxiliary = results[0].status === "fulfilled" && (results[0].value || !this.hasCommittedBody);
+    const refreshedModules = [];
+    if (canCommitAuxiliary) {
+      modules.forEach((name, index) => {
+        const outcome = results[index + 1];
+        if (outcome.status !== "fulfilled" || !outcome.value) return;
+        if (this.moduleRequests.get(name) !== outcome.value.request) return;
+        if (outcome.value.model) {
+          this.moduleModels.set(name, outcome.value.model);
+          this.moduleErrors.delete(name);
+        } else if (outcome.value.error) this.moduleErrors.set(name, outcome.value.error);
+        refreshedModules.push(name);
+      });
+    }
+    if (canCommitAuxiliary) {
+      refreshedModules.forEach((name) => this.renderAuxiliaryModule(name));
+      if (rangesChanged) this.installModuleDateControls();
+    }
+    if (results[0].status === "rejected") throw results[0].reason;
+    return results[0].value;
   }
 
   contextFromState(state) {
     return {
       preset: state.preset || "last_7d",
+      start: state.start || "",
+      end: state.end || "",
       areaKey: state.area || "",
       query: state.overviewQuery || "",
       activity: state.overviewActivity || "",
@@ -92,6 +137,8 @@ export class OverviewPage {
   currentContext() {
     return {
       preset: this.preset,
+      start: this.start,
+      end: this.end,
       areaKey: this.areaKey,
       query: this.query,
       activity: this.activity,
@@ -102,13 +149,15 @@ export class OverviewPage {
 
   commitContext(context) {
     this.preset = context.preset;
+    this.start = context.start || "";
+    this.end = context.end || "";
     this.areaKey = context.areaKey;
     this.query = context.query;
     this.activity = context.activity;
     this.sort = context.sort;
     this.page = context.page;
     const period = this.root.querySelector("[data-overview-period]");
-    if (period) period.textContent = `${periodLabel(this.preset)}の利用実態を、採用から個人まで順に確認できます。`;
+    if (period) period.textContent = `${periodLabel(this.currentContext())}の利用実態を、採用から個人まで順に確認できます。`;
     const search = this.root.querySelector("#overviewUserSearch");
     const activity = this.root.querySelector("#overviewActivity");
     const sort = this.root.querySelector("#overviewSort");
@@ -120,6 +169,8 @@ export class OverviewPage {
   restoreCommittedScope() {
     this.navigate("overview", {
       preset: this.preset,
+      start: this.start,
+      end: this.end,
       area: this.areaKey,
       overviewQuery: this.query,
       overviewActivity: this.activity,
@@ -143,20 +194,143 @@ export class OverviewPage {
   shell() {
     return `
       <div class="pageHeading overviewHeading">
-        <div><p class="eyebrow">利用状況・定着・ニーズ</p><h2>全体サマリー</h2><p data-overview-period>${escapeHtml(periodLabel(this.preset))}の利用実態を、採用から個人まで順に確認できます。</p></div>
+        <div><p class="eyebrow">利用状況・定着・ニーズ</p><h2>全体サマリー</h2><p data-overview-period>${escapeHtml(periodLabel(this.currentContext()))}の利用実態を、採用から個人まで順に確認できます。</p></div>
         <div class="scopeSummary"><span data-summary-total>全体サマリー対象を読込中</span><span data-summary-selection hidden></span><div id="areaChip"></div></div>
       </div>
-      <div class="freshnessBanner" data-freshness-banner data-state="loading">更新状況を確認中です。</div>
+      <div class="moduleRefreshError" data-freshness-banner hidden></div>
       <section class="panel priorityPanel" data-module="kpis"><div class="panelHead"><div><p class="sectionIndex">01</p><h3>主要KPI</h3></div><small>本社MR・コントラクトMR</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
-      <section class="panel" data-module="environment"><div class="panelHead"><div><p class="sectionIndex">02</p><h3>利用環境・モード</h3></div><small>補助的な利用状況</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
-      <section class="twoGrid insightGrid"><article class="panel" data-module="usage"><div class="panelHead"><div><p class="sectionIndex">03</p><h3>利用推移</h3></div></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article><article class="panel" data-module="tasks"><div class="panelHead"><div><p class="sectionIndex">03</p><h3>質問種類</h3></div><small>ユーザーが何をしたいか</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article></section>
-      <section class="panel" data-module="activity"><div class="panelHead"><div><p class="sectionIndex">04</p><h3>活性度分布</h3></div><small>直近14日の活躍日数で判定</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
-      <section class="panel" data-module="users"><div class="panelHead"><div><p class="sectionIndex">05</p><h3>ユーザー一覧</h3></div><small>最終利用は全期間、利用日・メッセージは直近7日</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
+      <section class="panel" data-module="environment"><div class="panelHead"><div><p class="sectionIndex">02</p><h3>利用環境・モード</h3></div></div><div class="moduleDateControls" data-module-date="environment">${renderDateRangeControl("environment-period", this.moduleRanges.environment, { compact: true })}</div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
+      <section class="twoGrid insightGrid"><article class="panel" data-module="usage"><div class="panelHead"><div><p class="sectionIndex">03</p><h3>利用推移</h3></div></div><div class="moduleDateControls" data-module-date="usage">${renderDateRangeControl("usage-period", this.moduleRanges.usage, { compact: true })}</div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article><article class="panel" data-module="tasks"><div class="panelHead"><div><p class="sectionIndex">03</p><h3>質問種類</h3></div><small>利用推移と同じ期間</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article></section>
+      <section class="panel" data-module="activity"><div class="panelHead"><div><p class="sectionIndex">04</p><h3>活性度分布 <details class="activityHelp"><summary aria-label="活性度の定義">?</summary><div class="activityHelpContent"><strong>直近14日の質問した日数</strong><p>選択期間の最終日までの14日間を対象に、質問した日を1日ずつ数えます。</p><dl><div><dt>高アクティブ</dt><dd>6日以上</dd></div><div><dt>中アクティブ</dt><dd>3〜5日</dd></div><div><dt>低アクティブ</dt><dd>1〜2日</dd></div><div><dt>休眠ユーザー</dt><dd>0日</dd></div></dl></div></details></h3></div></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
+      <section class="panel" data-module="users"><div class="panelHead"><div><p class="sectionIndex">05</p><h3>ユーザー一覧</h3></div><small>選択期間内の利用状況</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
       <section class="twoGrid mapGrid"><article class="panel" data-module="map"><div class="panelHead"><div><p class="sectionIndex">06</p><h3>日本利用マップ</h3></div><small>色の濃さ: 利用率</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article><article class="panel" data-module="ranking"><div class="panelHead"><h3>地域ランキング</h3><small>利用率順</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article></section>
-      <section class="panel" data-module="products"><div class="panelHead"><div><p class="sectionIndex">07</p><h3>製品ニーズ</h3></div><small>製品 Top 10 × 質問種類</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>`;
+      <section class="panel" data-module="products"><div class="panelHead"><div><p class="sectionIndex">07</p><h3>製品ニーズ</h3></div><small>製品 Top 10 × 質問種類</small></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></section>
+      <section class="twoGrid newsUsageDashboard" aria-label="ニュース・学会の利用状況">
+        <article class="panel" data-module="newsTrend"><div class="panelHead"><div><p class="sectionIndex">08</p><h3>ニュース・学会 利用推移</h3></div></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article>
+        <article class="panel" data-module="newsShare"><div class="panelHead"><div><p class="sectionIndex">09</p><h3>ニュース・学会 クリック割合</h3></div></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article>
+        <article class="panel" data-module="newsCategories"><div class="panelHead"><div><p class="sectionIndex">10</p><h3>ニュース分類ランキング</h3></div></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article>
+        <article class="panel" data-module="societyCategories"><div class="panelHead"><div><p class="sectionIndex">11</p><h3>学会カテゴリランキング</h3></div></div><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></article>
+      </section>`;
   }
 
   body(name) { return this.root.querySelector(`[data-module="${name}"] [data-module-body]`); }
+
+  installModuleDateControls(names = ["environment", "usage"]) {
+    for (const name of names) {
+      this.moduleDateControls.get(name)?.destroy();
+      const host = this.root.querySelector(`[data-module-date="${name}"]`);
+      if (!host) continue;
+      host.innerHTML = renderDateRangeControl(`${name}-period`, this.moduleRanges[name], { compact: true });
+      this.moduleDateControls.set(name, bindDateRangeControl(host, {
+        range: this.moduleRanges[name], signal: this.signal,
+        onApply: (range) => this.refreshModule(name, range, { persist: true }),
+        onRefresh: () => this.refreshModule(name, this.moduleRanges[name]),
+      }));
+    }
+  }
+
+  moduleNames(name) {
+    if (name === "news") return ["newsTrend", "newsShare", "newsCategories", "societyCategories"];
+    return name === "usage" ? ["usage", "tasks"] : [name];
+  }
+
+  async refreshModule(name, selectedRange, { persist = false, deferCommit = false, areaKey = this.areaKey } = {}) {
+    this.moduleRequests.get(name)?.controller.abort();
+    const request = { controller: new AbortController(), pending: true };
+    this.moduleRequests.set(name, request);
+    const range = normalizeDateRange(selectedRange);
+    const panelBusy = (busy) => this.moduleNames(name).forEach((part) => setBusy(this.root.querySelector(`[data-module="${part}"]`), busy));
+    panelBusy(true);
+    try {
+      const params = { ...requestDateRange(range, new Date().toISOString()), ...(areaKey ? { area_key: areaKey } : {}) };
+      const api = name === "environment" ? getEnvironment : name === "usage" ? getUsageTrend : getNewsUsageOverview;
+      const raw = await api(params, { signal: request.controller.signal });
+      if (!this.isCurrent() || this.moduleRequests.get(name) !== request) return false;
+      if (name !== "news" && raw.scope !== "global") throw new Error("データを取得できませんでした。");
+      const model = name === "environment" ? environmentModel(raw)
+        : name === "usage" ? { usage: usageTrendModel(raw), tasks: taskModel(raw) }
+        : newsUsageDashboardModel(raw);
+      if (deferCommit) return { model, range, request };
+      this.moduleModels.set(name, model);
+      this.moduleErrors.delete(name);
+      if (persist) {
+        this.moduleRanges[name] = range;
+        this.navigate("overview", {
+          [name === "environment" ? "environmentRange" : "trendRange"]: range,
+        }, { replace: true, render: false });
+      }
+      this.renderAuxiliaryModule(name);
+      if (persist) this.installModuleDateControls([name]);
+      return true;
+    } catch (error) {
+      if (isCancellation(error) || !this.isCurrent() || this.moduleRequests.get(name) !== request) return false;
+      const message = this.moduleModels.has(name)
+        ? "更新できませんでした。表示中の内容を保持しています。"
+        : "データを取得できませんでした。再読込してください。";
+      if (deferCommit) return { error: message, request };
+      this.moduleErrors.set(name, message);
+      this.renderAuxiliaryModule(name);
+      return false;
+    } finally {
+      request.pending = false;
+      if (this.isCurrent() && this.moduleRequests.get(name) === request) panelBusy(false);
+    }
+  }
+
+  renderAuxiliaryModules() {
+    for (const name of ["environment", "usage", "news"]) this.renderAuxiliaryModule(name);
+  }
+
+  renderAuxiliaryModule(name) {
+    const model = this.moduleModels.get(name);
+    const error = this.moduleErrors.get(name);
+    for (const part of this.moduleNames(name)) {
+      const body = this.body(part);
+      if (!body) continue;
+      destroyChartsInRoot(body);
+      body.replaceChildren();
+    }
+    if (!model) {
+      for (const part of this.moduleNames(name)) {
+        const body = this.body(part);
+        if (body) body.innerHTML = moduleMessage(error || "読み込み中…", error ? "error" : "loading");
+      }
+    } else {
+      try {
+        if (name === "environment") this.renderEnvironment(model);
+        else if (name === "usage") { this.renderUsage(model.usage); this.renderTasks(model.tasks); }
+        else this.renderNewsDashboard(model);
+      } catch (_error) {
+        for (const part of this.moduleNames(name)) this.fail(part, new Error("グラフを表示できませんでした。再読込してください。"));
+      }
+      if (error) {
+        for (const part of this.moduleNames(name)) this.body(part)?.insertAdjacentHTML("beforeend", moduleMessage(error, "error"));
+      }
+    }
+    if (this.moduleRequests.get(name)?.pending) {
+      for (const part of this.moduleNames(name)) setBusy(this.root.querySelector(`[data-module="${part}"]`), true);
+    }
+  }
+
+  renderNewsDashboard(model) {
+    if (!model.available) {
+      const unavailable = model.state.availability === "unavailable";
+      const message = unavailable ? "利用状況を取得できませんでした。"
+        : model.state.availability === "before_measurement" ? "選択した期間のデータはありません。"
+        : "利用データはまだありません。";
+      for (const part of this.moduleNames("news")) this.body(part).innerHTML = moduleMessage(message, unavailable ? "error" : "empty");
+      return;
+    }
+    const render = (name, hasRows, create, { tall = false } = {}) => {
+      const body = this.body(name);
+      body.innerHTML = hasRows ? `<div class="chartBox ${tall ? "tall" : "primaryChart"}"><canvas></canvas></div>` : moduleMessage("この期間の利用記録はありません。", "empty");
+      if (hasRows) create(body.querySelector("canvas"));
+    };
+    render("newsTrend", model.trend.length > 0, (canvas) => newsDashboardTrendChart(canvas, model.trend));
+    render("newsShare", model.totals.contentClicks > 0, (canvas) => newsDashboardShareChart(canvas, model.totals));
+    render("newsCategories", model.newsCategories.some((row) => row.clicks > 0), (canvas) => newsCategoryRankingChart(canvas, model.newsCategories), { tall: true });
+    render("societyCategories", model.societyCategories.some((row) => row.clicks > 0), (canvas) => newsCategoryRankingChart(canvas, model.societyCategories, { society: true }), { tall: true });
+  }
 
   fail(name, error) {
     if (!this.isCurrent() || isCancellation(error)) return;
@@ -179,12 +353,15 @@ export class OverviewPage {
     if (!banner || banner.querySelector("[data-snapshot-mismatch]")) return;
     const notice = document.createElement("span");
     notice.dataset.snapshotMismatch = "true";
-    notice.textContent = "同じ公開データ版を取得できませんでした。混在する表示は反映していません。再読込してください。";
+    notice.textContent = "データを更新できませんでした。再読込してください。";
+    banner.hidden = false;
     banner.appendChild(notice);
   }
 
   clearSnapshotIssue() {
     this.root.querySelector("[data-snapshot-mismatch]")?.remove();
+    const banner = this.root.querySelector("[data-freshness-banner]");
+    if (banner && !banner.children.length) banner.hidden = true;
   }
 
   renderOverviewRefreshIssue() {
@@ -198,11 +375,14 @@ export class OverviewPage {
       banner.appendChild(notice);
     }
     notice.textContent = this.overviewRefreshError;
+    banner.hidden = false;
   }
 
   clearOverviewRefreshIssue() {
     this.overviewRefreshError = "";
     this.root.querySelector("[data-overview-refresh-error]")?.remove();
+    const banner = this.root.querySelector("[data-freshness-banner]");
+    if (banner && !banner.children.length) banner.hidden = true;
   }
 
   preserveCommittedRefreshFailure() {
@@ -218,12 +398,9 @@ export class OverviewPage {
     destroyChartsInRoot(this.root);
     this.root.innerHTML = this.shell();
     this.installUserControls();
-    renderFreshnessBanner(
-      this.root.querySelector("[data-freshness-banner]"),
-      null,
-      null,
-      [error?.message || "画面を描画できませんでした。"],
-    );
+    this.installModuleDateControls();
+    this.overviewRefreshError = "画面を表示できませんでした。再読込してください。";
+    this.renderOverviewRefreshIssue();
     [...OVERVIEW_MODULES, "map", "ranking"].forEach((name) => this.fail(name, error));
     const users = this.body("users")?.querySelector("#overviewUserResults");
     if (users) users.innerHTML = moduleMessage(error?.message || "画面を描画できませんでした。", "error");
@@ -316,30 +493,26 @@ export class OverviewPage {
   async fetchSnapshotSet(context, asOf) {
     return Promise.allSettled([
       getOverview(
-        { preset: context.preset, area_key: context.areaKey, as_of: asOf },
+        { ...requestDateRange(context, asOf), area_key: context.areaKey },
         { signal: this.signal },
       ).then((raw) => ({
         envelope: overviewEnvelope(raw),
         models: {
           kpis: capturedModel(() => kpisModel(raw)),
-          environment: capturedModel(() => environmentModel(raw)),
-          usage: capturedModel(() => usageTrendModel(raw)),
-          tasks: capturedModel(() => taskModel(raw)),
           activity: capturedModel(() => activityModel(raw)),
           products: capturedModel(() => productsModel(raw)),
         },
       })),
       getRegions(
-        { preset: context.preset, as_of: asOf },
+        requestDateRange(context, asOf),
         { signal: this.signal },
       ).then((raw) => regionsModel(raw)),
       getOverviewUsers({
-        preset: context.preset,
+        ...requestDateRange(context, asOf),
         area_key: context.areaKey,
         q: context.query,
         activity: context.activity,
         sort: context.sort,
-        as_of: asOf,
       }, { signal: this.signal }).then((raw) => usersModel(raw, "global")),
     ]);
   }
@@ -455,7 +628,7 @@ export class OverviewPage {
       || operationGeneration !== this.operationGeneration
     ) return false;
     this.snapshotMismatch = true;
-    const error = new Error("同じ公開データ版を取得できませんでした。");
+    const error = new Error("データを更新できませんでした。再読込してください。");
     if (this.hasCommittedBody) {
       this.clearOverviewRefreshIssue();
       this.restoreCommittedScope();
@@ -523,6 +696,8 @@ export class OverviewPage {
       stagedSnapshot = metadata ? { ...metadata } : null;
     };
     this.preset = commitContext.preset;
+    this.start = commitContext.start || "";
+    this.end = commitContext.end || "";
     this.areaKey = commitContext.areaKey;
     this.query = commitContext.query;
     this.activity = commitContext.activity;
@@ -544,12 +719,6 @@ export class OverviewPage {
         this.renderOverviewPayload(overviewResult.value);
       } else if (!isCancellation(resultError(overviewResult, 0))) {
         const error = resultError(overviewResult, 0);
-        renderFreshnessBanner(
-          stageRoot.querySelector("[data-freshness-banner]"),
-          null,
-          null,
-          [error?.message || "集計情報を取得できません。"],
-        );
         OVERVIEW_MODULES.forEach((name) => this.fail(name, error));
       }
       if (regionsResult.status === "fulfilled" && acceptedIndices.has(1)) {
@@ -585,8 +754,21 @@ export class OverviewPage {
       this.root = liveRoot;
       this.setAnalyticsSnapshot = publishSnapshot;
       this.staging = false;
-      const previouslyCommittedCanvases = [...liveRoot.querySelectorAll("canvas")];
+      const auxiliaryPanels = ["environment", "usage", "news"]
+        .flatMap((name) => this.moduleNames(name))
+        .map((name) => ({ name, panel: liveRoot.querySelector(`[data-module="${name}"]`) }))
+        .filter(({ panel }) => panel);
+      const previouslyCommittedCanvases = [...liveRoot.querySelectorAll("canvas")]
+        .filter((canvas) => !auxiliaryPanels.some(({ panel }) => panel.contains(canvas)));
+      const restorePopovers = [...this.moduleDateControls.values()]
+        .map((control) => control?.preserveOpenPopover());
       liveRoot.replaceChildren(...stageRoot.childNodes);
+      // These modules own their requests, dates, and charts independently.
+      // Carry their existing panels through the main snapshot commit.
+      for (const { name, panel } of auxiliaryPanels) {
+        liveRoot.querySelector(`[data-module="${name}"]`).replaceWith(panel);
+      }
+      restorePopovers.forEach((restore) => restore?.());
       // replaceChildren is the atomic DOM commit point. Only after it succeeds
       // may the prior chart instances be released.
       destroyChartCanvases(previouslyCommittedCanvases);
@@ -608,6 +790,8 @@ export class OverviewPage {
       this.setAnalyticsSnapshot = publishSnapshot;
       this.staging = false;
       this.preset = previousContext.preset;
+      this.start = previousContext.start;
+      this.end = previousContext.end;
       this.areaKey = previousContext.areaKey;
       this.query = previousContext.query;
       this.activity = previousContext.activity;
@@ -628,12 +812,6 @@ export class OverviewPage {
     } else {
       selection.hidden = true;
     }
-    renderFreshnessBanner(
-      this.root.querySelector("[data-freshness-banner]"),
-      envelope.freshness,
-      envelope.analyticsQuality,
-      envelope.metadataIssues,
-    );
     const renderModel = (name, result, commit) => {
       if (result.status === "rejected") {
         if (this.hasCommittedBody) throw result.reason;
@@ -644,11 +822,9 @@ export class OverviewPage {
       this.renderPart(name, () => commit(result.value));
     };
     renderModel("kpis", models.kpis, (model) => this.renderKpis(model));
-    renderModel("environment", models.environment, (model) => this.renderEnvironment(model));
-    renderModel("usage", models.usage, (model) => this.renderUsage(model));
-    renderModel("tasks", models.tasks, (model) => this.renderTasks(model));
     renderModel("activity", models.activity, (model) => this.renderActivity(model));
     renderModel("products", models.products, (model) => this.renderProducts(model));
+    if (!this.staging) this.renderAuxiliaryModules();
   }
 
   renderKpis(model) {
@@ -661,7 +837,7 @@ export class OverviewPage {
       { label: "回答成功率（完全交付）", value: model.completeDelivery ? displayMeasuredRate(model.completeDelivery) : "計測情報なし", measurement: model.completeDelivery },
       { label: "P95応答時間", value: model.p95Latency ? displayMeasuredDuration(model.p95Latency) : "計測情報なし", measurement: model.p95Latency },
     ];
-    this.body("kpis").innerHTML = `<div id="kpis" class="kpiGrid">${cards.map((card) => `<article class="kpiCard ${card.measurement ? `measurementCard ${escapeHtml(card.measurement.measurementState)}` : ""}"><span>${escapeHtml(card.label)}</span><div><strong class="${String(card.value).length > 9 ? "textValue" : ""}">${escapeHtml(card.value)}</strong>${card.unit ? `<small>${escapeHtml(card.unit)}</small>` : ""}</div>${card.measurement ? coverageNote(card.measurement) : card.note ? `<small class="kpiNote">${escapeHtml(card.note)}</small>` : ""}</article>`).join("")}</div>${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
+    this.body("kpis").innerHTML = `<div id="kpis" class="kpiGrid">${cards.map((card) => `<article class="kpiCard ${card.measurement ? `measurementCard ${escapeHtml(card.measurement.measurementState)}` : ""}"><span>${escapeHtml(card.label)}</span><div><strong class="${String(card.value).length > 9 ? "textValue" : ""}">${escapeHtml(card.value)}</strong>${card.unit ? `<small>${escapeHtml(card.unit)}</small>` : ""}</div>${card.note ? `<small class="kpiNote">${escapeHtml(card.note)}</small>` : ""}</article>`).join("")}</div>`;
   }
 
   renderEnvironment(model) {
@@ -670,17 +846,14 @@ export class OverviewPage {
       const content = Array.isArray(rows)
         ? `<div class="chartBox compactChart"><canvas id="${canvasId}"></canvas></div>`
         : moduleMessage(`${missingLabel}の内訳を確認できません。`, "error");
-      if (!measurement) return `${content}${moduleMessage(`${missingLabel}の計測範囲を確認できません。`, "error")}`;
-      return measurementContent(measurement, {
-        content,
-        notMeasuredMessage: measurementReasonLabel(measurement) || `この期間の${missingLabel}を計測できません。`,
-        partialMessage: `${measurementCoverage(measurement)}${measurementReasonLabel(measurement) ? ` · ${measurementReasonLabel(measurement)}` : ""}`,
-      });
+      if (measurement?.measurementState === "no_usage") return moduleMessage("この期間の利用記録はありません。", "empty");
+      if (measurement?.measurementState === "not_measured") return moduleMessage(`${missingLabel}の記録はありません。`, "empty");
+      return content;
     };
     const hourly = Array.isArray(model.hourlyQuestions)
       ? '<div class="chartBox compactChart"><canvas id="hourChart"></canvas></div>'
       : moduleMessage("時間帯別質問を確認できません。", "error");
-    body.innerHTML = `<div class="threeGrid"><article class="subPanel"><h4>時間帯別質問</h4>${hourly}</article><article class="subPanel"><h4>デバイス</h4>${dimension(model.deviceMeasurement, model.deviceDistribution, "deviceChart", "デバイス")}</article><article class="subPanel"><h4>利用モード</h4>${dimension(model.modeMeasurement, model.modeDistribution, "modeChart", "利用モード")}</article></div>${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
+    body.innerHTML = `<div class="threeGrid"><article class="subPanel"><h4>時間帯別質問</h4>${hourly}</article><article class="subPanel"><h4>デバイス</h4>${dimension(model.deviceMeasurement, model.deviceDistribution, "deviceChart", "デバイス")}</article><article class="subPanel"><h4>利用モード</h4>${dimension(model.modeMeasurement, model.modeDistribution, "modeChart", "利用モード")}</article></div>`;
     if (body.querySelector("#hourChart")) barChart(body.querySelector("#hourChart"), model.hourlyQuestions, { label: "質問数", summary: "時間帯別の質問数" });
     if (body.querySelector("#deviceChart")) doughnutChart(body.querySelector("#deviceChart"), model.deviceDistribution, { summary: "デバイス別の利用構成" });
     if (body.querySelector("#modeChart")) doughnutChart(body.querySelector("#modeChart"), model.modeDistribution, { summary: "利用モード別の構成" });
@@ -689,24 +862,23 @@ export class OverviewPage {
   renderUsage(model) {
     const body = this.body("usage");
     if (!Array.isArray(model.rows)) { body.innerHTML = moduleMessage("利用推移を確認できません。", "error"); return; }
-    const partial = model.rows.find((row) => row.isPartial);
-    body.innerHTML = `<div class="chartBox primaryChart"><canvas id="usageChart"></canvas></div>${partial ? `<p class="measurementNote">${escapeHtml(partial.date)} は公開済み範囲までの途中集計です。</p>` : ""}${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
+    body.innerHTML = `<div class="chartBox primaryChart"><canvas id="usageChart"></canvas></div>`;
     usageTrendChart(body.querySelector("#usageChart"), model.rows);
   }
 
   renderTasks(model) {
     const body = this.body("tasks");
     if (model.measurement?.measurementState === "no_usage") { body.innerHTML = moduleMessage("この期間に利用記録はありません。", "empty"); return; }
-    if (model.measurement?.measurementState === "not_measured") { body.innerHTML = moduleMessage(measurementReasonLabel(model.measurement) || "この期間の質問種類を計測できません。", "not_measured"); return; }
+    if (model.measurement?.measurementState === "not_measured") { body.innerHTML = moduleMessage("この期間の質問種類の記録はありません。", "empty"); return; }
     const content = Array.isArray(model.rows) ? '<div class="chartBox primaryChart"><canvas id="taskChart"></canvas></div>' : moduleMessage("質問種類の内訳を確認できません。", "error");
-    body.innerHTML = `${content}${model.measurement?.measurementState === "partial" ? `<p class="measurementNote">${coverageNote(model.measurement)}</p>` : ""}${!model.measurement ? moduleMessage("質問種類の計測範囲を確認できません。", "error") : ""}${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
+    body.innerHTML = content;
     if (body.querySelector("#taskChart")) barChart(body.querySelector("#taskChart"), model.rows, { horizontal: true, label: "質問数", color: "#2fd5c4", summary: "質問種類別の質問数" });
   }
 
   renderActivity(model) {
     const body = this.body("activity");
     const chartBox = (rows, id, label, className = "") => Array.isArray(rows) ? `<div class="chartBox ${className}"><canvas id="${id}"></canvas></div>` : moduleMessage(`${label}を確認できません。`, "error");
-    body.innerHTML = `<div class="activityGrid"><article><h4>全体構成</h4>${chartBox(model.distribution, "activityChart", "全体構成", "donut")}</article><article><h4>地域別構成</h4>${chartBox(model.byArea, "areaActivityChart", "地域別構成")}</article><article><h4>役割別構成</h4>${chartBox(model.byRole, "roleActivityChart", "役割別構成")}</article></div>${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
+    body.innerHTML = `<div class="activityGrid"><article><h4>全体構成</h4>${chartBox(model.distribution, "activityChart", "全体構成", "donut")}</article><article><h4>地域別構成</h4>${chartBox(model.byArea, "areaActivityChart", "地域別構成")}</article><article><h4>役割別構成</h4>${chartBox(model.byRole, "roleActivityChart", "役割別構成")}</article></div>`;
     if (body.querySelector("#activityChart")) doughnutChart(body.querySelector("#activityChart"), model.distribution, { summary: "全体の活性度構成" });
     if (body.querySelector("#areaActivityChart")) stackedChart(body.querySelector("#areaActivityChart"), model.byArea, { summary: "地域別の活性度構成" });
     if (body.querySelector("#roleActivityChart")) stackedChart(body.querySelector("#roleActivityChart"), model.byRole, { summary: "役割別の活性度構成" });
@@ -715,11 +887,10 @@ export class OverviewPage {
   renderProducts(model) {
     const body = this.body("products");
     if (model.resolution?.measurementState === "no_usage") { body.innerHTML = moduleMessage("この期間に利用記録はありません。", "empty"); return; }
-    if (model.resolution?.measurementState === "not_measured") { body.innerHTML = moduleMessage(measurementReasonLabel(model.resolution) || "この期間の製品項目を計測できません。", "not_measured"); return; }
-    const unresolved = Number.isInteger(model.resolution?.unresolvedQuestions) ? model.resolution.unresolvedQuestions : 0;
+    if (model.resolution?.measurementState === "not_measured") { body.innerHTML = moduleMessage("この期間の製品情報の記録はありません。", "empty"); return; }
     const ranking = Array.isArray(model.topProducts) ? '<div class="chartBox primaryChart"><canvas id="productChart"></canvas></div>' : moduleMessage("製品ランキングを確認できません。", "error");
     const matrix = Array.isArray(model.matrix) ? '<div id="productMatrix" class="productMatrix"></div>' : moduleMessage("製品マトリクスを確認できません。", "error");
-    body.innerHTML = `<div class="twoGrid productGrid"><article class="subPanel"><h4>質問対象（製品）Top 10</h4>${ranking}</article><article class="subPanel matrixPanel"><h4>製品 × 質問種類</h4>${matrix}</article></div>${model.resolution?.measurementState === "partial" ? `<p class="measurementNote">${coverageNote(model.resolution)}</p>` : ""}${!model.resolution ? moduleMessage("製品判定の計測範囲を確認できません。", "error") : ""}${unresolved ? `<p class="measurementNote">正式な製品名を確認できなかった質問 ${displayCount(unresolved)}件は、ランキングとマトリクスに含めていません。</p>` : ""}${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
+    body.innerHTML = `<div class="twoGrid productGrid"><article class="subPanel"><h4>質問対象（製品）Top 10</h4>${ranking}</article><article class="subPanel matrixPanel"><h4>製品 × 質問種類</h4>${matrix}</article></div>`;
     if (body.querySelector("#productChart")) barChart(body.querySelector("#productChart"), model.topProducts, { horizontal: true, label: "質問数", color: "#7f88ff", summary: "質問対象製品の上位10件" });
     if (body.querySelector("#productMatrix")) renderProductMatrix(body.querySelector("#productMatrix"), model.matrix);
   }
@@ -738,7 +909,7 @@ export class OverviewPage {
 
   renderRanking(rows, issues = [], diagnosticsNotice = "") {
     const body = this.body("ranking");
-    body.innerHTML = `<div id="regionRanking" class="rankingList">${rows.map((row, index) => `<button class="rankingRow ${row.areaKey === this.areaKey ? "isSelected" : ""}" data-area="${escapeHtml(row.areaKey)}" aria-pressed="${row.areaKey === this.areaKey}"><b>${index + 1}</b><span class="rankingLabel"><strong>${escapeHtml(row.area)}</strong><small>${displayCount(row.activeUsers)} / ${displayCount(row.rosterUsers)}人 · ${displayCount(row.questions)}件</small></span><span class="rankingValue">${displayRate(row.adoptionRate)}</span><i class="rankingBar" style="--bar:${Math.max(0, Math.min(100, Number(row.adoptionRate || 0) * 100))}%"></i></button>`).join("") || moduleMessage("この期間に地域利用はありません。", "empty")}</div>${diagnosticsNotice ? `<p class="measurementNote" data-region-content-diagnostics>${escapeHtml(diagnosticsNotice)}</p>` : ""}${issues.length ? `<p class="measurementNote">${displayCount(issues.length)}件の不正な地域行を表示対象から外しました。</p>` : ""}`;
+    body.innerHTML = `<div id="regionRanking" class="rankingList">${rows.map((row, index) => `<button class="rankingRow ${row.areaKey === this.areaKey ? "isSelected" : ""}" data-area="${escapeHtml(row.areaKey)}" aria-pressed="${row.areaKey === this.areaKey}"><b>${index + 1}</b><span class="rankingLabel"><strong>${escapeHtml(row.area)}</strong><small>${displayCount(row.activeUsers)} / ${displayCount(row.rosterUsers)}人 · ${displayCount(row.questions)}件</small></span><span class="rankingValue">${displayRate(row.adoptionRate)}</span><i class="rankingBar" style="--bar:${Math.max(0, Math.min(100, Number(row.adoptionRate || 0) * 100))}%"></i></button>`).join("") || moduleMessage("この期間に地域利用はありません。", "empty")}</div>`;
     body.querySelectorAll(".rankingRow").forEach((button) => button.addEventListener("click", () => this.setArea(button.dataset.area === this.areaKey ? "" : button.dataset.area)));
   }
 
@@ -780,12 +951,11 @@ export class OverviewPage {
     }
     try {
       const raw = await getOverviewUsers({
-        preset: this.preset,
+        ...requestDateRange(this.currentContext(), this.committedAsOf),
         area_key: this.areaKey,
         q: this.query,
         activity: this.activity,
         sort: this.sort,
-        as_of: this.committedAsOf,
       }, { signal: this.signal });
       if (!this.isCurrent() || generation !== this.operationGeneration) return;
       const model = usersModel(raw, "global");
@@ -848,24 +1018,12 @@ export class OverviewPage {
       this.page = page.page;
       if (!this.staging) this.navigate("overview", { overviewPage: this.page }, { replace: true, render: false });
     }
-    const rowHtml = page.items.map((row) => `<tr><td><strong>${escapeHtml(row.name)}</strong>${row.labels.length ? `<div class="chips">${chips(row.labels)}</div>` : ""}<small>${escapeHtml(row.role)}</small></td><td>${escapeHtml(row.email)}</td><td>${escapeHtml(row.area)}</td><td>${displayDateTime(row.lastActiveAt)}</td><td>${displayCount(row.activeDays7)}</td><td>${displayCount(row.userMessageCount7)}</td><td>${displayMeasuredRate(row.completeDelivery)}<small>${escapeHtml(measurementCoverage(row.completeDelivery))}</small></td><td><span class="activityBadge ${escapeHtml(row.activity || "unknown")}">${escapeHtml(row.activityLabel)}</span></td><td><button class="linkButton" data-roster="${escapeHtml(row.rosterId)}">詳細</button></td></tr>`).join("");
-    const cardHtml = page.items.map((row) => `<article class="userCard"><header><div><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.email)}</small><small>${escapeHtml(row.role)}・${escapeHtml(row.department)}</small>${row.labels.length ? `<div class="chips">${chips(row.labels)}</div>` : ""}</div><span class="activityBadge ${escapeHtml(row.activity || "unknown")}">${escapeHtml(row.activityLabel)}</span></header><dl><div><dt>エリア</dt><dd>${escapeHtml(row.area)}</dd></div><div><dt>最終利用</dt><dd>${displayDateTime(row.lastActiveAt)}</dd></div><div><dt>7日利用</dt><dd>${displayCount(row.activeDays7)}日</dd></div><div><dt>7日消息</dt><dd>${displayCount(row.userMessageCount7)}件</dd></div><div><dt>完全交付</dt><dd>${displayMeasuredRate(row.completeDelivery)}<small>${escapeHtml(measurementCoverage(row.completeDelivery))}</small></dd></div></dl><button class="linkButton" data-roster="${escapeHtml(row.rosterId)}">詳細を見る</button></article>`).join("");
-    const issueNote = this.userModel.issues.length
-      ? `<p class="measurementNote">ユーザーデータの契約上の欠落を ${displayCount(this.userModel.issues.length)}件検出しました。該当値は「未測定」で表示し、安全に表示できない行だけを除外しています。</p>`
-      : "";
-    const labelCatalogStatus = this.userModel.contentDiagnostics?.labelCatalogStatus;
-    const diagnosticsNotice = String(this.userModel.contentDiagnostics?.notice || "").trim();
-    const contentDiagnosticNote = diagnosticsNotice
-      ? `<p class="measurementNote" data-content-diagnostics>${escapeHtml(diagnosticsNotice)}</p>`
-      : labelCatalogStatus === "unavailable"
-        ? '<p class="measurementNote" data-content-diagnostics>ラベル情報を取得できません。利用状況は表示しています。</p>'
-        : labelCatalogStatus === "partial"
-          ? '<p class="measurementNote" data-content-diagnostics>一部のラベル情報を除外しました。</p>'
-          : "";
+    const rowHtml = page.items.map((row) => `<tr><td><strong>${escapeHtml(row.name)}</strong>${row.labels.length ? `<div class="chips">${chips(row.labels)}</div>` : ""}<small>${escapeHtml(row.role)}</small></td><td>${escapeHtml(row.email)}</td><td>${escapeHtml(row.area)}</td><td>${displayDateTime(row.lastActiveAt)}</td><td>${displayCount(row.activeDaysInPeriod)}</td><td>${displayCount(row.userMessageCountInPeriod)}</td><td>${displayMeasuredRate(row.completeDelivery)}</td><td><span class="activityBadge ${escapeHtml(row.activity || "unknown")}">${escapeHtml(row.activityLabel)}</span></td><td><button class="linkButton" data-roster="${escapeHtml(row.rosterId)}">詳細</button></td></tr>`).join("");
+    const cardHtml = page.items.map((row) => `<article class="userCard"><header><div><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.email)}</small><small>${escapeHtml(row.role)}・${escapeHtml(row.department)}</small>${row.labels.length ? `<div class="chips">${chips(row.labels)}</div>` : ""}</div><span class="activityBadge ${escapeHtml(row.activity || "unknown")}">${escapeHtml(row.activityLabel)}</span></header><dl><div><dt>エリア</dt><dd>${escapeHtml(row.area)}</dd></div><div><dt>最終利用</dt><dd>${displayDateTime(row.lastActiveAt)}</dd></div><div><dt>期間内利用日数</dt><dd>${displayCount(row.activeDaysInPeriod)}日</dd></div><div><dt>期間内質問数</dt><dd>${displayCount(row.userMessageCountInPeriod)}件</dd></div><div><dt>完全交付</dt><dd>${displayMeasuredRate(row.completeDelivery)}</dd></div></dl><button class="linkButton" data-roster="${escapeHtml(row.rosterId)}">詳細を見る</button></article>`).join("");
     const refreshErrorNote = this.userRefreshError
       ? `<p class="measurementNote" data-user-refresh-error role="alert">${escapeHtml(this.userRefreshError)}</p>`
       : "";
-    target.innerHTML = (page.total ? `<div class="desktopTable"><div class="tableScroll" tabindex="0" aria-label="全体サマリーユーザー一覧"><table id="overviewUsers"><caption>本社MR・コントラクトMRの利用状況</caption><thead><tr><th>社員名・役割</th><th>メール</th><th>エリア</th><th>最終利用</th><th>直近7日利用日数</th><th>直近7日消息数</th><th>回答成功率</th><th>活性度</th><th></th></tr></thead><tbody>${rowHtml}</tbody></table></div></div><div class="mobileCards">${cardHtml}</div>${paginationMarkup(page)}` : moduleMessage("条件に一致するユーザーはいません。", "empty")) + refreshErrorNote + contentDiagnosticNote + issueNote;
+    target.innerHTML = (page.total ? `<div class="desktopTable"><div class="tableScroll" tabindex="0" aria-label="全体サマリーユーザー一覧"><table id="overviewUsers"><caption>本社MR・コントラクトMRの利用状況</caption><thead><tr><th>社員名・役割</th><th>メール</th><th>エリア</th><th>最終利用</th><th>期間内利用日数</th><th>期間内質問数</th><th>回答成功率</th><th>活性度</th><th></th></tr></thead><tbody>${rowHtml}</tbody></table></div></div><div class="mobileCards">${cardHtml}</div>${paginationMarkup(page)}` : moduleMessage("条件に一致するユーザーはいません。", "empty")) + refreshErrorNote;
     target.querySelectorAll("[data-roster]").forEach((button) => button.addEventListener("click", () => this.navigate("user", { roster: button.dataset.roster })));
     bindPagination(target, page, (next) => this.updateUserCollection({ page: next }));
   }

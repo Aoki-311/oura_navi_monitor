@@ -47,6 +47,17 @@ WHERE snapshot_created_at < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
     FROM `${PROJECT_ID}.${DATASET_ID}.pipeline_state`
     WHERE source = 'published'
     LIMIT 1
+  ), '')
+  -- The additive News publisher may remain on an older successful roster
+  -- while its own source is unavailable.  Protect that exact snapshot without
+  -- directly referencing an additive column before its schema migration.
+  AND snapshot_run_id != COALESCE((
+    SELECT JSON_VALUE(
+      TO_JSON_STRING(state), '$.roster_snapshot_run_id'
+    )
+    FROM `${PROJECT_ID}.${DATASET_ID}.pipeline_state` state
+    WHERE source = 'news_usage' AND status = 'succeeded'
+    LIMIT 1
   ), '');
 
 MERGE `${PROJECT_ID}.${DATASET_ID}.conversation_events` target

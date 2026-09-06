@@ -2,15 +2,17 @@ import { createExportJob, deleteExportJob, downloadExportJob, isCancellation } f
 import { exportJobModel } from "./adapters/exportAdapter.js";
 import { destroyAllCharts } from "./components/charts.js";
 import { OverviewPage } from "./pages/overviewPage.js";
+import { bindDateRangeControl, normalizeDateRange, renderDateRangeControl, requestDateRange } from "./components/dateRangeControl.js";
+import { moduleMessage, setBusy } from "./components/dom.js";
 import { UserAnalysisPage } from "./pages/userAnalysisPage.js";
 import { UserManagementPage } from "./pages/userManagementPage.js";
 
 const root = document.querySelector("#pageRoot");
-const preset = document.querySelector("#analysisPreset");
-const presetControl = document.querySelector("#presetControl");
+const dateRangeHost = document.querySelector("#mainDateRange");
+let mainDateControl = null;
 const exportButton = document.querySelector("#exportButton");
 const toastElement = document.querySelector("#toast");
-const validPresets = new Set(["today", "last_7d", "last_14d", "last_30d", "last_60d", "all"]);
+const validPresets = new Set(["today", "last_7d", "last_14d", "last_30d", "last_60d", "all", "custom"]);
 const validActivities = new Set(["", "high", "middle", "low", "dormant"]);
 const validManagementStatuses = new Set(["all", "active", "inactive"]);
 const validOverviewSorts = new Set(["last_desc", "name_asc", "messages_desc", "success_desc"]);
@@ -43,12 +45,18 @@ function stateFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const page = ["overview", "user", "management"].includes(params.get("page")) ? params.get("page") : "overview";
   const selectedPreset = validPresets.has(params.get("preset")) ? params.get("preset") : "last_7d";
+  const mainRange = normalizeDateRange({ preset: selectedPreset, start: params.get("start"), end: params.get("end") });
+  const moduleRange = (prefix) => ["preset", "start", "end"].some((key) => params.has(`${prefix}_${key}`))
+    ? normalizeDateRange({ preset: params.get(`${prefix}_preset`), start: params.get(`${prefix}_start`), end: params.get(`${prefix}_end`) })
+    : { ...mainRange };
   const pageNumber = (key) => Math.max(1, Number.parseInt(params.get(key) || "1", 10) || 1);
   return {
     page,
     roster: page === "user" || page === "management" ? (params.get("roster") || "") : "",
     area: page === "overview" ? (params.get("area") || "") : "",
-    preset: selectedPreset,
+    ...mainRange,
+    environmentRange: moduleRange("env"),
+    trendRange: moduleRange("trend"),
     overviewQuery: params.get("overview_q") || "",
     overviewActivity: validActivities.has(params.get("overview_activity") || "") ? (params.get("overview_activity") || "") : "",
     overviewSort: validOverviewSorts.has(params.get("overview_sort") || "last_desc") ? (params.get("overview_sort") || "last_desc") : "last_desc",
@@ -72,6 +80,14 @@ function dashboardUrl(state) {
   if (state.roster && (state.page === "user" || state.page === "management")) params.set("roster", state.roster);
   if (state.area && state.page === "overview") params.set("area", state.area);
   if (state.preset !== "last_7d") params.set("preset", state.preset);
+  if (state.start) params.set("start", state.start);
+  if (state.end) params.set("end", state.end);
+  for (const [prefix, range] of [["env", state.environmentRange], ["trend", state.trendRange]]) {
+    if (!range) continue;
+    if (range.preset !== "last_7d") params.set(`${prefix}_preset`, range.preset);
+    if (range.start) params.set(`${prefix}_start`, range.start);
+    if (range.end) params.set(`${prefix}_end`, range.end);
+  }
   const optional = {
     overview_q: state.overviewQuery,
     overview_activity: state.overviewActivity,
@@ -110,8 +126,13 @@ function writeState(state, { replace = false } = {}) {
 function navigate(page, values = {}, options = {}) {
   const current = stateFromUrl();
   const next = {
+    ...current,
     page,
     preset: values.preset ?? current.preset,
+    start: values.start ?? current.start,
+    end: values.end ?? current.end,
+    environmentRange: values.environmentRange ?? current.environmentRange,
+    trendRange: values.trendRange ?? current.trendRange,
     roster: values.roster ?? ((page === current.page && (page === "user" || page === "management")) ? current.roster : ""),
     area: values.area ?? ((page === current.page && page === "overview") ? current.area : ""),
     overviewQuery: values.overviewQuery ?? current.overviewQuery,
@@ -207,12 +228,27 @@ function pageTitle(page) {
   return { overview: "全体サマリー", user: "ユーザー分析", management: "ユーザー管理" }[page];
 }
 
+function renderDateRange(state) {
+  mainDateControl?.destroy();
+  dateRangeHost.hidden = state.page === "management";
+  document.querySelector("#managementRefreshButton").hidden = state.page !== "management";
+  if (dateRangeHost.hidden) return;
+  dateRangeHost.innerHTML = renderDateRangeControl("mainPeriod", state);
+  mainDateControl = bindDateRangeControl(dateRangeHost, {
+    range: state,
+    onApply: (range) => navigate(state.page, { ...range, roster: state.roster, area: state.area, overviewPage: 1, userPage: 1 }, { replace: true }),
+    onRefresh: () => { if (canLeaveCurrentPage()) void render({ forceAnalyticsRefresh: true }); },
+  });
+}
+
 function exportRouteContext(state) {
   const isOverview = state.page === "overview";
   const isUser = state.page === "user";
   return {
     page: state.page,
     preset: state.preset,
+    start: state.start,
+    end: state.end,
     roster: isUser ? state.roster : "",
     area: isOverview ? state.area : "",
     q: isOverview ? state.overviewQuery : "",
@@ -288,7 +324,7 @@ async function render({ focusMain = false, requestedState = null, navigation = n
     renderedHistoryIndex = historyIndex;
     renderedUrl = dashboardUrl(state);
   }
-  preset.value = state.preset;
+  renderDateRange(navigation ? stateFromUrl() : state);
   document.title = `${pageTitle(state.page)} | OurA Navi User Analytics`;
   document.querySelectorAll(".mainNav [data-page]").forEach((button) => {
     const active = button.dataset.page === state.page;
@@ -296,9 +332,14 @@ async function render({ focusMain = false, requestedState = null, navigation = n
     if (active) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
   });
   const showPeriod = state.page !== "management";
-  presetControl.hidden = !showPeriod;
   exportButton.hidden = !showPeriod;
   invalidateExportContext();
+  if (state.page === "management" && activePage?.name === "management" && activePage.isCurrent()) {
+    try { await activePage.instance.load(); }
+    catch (error) { if (!isCancellation(error)) toast(error?.message || "画面を表示できませんでした。", "error"); }
+    finally { if (activePage.isCurrent()) setBusy(root, false); }
+    return;
+  }
   if (
     state.page === "overview"
     && activePage?.name === "overview"
@@ -315,6 +356,8 @@ async function render({ focusMain = false, requestedState = null, navigation = n
       const context = activePage.instance.currentContext();
       const committedState = {
         ...navigation.state,
+        environmentRange: { ...activePage.instance.moduleRanges.environment },
+        trendRange: { ...activePage.instance.moduleRanges.usage },
         preset: context.preset,
         area: context.areaKey,
         overviewQuery: context.query,
@@ -328,7 +371,7 @@ async function render({ focusMain = false, requestedState = null, navigation = n
       activePage.preset = context.preset;
     }
     const currentState = stateFromUrl();
-    preset.value = currentState.preset;
+    renderDateRange(currentState);
     renderedUrl = dashboardUrl(currentState);
     if (focusMain && activePage.isCurrent()) root.focus({ preventScroll: true });
     return;
@@ -343,7 +386,7 @@ async function render({ focusMain = false, requestedState = null, navigation = n
     let committed = false;
     try {
       committed = await reusableUserPage.instance.transition(state, {
-        forceAnchor: forceAnalyticsRefresh || reusableUserPage.preset !== state.preset,
+        forceAnchor: forceAnalyticsRefresh || reusableUserPage.preset !== state.preset || reusableUserPage.instance.start !== state.start || reusableUserPage.instance.end !== state.end,
       });
     } catch (error) {
       if (!isCancellation(error) && reusableUserPage.isCurrent()) toast(error?.message || "画面を表示できませんでした。", "error");
@@ -354,6 +397,8 @@ async function render({ focusMain = false, requestedState = null, navigation = n
       const committedState = {
         ...navigation.state,
         preset: route.preset,
+        start: route.start,
+        end: route.end,
         roster: route.roster,
         userQuery: route.userQuery,
         userPage: route.userPage,
@@ -365,7 +410,7 @@ async function render({ focusMain = false, requestedState = null, navigation = n
     reusableUserPage.analyticsAsOf = reusableUserPage.instance.analysisAsOf;
     reusableUserPage.preset = reusableUserPage.instance.preset;
     const currentState = stateFromUrl();
-    preset.value = currentState.preset;
+    renderDateRange(currentState);
     renderedUrl = dashboardUrl(currentState);
     if (focusMain) root.focus({ preventScroll: true });
     return;
@@ -385,7 +430,8 @@ async function render({ focusMain = false, requestedState = null, navigation = n
   const generation = ++renderGeneration;
   const isCurrent = () => generation === renderGeneration && !controller.signal.aborted;
   destroyAllCharts();
-  root.innerHTML = "";
+  root.innerHTML = moduleMessage("読み込み中…", "loading");
+  setBusy(root, true);
   const shared = {
     navigate,
     toast,
@@ -429,19 +475,15 @@ async function render({ focusMain = false, requestedState = null, navigation = n
     await instance.load();
   } catch (error) {
     if (!isCancellation(error) && isCurrent()) toast(error?.message || "画面を表示できませんでした。", "error");
+  } finally {
+    if (isCurrent()) setBusy(root, false);
   }
   if (focusMain && isCurrent()) root.focus({ preventScroll: true });
 }
 
 document.querySelectorAll(".mainNav [data-page]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.page)));
-document.querySelector("#refreshButton").addEventListener("click", () => {
+document.querySelector("#managementRefreshButton").addEventListener("click", () => {
   if (canLeaveCurrentPage()) void render({ forceAnalyticsRefresh: true });
-});
-preset.addEventListener("change", () => {
-  const state = stateFromUrl();
-  if (!navigate(state.page, { roster: state.roster, area: state.area, preset: preset.value, overviewPage: 1, userPage: 1 }, { replace: true })) {
-    preset.value = state.preset;
-  }
 });
 window.addEventListener("popstate", (event) => {
   const targetIndex = Number.isInteger(event.state?.[HISTORY_INDEX_KEY])
@@ -477,6 +519,7 @@ window.addEventListener("beforeunload", (event) => {
 
 exportButton.addEventListener("click", async () => {
   const state = stateFromUrl();
+  if (state.page === "management") return;
   if (state.page === "user" && !state.roster) { toast("先にユーザーを選択してください。", "error"); return; }
   if (!analyticsSnapshot?.publishedRunId) { toast("画面の分析データを読み込んでからCSVを作成してください。", "error"); return; }
   const snapshot = { ...analyticsSnapshot };
@@ -497,7 +540,7 @@ exportButton.addEventListener("click", async () => {
     const job = exportJobModel(await createExportJob({
       kind: state.page === "user" ? "user_detail" : "overview_users",
       rosterId: state.roster,
-      preset: state.preset,
+      ...requestDateRange(state),
       areaKey: state.area,
       q: state.overviewQuery,
       activity: state.overviewActivity,
@@ -555,4 +598,5 @@ exportButton.addEventListener("click", async () => {
   }
 });
 
+writeState(stateFromUrl(), { replace: true });
 render();

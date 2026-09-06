@@ -1,5 +1,5 @@
 import {
-  getTraceMessages, getUserConversations, getUserDetail, getUsers, isCancellation,
+  getTraceMessages, getUserConversations, getUserDetail, getUsers, getNewsUsageUser, isCancellation,
   timeRangeQuery,
 } from "../api/client.js";
 import {
@@ -8,9 +8,11 @@ import {
 } from "../adapters/usersAdapter.js";
 import { barChart, destroyChartCanvases, destroyChartsInRoot, doughnutChart, trendChart } from "../components/charts.js";
 import { bindPagination, bindResponsiveCollection, paginate, paginationMarkup } from "../components/collection.js";
-import { chips, escapeHtml, measurementContent, moduleMessage, setBusy } from "../components/dom.js";
+import { chips, compareJapaneseNames, escapeHtml, moduleMessage, setBusy } from "../components/dom.js";
+import { normalizeDateRange, requestDateRange } from "../components/dateRangeControl.js";
+import { newsUsageDashboardModel } from "../adapters/newsUsageDashboardAdapter.js";
 import { renderFreshnessBanner } from "../components/freshnessBanner.js";
-import { displayCount, displayDateTime, displayMeasuredDuration, displayMeasuredRate, displayRate, measurementCoverage, measurementReasonLabel, measurementStateLabel } from "../viewModels/formatters.js";
+import { displayCount, displayDateTime, displayMeasuredDuration, displayMeasuredRate } from "../viewModels/formatters.js";
 
 const DETAIL_MODULES = ["profile", "summary", "trend", "needs"];
 const MAX_ANALYSIS_ANCHOR_AGE_MS = 4 * 60 * 1000;
@@ -34,6 +36,10 @@ export class UserAnalysisPage {
     this.isCurrent = isCurrent;
     this.setAnalyticsSnapshot = setAnalyticsSnapshot;
     this.preset = state.preset;
+    this.start = state.start;
+    this.end = state.end;
+    this.chooserScrollTop = 0;
+    this.newsRequest = null;
     this.analysisAsOf = analyticsAsOf || new Date().toISOString();
     this.userQuery = state.userQuery;
     this.userPage = state.userPage;
@@ -59,6 +65,8 @@ export class UserAnalysisPage {
   async load() {
     return this.transition({
       preset: this.preset,
+      start: this.start,
+      end: this.end,
       roster: this.rosterId,
       userQuery: this.userQuery,
       userPage: this.userPage,
@@ -74,6 +82,7 @@ export class UserAnalysisPage {
   renderAnchorRefreshIssue() {
     const banner = this.root.querySelector("[data-freshness-banner]");
     if (!banner) return;
+    banner.hidden = false;
     let notice = banner.querySelector("[data-user-anchor-error]");
     if (!notice) {
       notice = document.createElement("span");
@@ -87,6 +96,8 @@ export class UserAnalysisPage {
   restoreCommittedRoute(rosterId = this.rosterId) {
     this.navigate("user", {
       preset: this.preset,
+      start: this.start,
+      end: this.end,
       roster: rosterId,
       userQuery: this.userQuery,
       userPage: this.userPage,
@@ -96,6 +107,8 @@ export class UserAnalysisPage {
   routeState() {
     return {
       preset: this.preset,
+      start: this.start,
+      end: this.end,
       roster: this.rosterId,
       userQuery: this.userQuery,
       userPage: this.userPage,
@@ -112,6 +125,8 @@ export class UserAnalysisPage {
     const liveRoot = this.root;
     const previous = {
       preset: this.preset,
+      start: this.start,
+      end: this.end,
       rosterId: this.rosterId,
       analysisAsOf: this.analysisAsOf,
       userQuery: this.userQuery,
@@ -119,20 +134,30 @@ export class UserAnalysisPage {
       chooserUsers: this.chooserUsers,
     };
     const nextPreset = state.preset || "last_7d";
+    const nextRange = normalizeDateRange({ preset: nextPreset, start: state.start, end: state.end });
     const nextRosterId = state.roster || "";
-    const shouldRefreshAnchor = forceAnchor || nextPreset !== this.preset || this.requiresAnchorRefresh();
+    const shouldRefreshAnchor = forceAnchor || nextPreset !== this.preset || nextRange.start !== this.start || nextRange.end !== this.end || this.requiresAnchorRefresh();
     const nextAsOf = shouldRefreshAnchor ? new Date().toISOString() : this.analysisAsOf;
     const nextQuery = state.userQuery || "";
     const nextPage = Math.max(1, Number(state.userPage) || 1);
     const rosterChanging = nextRosterId !== previous.rosterId;
     let liveChooserContext = null;
     if (rosterChanging) this.cancelConversationRequest();
+    if (initial) liveRoot.innerHTML = nextRosterId ? this.shell() : "";
+    if (initial && !nextRosterId) this.renderChooserShell();
+    if (rosterChanging && nextRosterId && !previous.rosterId) {
+      this.chooserScrollTop = window.scrollY;
+      const selected = [...liveRoot.querySelectorAll(".userChoice")].find((button) => button.dataset.roster === nextRosterId);
+      selected?.classList.add("isSelected");
+      selected?.setAttribute("aria-busy", "true");
+      liveRoot.querySelector(".pageHeading")?.insertAdjacentHTML("afterend", `<section class="panel pendingUserDetail" data-pending-user>${moduleMessage("ユーザー分析を読み込んでいます…", "loading")}</section>`);
+    }
     setBusy(liveRoot, true);
     this.setAnalyticsSnapshot(null);
     try {
       const [chooserResult, detailResult] = await Promise.allSettled([
-        this.fetchChooserModel(nextAsOf, nextPreset),
-        nextRosterId ? this.fetchDetailPayload(nextRosterId, nextAsOf, nextPreset) : Promise.resolve(null),
+        this.fetchChooserModel(nextAsOf, nextRange),
+        nextRosterId ? this.fetchDetailPayload(nextRosterId, nextAsOf, nextRange) : Promise.resolve(null),
       ]);
       if (!this.isCurrent() || generation !== this.operationGeneration) return false;
       // Search and pagination are a local view over the fetched roster. They
@@ -192,6 +217,8 @@ export class UserAnalysisPage {
       this.root = stageRoot;
       this.setAnalyticsSnapshot = (metadata) => { stagedSnapshot = metadata ? { ...metadata } : null; };
       this.preset = nextPreset;
+      this.start = nextRange.start;
+      this.end = nextRange.end;
       this.analysisAsOf = nextAsOf;
       this.userQuery = commitChooserContext.query;
       this.userPage = commitChooserContext.page;
@@ -247,6 +274,10 @@ export class UserAnalysisPage {
         this.staging = false;
         if (!carriedConversation) this.messageRequest?.abort();
         const previouslyCommittedCanvases = [...liveRoot.querySelectorAll("canvas")];
+        if (committedRosterId && committedRosterId === previous.rosterId) {
+          const previousNews = liveRoot.querySelector('[data-module="news"]');
+          if (previousNews?.dataset.loaded === "true") stageRoot.querySelector('[data-module="news"]')?.replaceWith(previousNews);
+        }
         liveRoot.replaceChildren(...stageRoot.childNodes);
         destroyChartCanvases(previouslyCommittedCanvases);
         publishSnapshot(stagedSnapshot);
@@ -280,6 +311,8 @@ export class UserAnalysisPage {
         this.restoreCommittedRoute("");
       }
       if (committedRosterId && !carriedConversation) void this.loadConversations().catch(() => {});
+      if (committedRosterId) void this.loadNewsUsage(committedRosterId, nextRange, nextAsOf);
+      else if (previous.rosterId) window.requestAnimationFrame(() => window.scrollTo({ top: this.chooserScrollTop, behavior: "instant" }));
       return true;
     } catch (error) {
       if (isCancellation(error)) throw error;
@@ -295,6 +328,8 @@ export class UserAnalysisPage {
       }
       this.root = liveRoot;
       this.preset = previous.preset;
+      this.start = previous.start;
+      this.end = previous.end;
       this.rosterId = previous.rosterId;
       this.analysisAsOf = previous.analysisAsOf;
       this.userQuery = liveChooserContext?.query ?? previous.userQuery;
@@ -316,15 +351,19 @@ export class UserAnalysisPage {
       this.setAnalyticsSnapshot(null);
       return false;
     } finally {
-      if (this.isCurrent() && generation === this.operationGeneration) setBusy(liveRoot, false);
+      if (this.isCurrent() && generation === this.operationGeneration) {
+        setBusy(liveRoot, false);
+        liveRoot.querySelector("[data-pending-user]")?.remove();
+        liveRoot.querySelectorAll(".userChoice.isSelected").forEach((button) => { button.classList.remove("isSelected"); button.removeAttribute("aria-busy"); });
+      }
     }
   }
 
   shell() {
-    return `<div class="pageHeading"><div><p class="eyebrow">個人の利用状況とニーズ</p><h2>ユーザー分析</h2></div><button class="ghostButton" id="changeUser">別のユーザーを選択</button></div>
+    return `<div class="pageHeading userAnalysisHeading"><div><h2>ユーザー分析</h2></div><button class="ghostButton" id="changeUser">ユーザー一覧に戻る</button></div>
       <div class="freshnessBanner" data-freshness-banner data-state="loading">更新状況を確認中です。</div>
       <section class="panel" data-module="profile"><div data-module-body>${moduleMessage("読み込み中…")}</div></section>
-      <section class="panel" data-module="summary"><div class="panelHead"><h3><span>01</span>個人利用サマリー</h3></div><div data-module-body>${moduleMessage("読み込み中…")}</div></section>
+      <section class="panel" data-module="summary"><div class="panelHead"><h3><span>01</span>個人利用サマリー</h3></div><div data-module-body>${moduleMessage("読み込み中…")}</div><div class="personalNewsModule" data-module="news" aria-label="ニュース・学会の利用"><div data-module-body>${moduleMessage("読み込み中…", "loading")}</div></div></section>
       <section class="panel" data-module="trend"><div class="panelHead"><h3><span>02</span>個人利用推移</h3></div><div data-module-body>${moduleMessage("読み込み中…")}</div></section>
       <section class="panel" data-module="needs"><div class="panelHead"><h3><span>03</span>ユーザーニーズ傾向</h3></div><div data-module-body>${moduleMessage("読み込み中…")}</div></section>
       <section class="panel" data-module="conversations"><div class="panelHead"><h3><span>04</span>会話ジャーニー</h3></div><div data-module-body>${moduleMessage("読み込み中…")}</div></section>`;
@@ -339,10 +378,10 @@ export class UserAnalysisPage {
   }
 
   renderChooserShell() {
-    this.root.innerHTML = `<div class="pageHeading"><div><p class="eyebrow">ユーザー分析対象</p><h2>ユーザー分析</h2><p>氏名、メール、役割または分析ラベルから対象を選択してください。</p></div></div><div class="freshnessBanner" data-freshness-banner data-state="loading">更新状況を確認中です。</div><section class="panel chooserPanel"><div class="collectionToolbar"><label>ユーザー検索<input id="userSearch" type="search" value="${escapeHtml(this.userQuery)}" placeholder="氏名・メール・役割・ラベル"></label></div><div id="userChoices" class="userChoices">${moduleMessage("読み込み中…", "loading")}</div><div id="userChooserPagination"></div></section>`;
+    this.root.innerHTML = `<div class="pageHeading"><div><h2>ユーザー分析</h2><p>分析するユーザーを選択</p></div></div><div class="freshnessBanner" data-freshness-banner data-state="loading">更新状況を確認中です。</div><section class="panel chooserPanel"><div class="collectionToolbar"><label>ユーザー検索<input id="userSearch" type="search" value="${escapeHtml(this.userQuery)}" placeholder="氏名・メール・役割・ラベル"></label><span class="chooserSortLabel">氏名順</span></div><div id="userChoices" class="userChoices">${moduleMessage("読み込み中…", "loading")}</div><div id="userChooserPagination"></div></section>`;
   }
 
-  async fetchChooserModel(asOf = this.analysisAsOf, preset = this.preset) {
+  async fetchChooserModel(asOf = this.analysisAsOf, preset = { preset: this.preset, start: this.start, end: this.end }) {
     return usersModel(await getUsers(
       timeRangeQuery(preset, asOf),
       { signal: this.signal },
@@ -356,7 +395,7 @@ export class UserAnalysisPage {
       null,
       model.metadataIssues,
     );
-    this.chooserUsers = [...model.users].sort((a, b) => a.name.localeCompare(b.name, "ja-JP"));
+    this.chooserUsers = [...model.users].sort((a, b) => compareJapaneseNames(a.name, b.name) || compareJapaneseNames(a.email, b.email));
     this.renderChooserRows();
     this.root.querySelector("#userSearch").addEventListener("input", (event) => {
       this.chooserViewRevision += 1;
@@ -368,10 +407,10 @@ export class UserAnalysisPage {
   }
 
   renderChooserRows() {
-    const query = this.userQuery.trim().toLocaleLowerCase("ja-JP");
+    const query = this.userQuery.normalize("NFKC").trim().toLocaleLowerCase("ja-JP");
     const rows = this.chooserUsers.filter((row) => {
       const labelText = row.labels.map((label) => label.name).join(" ");
-      const haystack = `${row.name} ${row.email} ${row.role} ${row.department} ${labelText}`.toLocaleLowerCase("ja-JP");
+      const haystack = `${row.name} ${row.email} ${row.role} ${row.department} ${labelText}`.normalize("NFKC").toLocaleLowerCase("ja-JP");
       return !query || haystack.includes(query);
     });
     const page = paginate(rows, this.userPage, this.compactCollection.matches ? 8 : 15);
@@ -408,7 +447,7 @@ export class UserAnalysisPage {
     };
   }
 
-  async fetchDetailPayload(rosterId = this.rosterId, asOf = this.analysisAsOf, preset = this.preset) {
+  async fetchDetailPayload(rosterId = this.rosterId, asOf = this.analysisAsOf, preset = { preset: this.preset, start: this.start, end: this.end }) {
     const raw = await getUserDetail(
       rosterId,
       timeRangeQuery(preset, asOf),
@@ -463,12 +502,49 @@ export class UserAnalysisPage {
     }
   }
 
+  async loadNewsUsage(rosterId, range, asOf) {
+    this.newsRequest?.abort();
+    const controller = new AbortController();
+    this.newsRequest = controller;
+    const cancel = () => controller.abort();
+    this.signal.addEventListener("abort", cancel, { once: true });
+    const panel = this.root.querySelector('[data-module="news"]');
+    const target = panel?.querySelector("[data-module-body]");
+    if (!target) return;
+    const current = () => this.isCurrent() && !controller.signal.aborted && this.rosterId === rosterId && panel.isConnected;
+    setBusy(panel, true);
+    panel.querySelector("[data-news-error]")?.remove();
+    try {
+      const model = newsUsageDashboardModel(await getNewsUsageUser(rosterId, requestDateRange(range, asOf), { signal: controller.signal }), { scope: "user_map", rosterId });
+      if (!current()) return;
+      if (!model.available) {
+        const messages = { not_enabled: "利用状況の計測はまだ始まっていません。", before_measurement: "選択した期間は計測開始前です。", unavailable: "利用状況を取得できませんでした。" };
+        target.innerHTML = moduleMessage(messages[model.state.availability], model.state.availability === "unavailable" ? "error" : "empty");
+        panel.dataset.loaded = "false";
+        return;
+      }
+      const values = model.totals;
+      const breakdown = (rows) => rows.map(([label, count]) => `<span><span>${escapeHtml(label)}</span><b>${displayCount(count)}回</b></span>`).join("");
+      const card = (key, label, count, rows) => `<article class="newsKpiCard" tabindex="0" data-news-kpi="${key}" aria-label="${escapeHtml(label)} ${displayCount(count)}回"><span>${escapeHtml(label)}</span><strong>${displayCount(count)}<small>回</small></strong><span class="newsKpiHint">内訳</span><div class="newsHoverDetails" role="tooltip">${breakdown(rows)}</div></article>`;
+      target.innerHTML = `<div class="newsKpiGrid">${card("tabViews", "ニュース・学会の訪問", values.tabViews, [["ニュース", values.newsTabViews], ["学会情報", values.societyTabViews]])}${card("newsContentClicks", "ニュースの閲覧・原文クリック", values.newsContentClicks, [["国内", values.newsDomesticClicks], ["海外", values.newsOverseasClicks], ...(values.newsUnknownGeographyClicks > 0 ? [["未分類", values.newsUnknownGeographyClicks]] : [])])}${card("societyContentClicks", "学会情報の閲覧・原文クリック", values.societyContentClicks, model.societyCategories.map((row) => [row.label, row.clicks]))}</div>`;
+      if (model.state.freshness === "stale" || model.state.freshnessState === "stale") target.insertAdjacentHTML("beforeend", moduleMessage("更新が遅れています。直近の操作はまだ含まれていない場合があります。"));
+      panel.dataset.loaded = "true";
+    } catch (error) {
+      if (!current() || isCancellation(error)) return;
+      if (panel.dataset.loaded === "true") target.insertAdjacentHTML("beforeend", `<div data-news-error>${moduleMessage("更新できませんでした。前回の表示を保持しています。", "error")}</div>`);
+      else target.innerHTML = moduleMessage("ニュース・学会の利用状況を取得できませんでした。", "error");
+    } finally {
+      this.signal.removeEventListener("abort", cancel);
+      if (current()) setBusy(panel, false);
+    }
+  }
+
   renderProfile(profile, contentDiagnostics = null) {
     const body = this.body("profile");
     const labelNotice = contentDiagnostics?.notice
       ? moduleMessage(contentDiagnostics.notice, "error")
       : "";
-    body.innerHTML = `${labelNotice}<div class="profileMain"><span class="avatar large">${escapeHtml(profile.name.slice(0, 1))}</span><div><h3>${escapeHtml(profile.name)}</h3><p>${escapeHtml(profile.email)}</p>${profile.labels.length ? `<div class="chips">${chips(profile.labels)}</div>` : ""}</div><button id="editInManagement" class="primaryButton">ユーザー管理で編集</button></div><div class="profileFacts"><span><small>エリア</small>${escapeHtml(profile.area)}</span><span><small>勤務地</small>${escapeHtml(profile.workplace)}</span><span><small>役割</small>${escapeHtml(profile.role)}</span><span><small>部門</small>${escapeHtml(profile.department)}</span><span><small>MR経験</small>${escapeHtml(profile.mrExperience)}</span></div>${profile.issues.length ? `<p class="measurementNote">${escapeHtml(profile.issues.join(" / "))}</p>` : ""}`;
+    body.innerHTML = `${labelNotice}<div class="profileMain"><span class="avatar large">${escapeHtml(profile.name.slice(0, 1))}</span><div><h3>${escapeHtml(profile.name)}</h3><p>${escapeHtml(profile.email)}</p>${profile.labels.length ? `<div class="chips">${chips(profile.labels)}</div>` : ""}</div><button id="editInManagement" class="primaryButton">ユーザー管理で編集</button></div><div class="profileFacts"><span><small>エリア</small>${escapeHtml(profile.area)}</span><span><small>勤務地</small>${escapeHtml(profile.workplace)}</span><span><small>役割</small>${escapeHtml(profile.role)}</span><span><small>部門</small>${escapeHtml(profile.department)}</span><span><small>MR経験</small>${escapeHtml(profile.mrExperience)}</span></div>`;
     body.closest(".panel").classList.add("profilePanel");
     body.querySelector("#editInManagement").addEventListener("click", () => this.navigate("management", { roster: this.rosterId }));
   }
@@ -479,16 +555,15 @@ export class UserAnalysisPage {
       ? `<article class="benchmark insufficient"><span>${escapeHtml(label)}</span><strong>比較情報を確認できません</strong></article>`
       : row.peerCount < 2
         ? `<article class="benchmark insufficient"><span>${label} · ${escapeHtml(row.label)}</span><strong>比較対象不足</strong><small>有効な比較対象 ${displayCount(row.peerCount)}名</small></article>`
-        : `<article class="benchmark"><span>${label} · ${escapeHtml(row.label)} ${displayCount(row.peerCount)}名平均</span><div><strong>${row.averageQuestions == null ? "-" : Number(row.averageQuestions).toFixed(1)}件</strong>${difference(summary.questions, row.averageQuestions, "件")}</div><small>利用日 ${row.averageActiveDays == null ? "-" : Number(row.averageActiveDays).toFixed(1)}日 ${difference(summary.activeDays, row.averageActiveDays, "日")} / 完全交付 ${displayMeasuredRate(row.averageCompleteDelivery)}（${escapeHtml(measurementCoverage(row.averageCompleteDelivery, "名"))}）</small></article>`;
+        : `<article class="benchmark"><span>${label} · ${escapeHtml(row.label)} ${displayCount(row.peerCount)}名平均</span><div><strong>${row.averageQuestions == null ? "-" : Number(row.averageQuestions).toFixed(1)}件</strong>${difference(summary.questions, row.averageQuestions, "件")}</div><small>利用日 ${row.averageActiveDays == null ? "-" : Number(row.averageActiveDays).toFixed(1)}日 ${difference(summary.activeDays, row.averageActiveDays, "日")} / 回答成功率 ${displayMeasuredRate(row.averageCompleteDelivery)}</small></article>`;
     const body = this.body("summary");
     const completeCard = summary.completeDelivery
-      ? `<article class="kpiCard measurementCard ${escapeHtml(summary.completeDelivery.measurementState)}"><span>回答成功率</span><strong class="${summary.completeDelivery.measurementState === "not_measured" ? "textValue" : ""}">${displayMeasuredRate(summary.completeDelivery)}</strong><small>${escapeHtml(measurementStateLabel(summary.completeDelivery))} · ${summary.completeDelivery.measuredCount}/${summary.completeDelivery.totalCount}件</small></article>`
+      ? `<article class="kpiCard measurementCard ${escapeHtml(summary.completeDelivery.measurementState)}"><span>回答成功率</span><strong class="${summary.completeDelivery.measurementState === "not_measured" ? "textValue" : ""}">${displayMeasuredRate(summary.completeDelivery)}</strong></article>`
       : '<article class="kpiCard"><span>回答成功率</span><strong class="textValue">計測情報なし</strong></article>';
     const latencyCard = summary.p95Latency
-      ? `<article class="kpiCard measurementCard ${escapeHtml(summary.p95Latency.measurementState)}"><span>P95応答時間</span><strong>${displayMeasuredDuration(summary.p95Latency)}</strong><small>${escapeHtml(measurementStateLabel(summary.p95Latency))} · ${summary.p95Latency.measuredCount}/${summary.p95Latency.totalCount}件</small></article>`
+      ? `<article class="kpiCard measurementCard ${escapeHtml(summary.p95Latency.measurementState)}"><span>P95応答時間</span><strong>${displayMeasuredDuration(summary.p95Latency)}</strong></article>`
       : '<article class="kpiCard"><span>P95応答時間</span><strong class="textValue">計測情報なし</strong></article>';
-    const issues = [...summary.issues, ...comparisons.issues];
-    body.innerHTML = `<div class="kpiGrid personal"><article class="kpiCard"><span>最終利用（全期間）</span><strong class="smallValue">${displayDateTime(summary.lastActiveAt)}</strong></article><article class="kpiCard"><span>期間内利用日数</span><strong>${displayCount(summary.activeDays)}</strong><small>日</small></article><article class="kpiCard"><span>期間内質問数</span><strong>${displayCount(summary.questions)}</strong><small>件</small></article><article class="kpiCard"><span>1日平均質問</span><strong>${summary.questionsPerActiveDay == null ? "-" : Number(summary.questionsPerActiveDay).toFixed(1)}</strong><small>件</small></article>${completeCard}${latencyCard}</div><div class="benchmarkGrid">${benchmark(comparisons.area, "同じ地域")}${benchmark(comparisons.role, "同じ役割")}</div>${issues.length ? `<p class="measurementNote">${escapeHtml(issues.join(" / "))}</p>` : ""}`;
+    body.innerHTML = `<div class="kpiGrid personal"><article class="kpiCard"><span>最終利用（全期間）</span><strong class="smallValue">${displayDateTime(summary.lastActiveAt)}</strong></article><article class="kpiCard"><span>期間内利用日数</span><strong>${displayCount(summary.activeDays)}</strong><small>日</small></article><article class="kpiCard"><span>期間内質問数</span><strong>${displayCount(summary.questions)}</strong><small>件</small></article><article class="kpiCard"><span>1日平均質問</span><strong>${summary.questionsPerActiveDay == null ? "-" : Number(summary.questionsPerActiveDay).toFixed(1)}</strong><small>件</small></article>${completeCard}${latencyCard}</div><div class="benchmarkGrid">${benchmark(comparisons.area, "同じ地域")}${benchmark(comparisons.role, "同じ役割")}</div>`;
   }
 
   renderChart(canvas, create, { strictRender = false } = {}) {
@@ -507,8 +582,8 @@ export class UserAnalysisPage {
 
   renderTrend(model, { strictRender = false } = {}) {
     const body = this.body("trend");
-    const partial = model.rows.find((row) => row.isPartial);
-    body.innerHTML = `<div class="chartBox tall"><canvas id="personalTrend"></canvas></div>${partial ? `<p class="measurementNote">${escapeHtml(partial.date)} は公開済み範囲までの途中集計です。</p>` : ""}${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
+    if (!model.rows.length) { body.innerHTML = moduleMessage("この期間の利用記録はありません。", "empty"); return; }
+    body.innerHTML = `<div class="chartBox tall"><canvas id="personalTrend"></canvas></div>`;
     const canvas = body.querySelector("#personalTrend");
     this.renderChart(
       canvas,
@@ -518,26 +593,19 @@ export class UserAnalysisPage {
   }
 
   renderNeeds(model, { strictRender = false } = {}) {
-    const unresolved = Number.isInteger(model.productResolution?.unresolvedQuestions) ? model.productResolution.unresolvedQuestions : 0;
     const body = this.body("needs");
-    const stateBlock = (measurement, message) => measurement?.measurementState === "not_measured" ? moduleMessage(measurementReasonLabel(measurement) || message, "not_measured") : "";
-    const partialNote = (measurement) => measurement?.measurementState === "partial"
-      ? `<p class="measurementNote">${escapeHtml(measurementCoverage(measurement))}${measurementReasonLabel(measurement) ? ` · ${escapeHtml(measurementReasonLabel(measurement))}` : ""}</p>` : "";
-    const dimension = (measurement, rows, canvasId, missingLabel) => {
-      const content = Array.isArray(rows)
-        ? `<div class="chartBox compactChart"><canvas id="${canvasId}"></canvas></div>`
-        : moduleMessage(`${missingLabel}を確認できません。`, "error");
-      if (!measurement) return `${content}${moduleMessage(`${missingLabel}の計測範囲を確認できません。`, "error")}`;
-      return measurementContent(measurement, {
-      content,
-      notMeasuredMessage: measurementReasonLabel(measurement) || `この期間の${missingLabel}を計測できません。`,
-      partialMessage: `${measurementCoverage(measurement)}${measurementReasonLabel(measurement) ? ` · ${measurementReasonLabel(measurement)}` : ""}`,
-      });
+    const dataContent = (measurement, rows, content, label) => {
+      if (measurement?.measurementState === "not_measured") return moduleMessage(`この期間の${label}は確認できません。`, "not_measured");
+      if (!Array.isArray(rows)) return moduleMessage(`${label}を確認できません。`, "error");
+      if (!rows.length || measurement?.measurementState === "no_usage") return moduleMessage(`この期間の${label}はありません。`, "empty");
+      return content;
     };
-    const productContent = Array.isArray(model.products) ? '<div class="chartBox"><canvas id="personalProducts"></canvas></div>' : moduleMessage("製品分析を確認できません。", "error");
-    const categoryContent = Array.isArray(model.questionCategories) ? '<div class="chartBox"><canvas id="personalCategories"></canvas></div>' : moduleMessage("質問テーマを確認できません。", "error");
-    const taskContent = Array.isArray(model.tasks) ? `<div class="taskList">${model.tasks.map((row) => `<span>${escapeHtml(row.label)} <b>${displayCount(row.count)}</b></span>`).join("") || '<span class="muted">この期間に該当する種類はありません</span>'}</div>` : moduleMessage("質問種類を確認できません。", "error");
-    body.innerHTML = `<div class="needsPrimary"><article class="subPanel"><h4>よく聞く製品</h4>${stateBlock(model.productResolution, "この期間の製品項目は履歴に記録されていません。") || productContent}${model.productResolution ? partialNote(model.productResolution) : moduleMessage("製品判定の計測範囲を確認できません。", "error")}</article><article class="subPanel"><h4>質問テーマ</h4>${stateBlock(model.questionCategoryMeasurement, "この期間の質問テーマは履歴に記録されていません。") || categoryContent}${model.questionCategoryMeasurement ? partialNote(model.questionCategoryMeasurement) : moduleMessage("質問テーマの計測範囲を確認できません。", "error")}</article></div><article class="taskPanel"><h4>質問種類</h4>${stateBlock(model.taskMeasurement, "この期間の質問種類は履歴に記録されていません。") || taskContent}${model.taskMeasurement ? partialNote(model.taskMeasurement) : moduleMessage("質問種類の計測範囲を確認できません。", "error")}</article><div class="needsSecondary"><article class="subPanel"><h4>モード</h4>${dimension(model.modeMeasurement, model.modes, "personalModes", "利用モード")}</article><article class="subPanel"><h4>デバイス</h4>${dimension(model.deviceMeasurement, model.devices, "personalDevices", "デバイス")}</article></div>${unresolved ? `<p class="measurementNote">正式な製品名を確認できなかった質問 ${displayCount(unresolved)}件は、製品ランキングに含めていません。</p>` : ""}${model.issues.length ? `<p class="measurementNote">${escapeHtml(model.issues.join(" / "))}</p>` : ""}`;
+    const dimension = (measurement, rows, canvasId, label) => dataContent(measurement, rows, `<div class="chartBox compactChart"><canvas id="${canvasId}"></canvas></div>`, label);
+    const products = dataContent(model.productResolution, model.products, '<div class="chartBox"><canvas id="personalProducts"></canvas></div>', "製品情報");
+    const categories = dataContent(model.questionCategoryMeasurement, model.questionCategories, '<div class="chartBox"><canvas id="personalCategories"></canvas></div>', "質問テーマ");
+    const taskRows = Array.isArray(model.tasks) ? model.tasks.map((row) => `<span>${escapeHtml(row.label)} <b>${displayCount(row.count)}</b></span>`).join("") : "";
+    const tasks = dataContent(model.taskMeasurement, model.tasks, `<div class="taskList">${taskRows}</div>`, "質問種類");
+    body.innerHTML = `<div class="needsPrimary"><article class="subPanel"><h4>よく聞く製品</h4>${products}</article><article class="subPanel"><h4>質問テーマ</h4>${categories}</article></div><article class="taskPanel"><h4>質問種類</h4>${tasks}</article><div class="needsSecondary"><article class="subPanel"><h4>モード</h4>${dimension(model.modeMeasurement, model.modes, "personalModes", "利用モード")}</article><article class="subPanel"><h4>デバイス</h4>${dimension(model.deviceMeasurement, model.devices, "personalDevices", "デバイス")}</article></div>`;
     const charts = [
       ["#personalProducts", (canvas) => barChart(canvas, model.products || [], { horizontal: true, label: "質問数", color: "#7f88ff", summary: "よく質問する製品" })],
       ["#personalCategories", (canvas) => barChart(canvas, model.questionCategories || [], { horizontal: true, label: "質問数", color: "#2fd5c4", summary: "質問テーマ別の質問数" })],
@@ -611,7 +679,7 @@ export class UserAnalysisPage {
     const list = this.root.querySelector("#conversationList");
     const messages = this.root.querySelector("#messageList");
     list.innerHTML = rows.map((row) => `<button class="conversationItem" data-conversation="${escapeHtml(row.conversationId)}"><span>${escapeHtml(row.title || "無題の会話")}</span><small>${escapeHtml(row.updatedAtJst || row.updatedAt || "-")} · ${displayCount(row.messageCount)}件</small></button>`).join("") || moduleMessage("会話はありません。");
-    messages.innerHTML = `${moduleMessage(rows.length ? "左側から会話を選択してください。" : "メッセージはありません。")}${issues.length ? `<p class="measurementNote">${displayCount(issues.length)}件の不正な会話行を表示対象から外しました。</p>` : ""}`;
+    messages.innerHTML = `${moduleMessage(rows.length ? "左側から会話を選択してください。" : "メッセージはありません。")}`;
     list.querySelectorAll(".conversationItem").forEach((button) => button.addEventListener("click", () => {
       list.querySelectorAll(".conversationItem").forEach((item) => item.classList.remove("isSelected"));
       button.classList.add("isSelected");
@@ -656,7 +724,6 @@ export class UserAnalysisPage {
         target.insertAdjacentHTML("beforeend", '<button id="loadMoreMessages" class="ghostButton">さらに読み込む</button>');
         target.querySelector("#loadMoreMessages").addEventListener("click", () => this.loadMessages(true));
       }
-      if (model.issues.length) target.insertAdjacentHTML("beforeend", `<p class="measurementNote">${displayCount(model.issues.length)}件の不正なメッセージ行を表示対象から外しました。</p>`);
     } catch (error) {
       if (!isCancellation(error) && this.isCurrent() && generation === this.messageGeneration) {
         if (append) {

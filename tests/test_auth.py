@@ -40,7 +40,10 @@ def test_iap_authenticated_email_header_is_required_and_allowlisted() -> None:
         assert dashboard.headers["cache-control"] == "no-cache, no-store, must-revalidate"
         asset = client.get("/dashboard-assets/app.js")
         assert asset.status_code == 200
-        assert asset.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+        assert asset.headers["cache-control"] == "private, no-cache"
+        cached = client.get("/dashboard-assets/app.js", headers={"If-None-Match": asset.headers["etag"]})
+        assert cached.status_code == 304
+        assert cached.content == b""
     finally:
         app.dependency_overrides.clear()
 

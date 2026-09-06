@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from functools import lru_cache
 from typing import List
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 
     monitor_project_id: str = Field(default="lcs-developer-483404")
     monitor_source_service: str = Field(default="lcs-rag-app")
+    # News/Society usage is an additive source. Both values stay empty until
+    # its schema and Logging source have been prepared; incomplete values are
+    # diagnosed only by that branch and never prevent the Chat app starting.
+    monitor_news_usage_source_service: str = Field(default="")
+    monitor_news_usage_start_at: str = Field(default="")
 
     monitor_bq_dataset: str = Field(default="oura_navi_monitor")
     monitor_bq_location: str = Field(default="US")
@@ -52,6 +60,26 @@ class Settings(BaseSettings):
             if value:
                 out.append(value)
         return sorted(set(out))
+
+    @property
+    def news_usage_configuration_status(self) -> str:
+        """Additive usage state; incomplete values never break app startup."""
+
+        service = str(self.monitor_news_usage_source_service or "").strip()
+        start = str(self.monitor_news_usage_start_at or "").strip()
+        if not service and not start:
+            return "disabled"
+        if not service or not start:
+            return "invalid"
+        if re.fullmatch(r"[a-z][a-z0-9-]{0,62}", service) is None:
+            return "invalid"
+        try:
+            parsed_start = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        except ValueError:
+            return "invalid"
+        if parsed_start.tzinfo is None:
+            return "invalid"
+        return "enabled"
 
 
 @lru_cache(maxsize=1)

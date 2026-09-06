@@ -10,7 +10,8 @@ test("user detail keeps profile, demand portrait and conversation-message double
   await expect(page.locator(".messageList")).toContainText("製品の仕様を教えてください");
   await expect(page.locator(".conversationJourney .conversationList")).toBeVisible();
   await expect(page.locator(".conversationJourney .messageList")).toBeVisible();
-  await expect(page.locator('[data-module="summary"]')).toContainText("8 / 10名を計測");
+  await expect(page.locator('[data-module="summary"]')).not.toContainText("8 / 10名を計測");
+  await expect(page.locator('[data-module="summary"]')).toContainText("回答成功率 84.0%");
   await expect(page.locator('[data-module="summary"]')).not.toContainText("8 / 10件を計測");
 });
 
@@ -48,17 +49,17 @@ test("historical mode and device gaps are explained without fake unknown charts"
     },
   });
   await page.goto("/dashboard?page=user&roster=roster_1");
-  await expect(page.locator("[data-freshness-banner]")).toContainText("公開済みの集計データを表示しています");
+  await expect(page.locator("[data-freshness-banner]")).toBeHidden();
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("反映済み");
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("2026/08/23");
   await expect(page.locator("[data-freshness-banner]")).not.toContainText("3時間ごと");
-  await expect(page.locator('[data-module="trend"]')).toContainText("途中集計");
+  await expect(page.locator('[data-module="trend"]')).not.toContainText("途中集計");
   await expect(page.locator('[data-module="trend"]')).not.toContainText("反映済み時刻");
   const needs = page.locator('[data-module="needs"]');
   await expect(needs).toContainText("モード");
   await expect(needs).toContainText("デバイス");
   await expect(needs.locator(".needsSecondary .moduleMessage")).toHaveCount(2);
-  await expect(needs.locator(".needsSecondary")).toContainText("過去データにはこの項目が保存されていません");
+  await expect(needs.locator(".needsSecondary")).toContainText("この期間の利用モードは確認できません");
   await expect(needs.locator("#personalModes")).toHaveCount(0);
   await expect(needs.locator("#personalDevices")).toHaveCount(0);
 });
@@ -99,7 +100,7 @@ test("missing legacy P95 and one broken need axis do not erase personal summary 
   await expect(page.locator('[data-module="needs"]')).toContainText("テルフュージョン");
   await expect(page.locator('[data-module="needs"]')).toContainText("情報確認");
   await expect(page.locator('[data-module="needs"]')).toContainText("デバイス");
-  await expect(page.locator('[data-module="needs"]')).toContainText("モード分析の計測範囲");
+  await expect(page.locator('[data-module="needs"]')).not.toContainText("モード分析の計測範囲");
   await expect(page.getByRole("button", { name: "CSV" })).toBeDisabled();
 });
 
@@ -118,7 +119,7 @@ test("missing profile metadata and one malformed trend row keep the valid person
   await expect(page.locator('[data-module="profile"]')).toContainText("山田 太郎");
   await expect(page.locator('[data-module="profile"]')).toContainText("未取得");
   await expect(page.locator('[data-module="trend"] #personalTrend')).toHaveCount(1);
-  await expect(page.locator('[data-module="trend"]')).toContainText("2行目");
+  await expect(page.locator('[data-module="trend"]')).not.toContainText("2行目");
   await expect(page.locator('[data-module="needs"]')).toContainText("情報確認");
 });
 
@@ -549,7 +550,7 @@ test("a delayed old-user conversation response cannot overwrite a newly selected
   await expect(page.locator('[data-module="profile"]')).toContainText("山田 太郎");
   await oldConversationStarted;
 
-  await page.getByRole("button", { name: "別のユーザーを選択" }).click();
+  await page.getByRole("button", { name: "ユーザー一覧に戻る" }).click();
   await expect(page.locator(".chooserPanel")).toBeVisible();
   await page.locator('.userChoice[data-roster="roster_2"]').click();
   await expect(page.locator('[data-module="profile"]')).toContainText("佐藤 花子");

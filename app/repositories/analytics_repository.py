@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -8,6 +9,7 @@ from google.cloud import bigquery
 
 from app.settings import Settings
 from app.time_window import MetricsTimeWindow
+from app.repositories.read_cache import PublishedReadCache
 
 
 class AnalyticsRepository:
@@ -17,6 +19,7 @@ class AnalyticsRepository:
         self._settings = settings
         self._client = client or bigquery.Client(project=settings.monitor_project_id)
         self._dataset = f"{settings.monitor_project_id}.{settings.monitor_bq_dataset}"
+        self._reads = PublishedReadCache()
 
     def _view(self, name: str) -> str:
         return f"`{self._dataset}.{name}`"
@@ -50,7 +53,14 @@ class AnalyticsRepository:
         resolved = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
         return resolved.astimezone(ZoneInfo(self._settings.monitor_timezone)).date()
 
-    def _run(self, sql: str, parameters: list[Any]) -> list[dict[str, Any]]:
+    def _run(self, sql: str, parameters: list[Any], *, immutable: bool = False) -> list[dict[str, Any]]:
+        # Only roster snapshots are immutable. Mutable facts share in-flight
+        # work, then are re-read; a pointer change cannot poison retained facts.
+        run_id = next((item.value for item in parameters if item.name == "published_run_id"), None)
+        key = (sql, json.dumps([item.to_api_repr() for item in parameters], sort_keys=True))
+        return self._reads.read(key, lambda: self._query(sql, parameters), retain=immutable and bool(run_id))
+
+    def _query(self, sql: str, parameters: list[Any]) -> list[dict[str, Any]]:
         config = bigquery.QueryJobConfig(
             query_parameters=parameters,
             maximum_bytes_billed=max(1, int(self._settings.monitor_query_maximum_bytes)),
@@ -101,6 +111,7 @@ class AnalyticsRepository:
                     "published_run_id", "STRING", run_id
                 )
             ],
+            immutable=True,
         )
 
     def overview_events(

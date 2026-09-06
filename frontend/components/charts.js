@@ -72,6 +72,8 @@ const baseOptions = {
   },
 };
 
+export { chart as managedChart, baseOptions as chartOptions, palette as chartPalette };
+
 function noRows(canvas, rows) {
   if (Array.isArray(rows) && rows.length) return false;
   showChartMessage(canvas, "この期間のデータはありません。");
@@ -134,6 +136,25 @@ export function usageTrendChart(canvas, rows) {
     },
     options: { ...baseOptions, interaction: { intersect: false, mode: "index" }, scales: { ...baseOptions.scales, y1: { beginAtZero: true, position: "right", ticks: { color: palette.text }, grid: { drawOnChartArea: false } } } },
   }, { summary: "日別の質問数と利用人数", headers: ["日付", "質問数", "利用人数"], rows: rows.map((row) => [row.date, row.questions, row.activeUsers]) });
+}
+
+export function newsUsageTrendChart(canvas, rows) {
+  if (noRows(canvas, rows)) return null;
+  return chart(canvas, {
+    data: {
+      labels: rows.map((row) => row.date),
+      datasets: [
+        { type: "bar", label: "記事詳細", data: rows.map((row) => row.detailViews), backgroundColor: "rgba(79,124,255,.72)", borderRadius: 6, borderSkipped: false, yAxisID: "y" },
+        { type: "line", label: "利用人数", data: rows.map((row) => row.activeUsers), borderColor: palette.cyan, tension: .3, pointRadius: 3, yAxisID: "y1" },
+        { type: "line", label: "外部リンク", data: rows.map((row) => row.outboundClicks), borderColor: palette.amber, tension: .3, pointRadius: 2, yAxisID: "y" },
+      ],
+    },
+    options: { ...baseOptions, interaction: { intersect: false, mode: "index" }, scales: { ...baseOptions.scales, y1: { beginAtZero: true, position: "right", ticks: { color: palette.text }, grid: { drawOnChartArea: false } } } },
+  }, {
+    summary: "日別の記事詳細、外部リンク、利用人数",
+    headers: ["日付", "記事詳細", "外部リンク", "利用人数", "公開範囲"],
+    rows: rows.map((row) => [row.date, row.detailViews, row.outboundClicks, row.activeUsers, row.isPartial ? "一部" : "完了"]),
+  });
 }
 
 export function stackedChart(canvas, rows, { summary = "活性度構成の100パーセント積み上げ棒グラフ" } = {}) {

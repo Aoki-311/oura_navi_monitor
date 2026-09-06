@@ -37,9 +37,7 @@ test("summary isolates non-exact roles, keeps valid rows, and disables CSV", asy
   await expect(page.locator("#overviewUserResults")).toContainText("Summary Contract");
   await expect(page.locator("#overviewUserResults")).not.toContainText("Summary Member");
   await expect(page.locator("#overviewUserResults")).not.toContainText("Summary Unknown");
-  await expect(page.locator("[data-content-diagnostics]")).toContainText(
-    "全体サマリー対象外の役割を含む 2件のユーザー行を除外しました",
-  );
+  await expect(page.locator("[data-content-diagnostics]")).toHaveCount(0);
   const modelState = await page.evaluate(async () => {
     const { usersModel } = await import("/dashboard-assets/adapters/usersAdapter.js");
     return usersModel({

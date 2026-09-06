@@ -1,3 +1,5 @@
+import { requestDateRange } from "../components/dateRangeControl.js";
+
 const DEFAULT_TIMEOUT_MS = 18000;
 
 export class ApiError extends Error {
@@ -103,9 +105,13 @@ async function requestJson(method, path, { params = {}, body, signal, timeoutMs 
   }
 }
 
-async function requestBlob(path, { signal, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+async function requestBlob(path, { params = {}, signal, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const url = new URL(path, window.location.origin);
-  if (url.origin !== window.location.origin || !/^\/api\/export\/jobs\/[^/]+\/download$/.test(url.pathname)) {
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value) !== "") url.searchParams.set(key, String(value));
+  });
+  const allowedPath = /^\/api\/export\/jobs\/[^/]+\/download$/.test(url.pathname);
+  if (url.origin !== window.location.origin || !allowedPath) {
     throw new ApiError("CSVのダウンロード先が不正です。", { code: "invalid_download_url" });
   }
   const request = requestSignal(signal, Number(timeoutMs || DEFAULT_TIMEOUT_MS));
@@ -140,6 +146,7 @@ export function isCancellation(error) {
 }
 
 export function timeRangeQuery(preset, asOf) {
+  if (preset && typeof preset === "object") return requestDateRange(preset, asOf);
   return {
     preset: preset || "last_7d",
     ...(asOf ? { as_of: asOf } : {}),
@@ -147,6 +154,10 @@ export function timeRangeQuery(preset, asOf) {
 }
 
 export const getOverview = (params = {}, options = {}) => requestJson("GET", "/api/analytics/overview", { params, ...options });
+export const getEnvironment = (params = {}, options = {}) => requestJson("GET", "/api/analytics/environment", { params, ...options });
+export const getUsageTrend = (params = {}, options = {}) => requestJson("GET", "/api/analytics/trend", { params, ...options });
+export const getNewsUsageOverview = (params = {}, options = {}) => requestJson("GET", "/api/news-usage/overview", { params, ...options });
+export const getNewsUsageUser = (rosterId, params = {}, options = {}) => requestJson("GET", `/api/news-usage/users/${encodeURIComponent(rosterId)}`, { params, ...options });
 export const getOverviewUsers = (params = {}, options = {}) => requestJson("GET", "/api/analytics/overview/users", { params, ...options });
 export const getUsers = (params = {}, options = {}) => requestJson("GET", "/api/analytics/users", { params, ...options });
 export const getRegions = (params = {}, options = {}) => requestJson("GET", "/api/analytics/regions", { params, ...options });

@@ -7,6 +7,7 @@ REGION="us-central1"
 DATASET_ID="oura_navi_monitor"
 LOCATION="US"
 SOURCE_SERVICE="lcs-rag-app"
+NEWS_USAGE_SOURCE_SERVICE=""
 SINK_NAME="oura_navi_monitor_sink"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="python3"
@@ -30,6 +31,7 @@ while [[ $# -gt 0 ]]; do
     --dataset) DATASET_ID="$2"; shift 2 ;;
     --location) LOCATION="$2"; shift 2 ;;
     --source-service) SOURCE_SERVICE="$2"; shift 2 ;;
+    --news-usage-source-service) NEWS_USAGE_SOURCE_SERVICE="$2"; shift 2 ;;
     --runtime-service-account) RUNTIME_SERVICE_ACCOUNT="$2"; shift 2 ;;
     --scheduler-invoker-service-account) SCHEDULER_INVOKER_SERVICE_ACCOUNT="$2"; shift 2 ;;
     --image) IMAGE="$2"; shift 2 ;;
@@ -58,6 +60,11 @@ JOB_TIMEOUT_MINUTES="$(PYTHONPATH="${ROOT_DIR}" "${PYTHON_BIN}" -c 'from app.ref
 
 [[ -n "${PROJECT_ID}" ]] || { echo "--project is required" >&2; exit 2; }
 [[ "${STAGE}" == "prepare" || "${STAGE}" == "activate" ]] || { echo "--stage must be prepare or activate" >&2; exit 2; }
+if [[ -n "${NEWS_USAGE_SOURCE_SERVICE}" ]]; then
+  [[ "${NEWS_USAGE_SOURCE_SERVICE}" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || {
+    echo "--news-usage-source-service must be one Cloud Run service name" >&2; exit 2;
+  }
+fi
 if [[ "${STAGE}" == "activate" ]]; then
   [[ -n "${RUNTIME_SERVICE_ACCOUNT}" && -n "${SCHEDULER_INVOKER_SERVICE_ACCOUNT}" && -n "${IMAGE}" && -n "${ANALYTICS_START_AT}" ]] || {
     echo "activate requires refresh-writer and scheduler-invoker service accounts, plus --image and --analytics-start-at" >&2; exit 2;
@@ -79,9 +86,16 @@ REQUIRED_ACTIVATE_CONFIRM="projects/${PROJECT_ID}/locations/${REGION}/jobs/${JOB
 echo "mode=$([[ "${APPLY}" == "true" ]] && echo apply || echo plan) stage=${STAGE}"
 echo "dataset=${PROJECT_ID}.${DATASET_ID} sink=${SINK_NAME} job=${JOB_NAME}"
 echo "scheduler=${SCHEDULER_REFRESH} schedule=${SCHEDULER_CRON} ttl_collections=${ADMIN_CHANGE_COLLECTION},${EXPORT_COLLECTION}"
+FILTER="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${SOURCE_SERVICE}\" AND (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Frequests\" OR (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstdout\" AND (jsonPayload.monitor_event=true OR textPayload=~\"(request_user_metric_json|stream_terminal_json)=\")) OR (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstderr\" AND textPayload=~\"tmcs_stage_latency_json[ =]\"))"
+if [[ -n "${NEWS_USAGE_SOURCE_SERVICE}" ]]; then
+  # Add only News usage stdout from the additional service, not its Chat/HTTP
+  # traffic. No second sink, writer identity or Scheduler is introduced.
+  FILTER="(${FILTER}) OR (resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${NEWS_USAGE_SOURCE_SERVICE}\" AND logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstdout\" AND jsonPayload.monitor_event=true AND jsonPayload.event_family=\"news_usage\")"
+fi
 if [[ "${APPLY}" != "true" ]]; then
   if [[ "${STAGE}" == "prepare" ]]; then
     echo "prepare=ttl,canonical_base_tables,logging_sink_writer"
+    echo "logging_filter=${FILTER}"
     "${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}"
   else
     echo "activate=verified_source_views,refresh_job,scheduler analytics_start_at=${ANALYTICS_START_AT}"
@@ -122,7 +136,6 @@ if [[ "${STAGE}" == "prepare" ]]; then
   "${ROOT_DIR}/scripts/bootstrap_monitor_data.sh" --project "${PROJECT_ID}" --dataset "${DATASET_ID}" --location "${LOCATION}" --python "${PYTHON_BIN}" --credential-file "${CREDENTIAL_FILE}" --apply
 
   DESTINATION="bigquery.googleapis.com/projects/${PROJECT_ID}/datasets/${DATASET_ID}"
-  FILTER="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"${SOURCE_SERVICE}\" AND (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Frequests\" OR (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstdout\" AND (jsonPayload.monitor_event=true OR textPayload=~\"(request_user_metric_json|stream_terminal_json)=\")) OR (logName=\"projects/${PROJECT_ID}/logs/run.googleapis.com%2Fstderr\" AND textPayload=~\"tmcs_stage_latency_json[ =]\"))"
   if gcloud --project="${PROJECT_ID}" logging sinks describe "${SINK_NAME}" >/dev/null 2>&1; then
     gcloud --project="${PROJECT_ID}" logging sinks update "${SINK_NAME}" "${DESTINATION}" --log-filter="${FILTER}" --use-partitioned-tables
   else

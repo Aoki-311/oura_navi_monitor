@@ -283,6 +283,52 @@ def test_frontend_api_requests_always_bypass_browser_http_cache() -> None:
     assert 'cache: "no-store"' in source
 
 
+@pytest.mark.parametrize("panel", ["environment", "trend"])
+def test_independent_panel_routes_keep_their_window_and_require_admin(panel: str) -> None:
+    class PanelService(FakeAnalyticsService):
+        def __init__(self):
+            self.calls = []
+
+        def _panel(self, kind, **kwargs):
+            self.calls.append((kind, kwargs))
+            payload = super().overview()
+            fields = {
+                "scope", "scopePolicyVersion", "rosterFingerprint", "contentFingerprint",
+                "publishedRunId", "windowStart", "windowEnd", "windowTimezone",
+                "scopeUserCount", "freshness",
+            }
+            fields.update({"hourlyQuestions", "deviceDistribution", "deviceMeasurement",
+                           "modeDistribution", "modeMeasurement"} if kind == "environment"
+                          else {"usageTrend", "requestTasks", "taskMeasurement"})
+            return {key: value for key, value in payload.items() if key in fields}
+
+        def environment(self, **kwargs):
+            return self._panel("environment", **kwargs)
+
+        def trend(self, **kwargs):
+            return self._panel("trend", **kwargs)
+
+    service = PanelService()
+    app.dependency_overrides[get_analytics_service] = lambda: service
+    app.dependency_overrides[get_settings] = _settings
+    client = TestClient(app)
+    try:
+        path = f"/api/analytics/{panel}"
+        assert client.get(path).status_code in (401, 403)
+        response = client.get(path, headers={"x-monitor-admin-email": "admin@example.com"},
+                              params={"start": "2026-08-17T00:00:00+09:00",
+                                      "end": "2026-08-20T00:00:00+09:00", "area_key": "kansai"})
+        assert response.status_code == 200
+        assert len(service.calls) == 1
+        kind, kwargs = service.calls[0]
+        assert kind == panel and kwargs["area_key"] == "kansai"
+        assert kwargs["window"].start_utc == datetime(2026, 8, 16, 15, tzinfo=timezone.utc)
+        assert kwargs["window"].end_utc == datetime(2026, 8, 19, 15, tzinfo=timezone.utc)
+        assert "kpis" not in response.json()
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_shared_as_of_query_anchors_all_summary_api_windows() -> None:
     class CapturingAnalyticsService(FakeAnalyticsService):
         def __init__(self) -> None:
@@ -342,10 +388,13 @@ def test_dashboard_document_and_static_assets_are_never_served_from_old_cache() 
         for path in ("/dashboard", "/dashboard-assets/app.js"):
             response = client.get(path, headers=headers)
             assert response.status_code == 200
-            assert response.headers["cache-control"] == (
-                "no-cache, no-store, must-revalidate"
-            )
-            assert response.headers["pragma"] == "no-cache"
+            if path == "/dashboard":
+                assert response.headers["cache-control"] == "no-cache, no-store, must-revalidate"
+                assert response.headers["pragma"] == "no-cache"
+            else:
+                assert response.headers["cache-control"] == "private, no-cache"
+                revalidated = client.get(path, headers={**headers, "If-None-Match": response.headers["etag"]})
+                assert revalidated.status_code == 304
     finally:
         app.dependency_overrides.clear()
 

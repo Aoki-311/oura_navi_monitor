@@ -19,6 +19,7 @@ from app.jobs.project_firestore import (
     FirestoreProjector,
     struct_array_parameter,
 )
+from app.jobs.news_usage_ingestion import run_configured_news_usage
 from app.settings import Settings, get_settings
 from app.refresh_policy import REFRESH_POLICY
 
@@ -821,6 +822,35 @@ ORDER BY check_name
         raise RuntimeError("incremental refresh did not reach the frozen target")
 
 
+def _run_refresh_jobs(
+    settings: Settings,
+    *,
+    chat_job: AnalyticsRefreshJob,
+    target_at: datetime | None,
+    until_current: bool,
+    trigger_source: str,
+) -> dict[str, Any]:
+    """Commit Chat first, then independently publish configured usage facts."""
+
+    result = (
+        chat_job.run_until_current(now=target_at)
+        if until_current
+        else chat_job.run(now=target_at)
+    )
+    # Preserve the legacy result byte-for-byte when the additive source is off.
+    if settings.news_usage_configuration_status == "disabled":
+        return result
+    news_usage = run_configured_news_usage(
+        settings,
+        now=target_at,
+        until_current=until_current,
+        trigger_source=trigger_source,
+    )
+    if news_usage is not None:
+        result["newsUsage"] = news_usage
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run the single OurA Navi Monitor incremental pipeline"
@@ -864,11 +894,15 @@ def main() -> int:
                     "--target-at requires --until-current and manual_backfill"
                 )
             target_at = _parse_start(args.target_at)
-        job = AnalyticsRefreshJob(settings, trigger_source=args.trigger_source)
-        result = (
-            job.run_until_current(now=target_at)
-            if args.until_current
-            else job.run(now=target_at)
+        result = _run_refresh_jobs(
+            settings,
+            chat_job=AnalyticsRefreshJob(
+                settings,
+                trigger_source=args.trigger_source,
+            ),
+            target_at=target_at,
+            until_current=args.until_current,
+            trigger_source=args.trigger_source,
         )
     except LeaseUnavailableError:
         print(

@@ -1,6 +1,7 @@
 const { test, expect } = require("@playwright/test");
 const { readFile } = require("node:fs/promises");
 const { installApiMocks, overviewUsers } = require("./fixtures");
+const { applyPreset } = require("./date-range-helpers");
 
 const exportCreates = (requests) => requests.filter((row) => row.method === "POST" && row.path === "/api/export/jobs");
 const exportDownloads = (requests, jobId = "") => requests.filter((row) => (
@@ -235,13 +236,20 @@ for (const scenario of [
   {
     name: "preset",
     prepare: async () => {},
-    mutate: (page) => page.locator("#analysisPreset").selectOption("last_14d"),
+    mutate: async (page) => {
+      await applyPreset(page.locator("#mainPeriod"), "last_14d");
+    },
     assertRequest: (body) => expect(body.preset).toBe("last_14d"),
   },
 ]) {
   test(`summary CSV invalidates an in-flight export when ${scenario.name} changes`, async ({ page }) => {
     const requests = [];
-    await installApiMocks(page, { requests, exportCreateDelay: 700 });
+    let releaseFirstCreate;
+    const firstCreateGate = new Promise((resolve) => { releaseFirstCreate = resolve; });
+    await installApiMocks(page, {
+      requests,
+      beforeExportCreateResponse: (job) => job.jobId === "job_1" ? firstCreateGate : undefined,
+    });
     await page.goto("/dashboard");
     const button = page.getByRole("button", { name: "CSV" });
     await expect(button).toBeEnabled();
@@ -253,11 +261,14 @@ for (const scenario of [
       request.method() === "POST" && new URL(request.url()).pathname === "/api/export/jobs"
     ));
     await button.click();
-    await firstCreate;
+    const firstRequest = await firstCreate;
+    const firstCancelled = page.waitForEvent("requestfailed", (request) => request === firstRequest);
     await scenario.mutate(page);
     await expect(button).toBeEnabled();
-    await page.waitForTimeout(750);
+    releaseFirstCreate();
+    expect((await firstCancelled).failure().errorText).toContain("ERR_ABORTED");
     expect(downloadCount).toBe(0);
+    expect(exportDownloads(requests)).toHaveLength(0);
 
     const downloadPromise = page.waitForEvent("download");
     await button.click();
