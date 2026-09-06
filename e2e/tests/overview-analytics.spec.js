@@ -1353,21 +1353,35 @@ test("a blocked latest refresh keeps the previous published dashboard and explai
 });
 
 test("a slower obsolete period request cannot overwrite the latest selection", async ({ page }) => {
-  const requests = [];
   await installApiMocks(page, {
-    requests,
-    overviewDelayByPreset: { last_30d: 700 },
     overviewByPreset: {
       last_30d: { kpis: { ...overview.kpis, activeUsers: 30 } },
       last_14d: { kpis: { ...overview.kpis, activeUsers: 14 } },
     },
   });
+  let releaseOlder;
+  let olderPending = false;
+  let olderFinished;
+  const olderGate = new Promise((resolve) => { releaseOlder = resolve; });
+  const olderResponse = new Promise((resolve) => { olderFinished = resolve; });
+  await page.route(/\/api\/analytics\/overview(?:\?.*)?$/, async (route) => {
+    if (new URL(route.request().url()).searchParams.get("preset") !== "last_30d") return route.fallback();
+    olderPending = true;
+    await olderGate;
+    try { return await route.fallback(); }
+    finally { olderFinished(); }
+  });
   await page.goto("/dashboard");
+  await expect(page.locator("#pageRoot")).toHaveAttribute("aria-busy", "false");
   await applyPeriod(page, "last_30d");
-  await expect.poll(() => requests.some((row) => row.path === "/api/analytics/overview" && row.search.includes("last_30d"))).toBeTruthy();
+  await expect.poll(() => olderPending).toBe(true);
   await applyPeriod(page, "last_14d");
+  await expect(page).toHaveURL(/(?:\?|&)preset=last_14d(?:&|$)/);
   await expect(page.locator('[data-module="kpis"] .kpiCard').first()).toContainText("14");
-  await page.waitForTimeout(800);
+  releaseOlder();
+  await olderResponse;
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(page).toHaveURL(/(?:\?|&)preset=last_14d(?:&|$)/);
   await expect(page.locator('[data-module="kpis"] .kpiCard').first()).toContainText("14");
 });
 

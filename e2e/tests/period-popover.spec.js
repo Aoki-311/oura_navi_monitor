@@ -10,6 +10,64 @@ test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-09-06T03:00:00Z"));
 });
 
+for (const scope of ["overview", "user"]) {
+  for (const nextAction of ["apply", "cancel"]) {
+    test(`${scope} preserves an open main period draft when an older response commits before ${nextAction}`, async ({ page }) => {
+      await installApiMocks(page);
+      let releaseOlder;
+      let olderPending = false;
+      const olderGate = new Promise((resolve) => { releaseOlder = resolve; });
+      const endpoint = scope === "overview"
+        ? /\/api\/analytics\/overview(?:\?.*)?$/
+        : /\/api\/analytics\/users\/roster_1(?:\?.*)?$/;
+      await page.route(endpoint, async (route) => {
+        if (new URL(route.request().url()).searchParams.get("preset") === "last_30d") {
+          olderPending = true;
+          await olderGate;
+        }
+        return route.fallback();
+      });
+      await page.goto(scope === "overview" ? "/dashboard" : "/dashboard?page=user&roster=roster_1");
+      await expect(page.locator("#pageRoot")).toHaveAttribute("aria-busy", "false");
+      const form = page.locator("#mainPeriod");
+      await applyPreset(form, "last_30d");
+      await expect.poll(() => olderPending).toBe(true);
+
+      await openPeriod(form);
+      await form.locator('[data-range-preset="last_14d"]').click();
+      await showMonth(form, "2026-08-24");
+      const focusedDate = form.locator('[data-date="2026-08-24"]');
+      await focusedDate.focus();
+      const originalForm = await form.elementHandle();
+      const originalFocus = await focusedDate.elementHandle();
+      releaseOlder();
+      await expect(page).toHaveURL(/(?:\?|&)preset=last_30d(?:&|$)/);
+
+      expect(await originalForm.evaluate((node) => node.isConnected && document.querySelector("#mainPeriod") === node)).toBe(true);
+      expect(await originalFocus.evaluate((node) => document.activeElement === node)).toBe(true);
+      await expect(form.locator("[data-range-popup]")).toBeVisible();
+      await expect(form.locator("[data-applied-range]")).toHaveText("2026/08/08 — 2026/09/06");
+      await expect(form.locator('[name="start"]')).toHaveValue("2026-08-24");
+      await expect(form.locator('[name="end"]')).toHaveValue("2026-09-06");
+      await expect(form.locator("[data-calendar-month]")).toHaveText("2026年8月");
+      await expect(form.locator('[data-range-preset="last_14d"]')).toHaveAttribute("aria-pressed", "true");
+
+      if (nextAction === "apply") {
+        await form.locator("[data-range-apply]").click();
+        await expect(page).toHaveURL(/(?:\?|&)preset=last_14d(?:&|$)/);
+        await expect(form.locator("[data-applied-range]")).toHaveText("2026/08/24 — 2026/09/06");
+      } else {
+        await form.locator("[data-range-cancel]").click();
+        await openPeriod(form);
+        await expect(form.locator('[name="start"]')).toHaveValue("2026-08-08");
+        await expect(form.locator('[name="end"]')).toHaveValue("2026-09-06");
+        await expect(form.locator('[data-range-preset="last_30d"]')).toHaveAttribute("aria-pressed", "true");
+        await expect(page).toHaveURL(/(?:\?|&)preset=last_30d(?:&|$)/);
+      }
+    });
+  }
+}
+
 for (const dismiss of ["cancel", "outside", "escape"]) {
   test(`${dismiss} closes the period popup and discards an unapplied range`, async ({ page }) => {
     const requests = [];

@@ -50,7 +50,7 @@ export function renderDateRangeControl(id, range, { compact = false, label = "�
   const popupId = `${id}-popup`;
   return `<form id="${escapeHtml(id)}" class="dateRangeControl ${compact ? "isCompact" : ""}" data-date-range>
     <div class="dateRangeApplied"><small>${escapeHtml(label)}</small><strong data-applied-range>${escapeHtml(periodLabel(value))}</strong></div>
-    <div class="dateRangeEditor"><button type="button" class="dateRangeTrigger" data-range-trigger popovertarget="${escapeHtml(popupId)}" aria-controls="${escapeHtml(popupId)}" aria-haspopup="dialog" aria-expanded="false" aria-label="${escapeHtml(label)}を選択">${calendarIcon}<span>${escapeHtml(PRESETS[value.preset]?.[0] || periodLabel(value))}</span><span class="dateRangeChevron" aria-hidden="true">⌄</span></button>${refresh ? `<button type="button" class="iconButton dateRangeRefresh" data-range-refresh aria-label="再読込" title="表示中の期間を再読込">${refreshIcon}</button>` : ""}</div>
+    <div class="dateRangeEditor"><button type="button" class="dateRangeTrigger" data-range-trigger popovertarget="${escapeHtml(popupId)}" aria-controls="${escapeHtml(popupId)}" aria-haspopup="dialog" aria-expanded="false" aria-label="${escapeHtml(label)}を選択">${calendarIcon}<span data-range-trigger-label>${escapeHtml(PRESETS[value.preset]?.[0] || periodLabel(value))}</span><span class="dateRangeChevron" aria-hidden="true">⌄</span></button>${refresh ? `<button type="button" class="iconButton dateRangeRefresh" data-range-refresh aria-label="再読込" title="表示中の期間を再読込">${refreshIcon}</button>` : ""}</div>
     <input type="hidden" name="start" value="${escapeHtml(value.start)}"><input type="hidden" name="end" value="${escapeHtml(value.end)}">
     <div id="${escapeHtml(popupId)}" class="dateRangePopup" data-range-popup popover="auto" role="dialog" aria-label="${escapeHtml(label)}を選択">
       <div class="dateRangePopupHead"><span>${escapeHtml(label)}を選択</span><div class="dateRangePresets" role="group" aria-label="期間の候補">${Object.entries(PRESETS).map(([key, [text]]) => `<button type="button" data-range-preset="${key}" aria-pressed="${value.preset === key}">${text}</button>`).join("")}</div></div>
@@ -67,7 +67,7 @@ export function bindDateRangeControl(root, { range, onApply, onRefresh, signal }
   const controller = new AbortController();
   const abort = () => controller.abort();
   if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
-  const applied = normalizeDateRange(range);
+  let applied = normalizeDateRange(range);
   const popup = form.querySelector("[data-range-popup]");
   const trigger = form.querySelector("[data-range-trigger]");
   let selectedPreset = applied.preset;
@@ -256,6 +256,15 @@ export function bindDateRangeControl(root, { range, onApply, onRefresh, signal }
   const close = () => { if (popup.matches(":popover-open")) popup.hidePopover(); };
   controller.signal.addEventListener("abort", close, { once: true });
   return {
+    setAppliedRange(range) {
+      const next = normalizeDateRange(range);
+      if (next.preset === applied.preset && next.start === applied.start && next.end === applied.end) return;
+      applied = next;
+      form.querySelector("[data-applied-range]").textContent = periodLabel(applied);
+      trigger.querySelector("[data-range-trigger-label]").textContent = PRESETS[applied.preset]?.[0] || periodLabel(applied);
+      if (popup.matches(":popover-open")) updateDraft();
+      else reset();
+    },
     destroy() { close(); controller.abort(); signal?.removeEventListener("abort", abort); },
     preserveOpenPopover() {
       const wasOpen = popup.matches(":popover-open");

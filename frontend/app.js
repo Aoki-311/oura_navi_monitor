@@ -10,6 +10,7 @@ import { UserManagementPage } from "./pages/userManagementPage.js";
 const root = document.querySelector("#pageRoot");
 const dateRangeHost = document.querySelector("#mainDateRange");
 let mainDateControl = null;
+let mainDateControlPage = "";
 const exportButton = document.querySelector("#exportButton");
 const toastElement = document.querySelector("#toast");
 const validPresets = new Set(["today", "last_7d", "last_14d", "last_30d", "last_60d", "all", "custom"]);
@@ -229,14 +230,26 @@ function pageTitle(page) {
 }
 
 function renderDateRange(state) {
-  mainDateControl?.destroy();
   dateRangeHost.hidden = state.page === "management";
   document.querySelector("#managementRefreshButton").hidden = state.page !== "management";
-  if (dateRangeHost.hidden) return;
+  if (mainDateControl && mainDateControlPage === state.page) {
+    mainDateControl.setAppliedRange(state);
+    return;
+  }
+  mainDateControl?.destroy();
+  mainDateControl = null;
+  mainDateControlPage = state.page;
+  if (dateRangeHost.hidden) {
+    dateRangeHost.replaceChildren();
+    return;
+  }
   dateRangeHost.innerHTML = renderDateRangeControl("mainPeriod", state);
   mainDateControl = bindDateRangeControl(dateRangeHost, {
     range: state,
-    onApply: (range) => navigate(state.page, { ...range, roster: state.roster, area: state.area, overviewPage: 1, userPage: 1 }, { replace: true }),
+    onApply: (range) => {
+      const current = stateFromUrl();
+      navigate(current.page, { ...range, roster: current.roster, area: current.area, overviewPage: 1, userPage: 1 }, { replace: true });
+    },
     onRefresh: () => { if (canLeaveCurrentPage()) void render({ forceAnalyticsRefresh: true }); },
   });
 }
@@ -373,7 +386,7 @@ async function render({ focusMain = false, requestedState = null, navigation = n
     const currentState = stateFromUrl();
     renderDateRange(currentState);
     renderedUrl = dashboardUrl(currentState);
-    if (focusMain && activePage.isCurrent()) root.focus({ preventScroll: true });
+    if (focusMain && activePage.isCurrent() && !document.querySelector("[data-range-popup]:popover-open")) root.focus({ preventScroll: true });
     return;
   }
   const reusableUserPage = activePage;
@@ -412,7 +425,7 @@ async function render({ focusMain = false, requestedState = null, navigation = n
     const currentState = stateFromUrl();
     renderDateRange(currentState);
     renderedUrl = dashboardUrl(currentState);
-    if (focusMain) root.focus({ preventScroll: true });
+    if (focusMain && !document.querySelector("[data-range-popup]:popover-open")) root.focus({ preventScroll: true });
     return;
   }
   const analyticsAsOf = state.page === "user"
@@ -478,7 +491,7 @@ async function render({ focusMain = false, requestedState = null, navigation = n
   } finally {
     if (isCurrent()) setBusy(root, false);
   }
-  if (focusMain && isCurrent()) root.focus({ preventScroll: true });
+  if (focusMain && isCurrent() && !document.querySelector("[data-range-popup]:popover-open")) root.focus({ preventScroll: true });
 }
 
 document.querySelectorAll(".mainNav [data-page]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.page)));
