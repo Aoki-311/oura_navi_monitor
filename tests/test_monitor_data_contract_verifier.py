@@ -9,6 +9,7 @@ from scripts.verify_monitor_data_contract import (
     API_READ_MAXIMUM_BYTES,
     REQUIRED_API_OUTPUT_COLUMNS,
     verify_data_contract,
+    _verify_news_usage_contract,
 )
 
 
@@ -209,6 +210,85 @@ def test_data_contract_receipt_stops_on_a_missing_migration_column() -> None:
                 + "b" * 64
             ),
         )
+
+
+NEWS_ENV = {
+    "MONITOR_NEWS_USAGE_SOURCE_SERVICE": "lcs-rag-app",
+    "MONITOR_NEWS_USAGE_START_AT": "2026-09-06T14:37:25.339Z",
+}
+
+
+def test_enabled_news_cannot_pass_a_chat_only_schema():
+    with pytest.raises(ValueError, match="news_usage_event.*missing required columns"):
+        verify_data_contract(
+            _Client(), project="test-project", dataset="oura_navi_monitor",
+            location="US", git_sha="a" * 40, image="immutable-image",
+            expected_news_environment=NEWS_ENV,
+        )
+
+
+class _NewsClient:
+    def __init__(self, **changes):
+        self.state = {
+            "source_service": "lcs-rag-app", "measurement_start_at": "2026-09-06T14:37:25.339Z",
+            "published_run_id": "news-run-1", "roster_snapshot_run_id": "roster-1",
+            "data_through": "2026-09-08T00:00:00Z", "status": "succeeded",
+            "lease_run_id": None, "lease_expires_at": None,
+            **changes,
+        }
+
+    def query(self, sql, *, job_config, location):
+        assert "WHERE source = 'news_usage'" in sql
+        assert job_config.use_query_cache is False
+        assert location == "US"
+        return _Query([self.state])
+
+
+def _verify_news(client):
+    return _verify_news_usage_contract(
+        client, project="test-project", dataset="oura_navi_monitor",
+        location="US", expected_environment=NEWS_ENV,
+    )
+
+
+@pytest.mark.parametrize("changes, message", [
+    ({"status": "failed"}, "not published successfully"),
+    ({"source_service": "oura-navi-test"}, "source does not match"),
+    ({"measurement_start_at": "2026-09-08T00:00:00Z"}, "measurement start does not match"),
+    ({"lease_run_id": "running"}, "unreleased lease"),
+    ({"roster_snapshot_run_id": ""}, "bound roster"),
+    ({"data_through": "2026-09-06T00:00:00Z"}, "measured window"),
+])
+def test_news_release_rejects_invalid_publication_binding(changes, message):
+    with pytest.raises(ValueError, match=message):
+        _verify_news(_NewsClient(**changes))
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_news_release_requires_actual_dashboard_readability(monkeypatch, available):
+    calls = []
+
+    class DashboardReader:
+        def __init__(self, *, repository, settings):
+            assert repository.configuration().source_service == "lcs-rag-app"
+
+        def dashboard(self, *, window):
+            calls.append(window)
+            return {
+                "state": {"availability": "available" if available else "unavailable", "reasonCode": "schema_unavailable"},
+                "totals": {"tabViews": 0, "contentClicks": 0} if available else None,
+                "publishedRunId": "news-run-1",
+            }
+
+    monkeypatch.setattr("scripts.verify_monitor_data_contract.NewsUsageService", DashboardReader)
+    if available:
+        receipt = _verify_news(_NewsClient())
+        assert receipt["readable"] is True
+        assert receipt["rosterSnapshotRunId"] == "roster-1"
+    else:
+        with pytest.raises(ValueError, match="dashboard is not readable"):
+            _verify_news(_NewsClient())
+    assert len(calls) == 1
 
 
 def test_data_contract_receipt_stops_when_a_real_api_read_has_wrong_output() -> None:

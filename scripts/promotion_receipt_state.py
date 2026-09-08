@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 try:
+    from scripts.render_runtime_env import news_usage_environment
     from scripts.validate_refresh_job import validate_refresh_job
     from scripts.verify_service_access_contract import (
         require_exact_tagged_revision,
@@ -21,6 +22,7 @@ try:
         traffic_planes,
     )
 except ModuleNotFoundError:  # Direct execution from scripts/.
+    from render_runtime_env import news_usage_environment
     from validate_refresh_job import validate_refresh_job
     from verify_service_access_contract import (
         require_exact_tagged_revision,
@@ -467,6 +469,19 @@ def _validate_receipt_snapshot(
         if routine.get("readable") is not True:
             raise ValueError("schema receipt has no real read for " + routine_name)
     _require_text(schema.get("capturedAt"), "schema receipt capture time")
+    expected_news = news_usage_environment()
+    if expected_news:
+        news = _require_object(schema.get("newsUsage"), "news usage data receipt")
+        if news.get("readable") is not True:
+            raise ValueError("schema receipt has no real news dashboard read")
+        if news.get("sourceService") != expected_news["MONITOR_NEWS_USAGE_SOURCE_SERVICE"]:
+            raise ValueError("news usage data receipt has a different source service")
+        if _parse_utc(news.get("measurementStartAt"), "news measurement start") != _parse_utc(
+            expected_news["MONITOR_NEWS_USAGE_START_AT"], "configured news measurement start"
+        ):
+            raise ValueError("news usage data receipt has a different measurement start")
+        for key in ("publishedRunId", "rosterSnapshotRunId", "dataThrough"):
+            _require_text(news.get(key), "news usage " + key)
 
     api = payloads["api"]
     api_expected = {
@@ -851,6 +866,7 @@ def _static_contract(
             location=args.location,
             source_service=args.source_service,
             timeout_minutes=args.job_timeout_minutes,
+            expected_news_environment=news_usage_environment(),
         ),
         "legacyTransferGovernance": _legacy_transfer_governance(transfer),
     }

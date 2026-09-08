@@ -6,6 +6,11 @@ import json
 import os
 from typing import Any, Iterable
 
+try:
+    from scripts.render_runtime_env import news_usage_environment
+except ModuleNotFoundError:
+    from render_runtime_env import news_usage_environment
+
 
 def _walk(value: Any) -> Iterable[dict[str, Any]]:
     if isinstance(value, dict):
@@ -59,6 +64,7 @@ def validate_refresh_job(
     location: str,
     source_service: str,
     timeout_minutes: int,
+    expected_news_environment: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     container = _container(payload)
     if container.get("image") != expected_image:
@@ -93,6 +99,7 @@ def validate_refresh_job(
         "MONITOR_BQ_LOCATION": location,
         "MONITOR_SOURCE_SERVICE": source_service,
     }
+    expected_env.update(expected_news_environment or {})
     for key, value in expected_env.items():
         if env.get(key) != value:
             raise ValueError(f"refresh Job {key} does not match the release inventory")
@@ -212,6 +219,7 @@ def main() -> int:
             location=args.location,
             source_service=args.source_service,
             timeout_minutes=args.timeout_minutes,
+            expected_news_environment=news_usage_environment(),
         )
     print(json.dumps(normalized, sort_keys=True))
     return 0

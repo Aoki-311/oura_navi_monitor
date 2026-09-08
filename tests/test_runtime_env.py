@@ -1,10 +1,12 @@
 import re
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from scripts.render_runtime_env import render_refresh_env
+from scripts.render_runtime_env import news_usage_environment, render_refresh_env
 
 
 def test_release_configuration_removes_the_legacy_identity_secret_binding() -> None:
@@ -174,6 +176,8 @@ def test_refresh_env_replaces_the_single_analytics_start_owner(tmp_path: Path) -
         'MONITOR_BQ_DATASET: "dataset"\n'
         'MONITOR_BQ_LOCATION: "US"\n'
         'MONITOR_SOURCE_SERVICE: "service"\n'
+        'MONITOR_NEWS_USAGE_SOURCE_SERVICE: "news-source"\n'
+        'MONITOR_NEWS_USAGE_START_AT: "2026-09-06T14:37:25.339Z"\n'
         'MONITOR_ANALYTICS_START_AT: ""\n',
         encoding="utf-8",
     )
@@ -192,6 +196,62 @@ def test_refresh_env_replaces_the_single_analytics_start_owner(tmp_path: Path) -
     assert text.count("MONITOR_ANALYTICS_START_AT:") == 1
     assert 'MONITOR_ANALYTICS_START_AT: "2026-08-24T00:00:00Z"' in text
     assert 'MONITOR_PROJECT_ID: "runtime-project"' in text
+    assert news_usage_environment(output) == {
+        "MONITOR_NEWS_USAGE_SOURCE_SERVICE": "news-source",
+        "MONITOR_NEWS_USAGE_START_AT": "2026-09-06T14:37:25.339Z",
+    }
+
+
+@pytest.mark.parametrize("contents, message", [
+    ('MONITOR_NEWS_USAGE_SOURCE_SERVICE: "lcs-rag-app"\n', "requires both"),
+    ('MONITOR_NEWS_USAGE_START_AT: "2026-09-06T14:37:25.339Z"\n', "requires both"),
+    ('MONITOR_NEWS_USAGE_SOURCE_SERVICE: "a"\nMONITOR_NEWS_USAGE_SOURCE_SERVICE: "b"\n', "one source owner"),
+])
+def test_news_release_rejects_partial_or_ambiguous_configuration(tmp_path, contents, message):
+    source = tmp_path / "env.yaml"
+    source.write_text(contents)
+    with pytest.raises(ValueError, match=message):
+        news_usage_environment(source)
+
+
+def test_unconfigured_news_release_has_no_enabled_expectation(tmp_path):
+    source = tmp_path / "env.yaml"
+    source.write_text('MONITOR_PROJECT_ID: "project"\n')
+    assert news_usage_environment(source) == {}
+
+
+def test_news_only_install_uses_canonical_sql_without_base_bootstrap(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    credential = tmp_path / "approved.json"
+    credential.write_text("{}")
+    credential.chmod(0o600)
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    bq = binary_dir / "bq"
+    bq.write_text('#!/bin/sh\ncat >> "$CAPTURED_SQL"\n')
+    bq.chmod(0o755)
+    captured = tmp_path / "captured.sql"
+    environment = {
+        **os.environ, "PATH": f"{binary_dir}:{os.environ['PATH']}",
+        "CAPTURED_SQL": str(captured),
+    }
+    environment.pop("CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", None)
+    environment.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+    result = subprocess.run([
+        "bash", str(root / "scripts/bootstrap_monitor_data.sh"),
+        "--project", "test-project", "--dataset", "monitor_test",
+        "--location", "US", "--python", sys.executable,
+        "--credential-file", str(credential), "--news-usage-only", "--apply",
+    ], env=environment, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    sql = captured.read_text()
+    assert "test-project.monitor_test.news_usage_events" in sql
+    assert "test-project.monitor_test.news_usage_event_source" in sql
+    assert "test-project.monitor_test.monitor_event_source" in sql
+    assert "!= 'news_usage'" in sql
+    assert "CREATE SCHEMA" not in sql
+    assert "CREATE TABLE IF NOT EXISTS `test-project.monitor_test.question_events`" not in sql
+    assert "${" not in sql
 
 
 @pytest.mark.parametrize("value", ["", "2026-08-24", "2026-08-24T00:00:00+00:00"])

@@ -69,6 +69,8 @@ def _job_json() -> dict[str, object]:
                                     "name": "MONITOR_ANALYTICS_START_AT",
                                     "value": "2026-03-16T00:00:00Z",
                                 },
+                                {"name": "MONITOR_NEWS_USAGE_SOURCE_SERVICE", "value": "lcs-rag-app"},
+                                {"name": "MONITOR_NEWS_USAGE_START_AT", "value": "2026-09-06T14:37:25.339Z"},
                             ],
                         }
                     ],
@@ -96,6 +98,8 @@ def _validated_job_contract() -> dict[str, object]:
             "MONITOR_BQ_LOCATION": "US",
             "MONITOR_SOURCE_SERVICE": "lcs-rag-app",
             "MONITOR_ANALYTICS_START_AT": "2026-03-16T00:00:00Z",
+            "MONITOR_NEWS_USAGE_SOURCE_SERVICE": "lcs-rag-app",
+            "MONITOR_NEWS_USAGE_START_AT": "2026-09-06T14:37:25.339Z",
         },
         "taskCount": 1,
         "parallelism": 1,

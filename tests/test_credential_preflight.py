@@ -115,7 +115,7 @@ def test_credential_preflight_accepts_owned_0600_regular_file(
     assert approved_credential_path(path) == path
 
 
-def test_credential_preflight_rejects_symlink_and_group_readable_file(
+def test_credential_preflight_preserves_explicit_link_to_owned_0600_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "target.json"
@@ -124,8 +124,22 @@ def test_credential_preflight_rejects_symlink_and_group_readable_file(
     link = tmp_path / "approved.json"
     link.symlink_to(target)
     _configure(monkeypatch, link)
-    with pytest.raises(ValueError, match="non-symlink"):
+    assert approved_credential_path(link) == link
+
+    target.chmod(0o640)
+    with pytest.raises(ValueError, match="exactly 0600"):
         approved_credential_path(link)
+
+    target.unlink()
+    with pytest.raises(ValueError, match="metadata is unavailable"):
+        approved_credential_path(link)
+
+
+def test_credential_preflight_rejects_group_readable_or_wrong_mode_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
 
     target.chmod(0o640)
     _configure(monkeypatch, target)
@@ -136,6 +150,16 @@ def test_credential_preflight_rejects_symlink_and_group_readable_file(
         target.chmod(unsafe_mode)
         with pytest.raises(ValueError, match="exactly 0600"):
             approved_credential_path(target)
+
+
+def test_credential_preflight_rejects_link_to_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    link = tmp_path / "approved.json"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    _configure(monkeypatch, link)
+    with pytest.raises(ValueError, match="regular file"):
+        approved_credential_path(link)
 
 
 def test_credential_preflight_rejects_mismatched_sdk_environments(

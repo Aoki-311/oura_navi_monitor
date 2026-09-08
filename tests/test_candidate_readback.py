@@ -72,7 +72,10 @@ def _revision(*, image: str = IMAGE) -> dict[str, Any]:
             },
         },
         "spec": {
-            "containers": [{"image": image}],
+            "containers": [{"image": image, "env": [
+                {"name": "MONITOR_NEWS_USAGE_SOURCE_SERVICE", "value": "lcs-rag-app"},
+                {"name": "MONITOR_NEWS_USAGE_START_AT", "value": "2026-09-06T14:37:25.339Z"},
+            ]}],
             "serviceAccountName": SERVICE_ACCOUNT,
         },
         "status": {

@@ -288,7 +288,9 @@ def main(argv: list[str] | None = None) -> int:
     credentials = service_account.Credentials.from_service_account_file(str(credential_path))
     client = bigquery.Client(project=args.project, credentials=credentials)
     job = client.query(sql, location="US", job_config=bigquery.QueryJobConfig(
-        maximum_bytes_billed=100 * 1024 * 1024, use_query_cache=False,
+        # BigQuery applies minimum billed bytes to each child statement in
+        # this multi-statement script, even for tiny TEMP fixtures.
+        maximum_bytes_billed=1024 * 1024 * 1024, use_query_cache=False,
         labels={"purpose": "news-usage-temp-validation"},
     ))
     rows = list(job.result())
@@ -298,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": "passed", "jobId": job.job_id, "project": args.project,
         "location": "US", "sqlSha256": hashlib.sha256(sql.encode()).hexdigest(),
         "persistentTablesReferenced": False,
+        "totalBytesBilled": job.total_bytes_billed,
     }))
     return 0
 

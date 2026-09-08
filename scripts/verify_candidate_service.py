@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 try:
+    from scripts.render_runtime_env import news_usage_environment
     from scripts.verify_service_access_contract import (
         require_exact_tagged_revision,
         require_reconciled_ready,
@@ -15,6 +16,7 @@ try:
         traffic_planes,
     )
 except ModuleNotFoundError:  # Direct execution from scripts/.
+    from render_runtime_env import news_usage_environment
     from verify_service_access_contract import (
         require_exact_tagged_revision,
         require_reconciled_ready,
@@ -169,6 +171,7 @@ def verify_candidate(
     expected_service_account: str,
     expected_git_sha: str,
     candidate_tag: str,
+    expected_news_environment: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     for label, value in (
         ("project ID", expected_project_id),
@@ -208,6 +211,13 @@ def verify_candidate(
         raise ValueError("candidate revision container is not an object")
     if container.get("image") != expected_image:
         raise ValueError("candidate revision image digest readback failed")
+    environment = {
+        item.get("name"): item.get("value")
+        for item in container.get("env", []) if isinstance(item, dict)
+    }
+    for key, expected in (expected_news_environment or {}).items():
+        if environment.get(key) != expected:
+            raise ValueError(f"candidate revision {key} does not match the release configuration")
     if spec.get("serviceAccountName") != expected_service_account:
         raise ValueError("candidate revision service account readback failed")
     metadata = revision.get("metadata") or {}
@@ -280,6 +290,7 @@ def main() -> None:
             expected_service_account=args.expected_service_account,
             expected_git_sha=args.expected_git_sha,
             candidate_tag=args.candidate_tag,
+            expected_news_environment=news_usage_environment(),
         )
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc

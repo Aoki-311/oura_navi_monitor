@@ -12,11 +12,17 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 
 from app.domain.analysis_scopes import SCOPE_POLICY_VERSION
+from app.repositories.news_usage_repository import NewsUsageRepository
+from app.services.news_usage_service import NewsUsageService
+from app.settings import Settings
+from app.time_window import MetricsTimeWindow
 
 try:
     from scripts.credential_preflight import approved_credential_path
+    from scripts.render_runtime_env import news_usage_environment
 except ModuleNotFoundError:
     from credential_preflight import approved_credential_path
+    from render_runtime_env import news_usage_environment
 
 
 REQUIRED_TABLE_COLUMNS: dict[str, set[str]] = {
@@ -113,6 +119,21 @@ REQUIRED_TABLE_COLUMNS: dict[str, set[str]] = {
     },
 }
 REQUIRED_SOURCE_VIEWS = {"monitor_event_source", "http_request_source"}
+NEWS_USAGE_TABLE_COLUMNS = {
+    "pipeline_state": {"roster_snapshot_run_id", "measurement_start_at", "source_service"},
+    "news_usage_events": {
+        "event_id", "event_content_hash", "usage_event_id", "occurred_at",
+        "usage_date_jst", "ingested_roster_id", "ingested_roster_snapshot_run_id",
+        "source_service", "source_ts", "content_event_type", "actor_email_hash",
+    },
+    "news_usage_event_issues": {
+        "source_event_hash", "issue_code", "disposition", "last_run_id",
+        "resolution_status", "last_observed_at",
+    },
+}
+NEWS_USAGE_VIEWS = {
+    "news_usage_event_source", "news_usage_publication_state", "news_usage_published_events",
+}
 REQUIRED_API_ROUTINES = {
     "dashboard_events_v2",
     "dashboard_user_list_v2",
@@ -230,6 +251,7 @@ def verify_data_contract(
     location: str,
     git_sha: str,
     image: str,
+    expected_news_environment: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     dataset_ref = f"{project}.{dataset}"
     dataset_object = client.get_dataset(dataset_ref)
@@ -240,7 +262,13 @@ def verify_data_contract(
         )
 
     verified_tables: dict[str, list[str]] = {}
-    for table_name, required_columns in sorted(REQUIRED_TABLE_COLUMNS.items()):
+    required_tables = {name: set(columns) for name, columns in REQUIRED_TABLE_COLUMNS.items()}
+    required_views = set(REQUIRED_SOURCE_VIEWS)
+    if expected_news_environment:
+        for name, columns in NEWS_USAGE_TABLE_COLUMNS.items():
+            required_tables.setdefault(name, set()).update(columns)
+        required_views.update(NEWS_USAGE_VIEWS)
+    for table_name, required_columns in sorted(required_tables.items()):
         table = client.get_table(f"{dataset_ref}.{table_name}")
         if str(getattr(table, "table_type", "") or "").upper() != "TABLE":
             raise ValueError(f"{table_name} is not a base table")
@@ -255,7 +283,7 @@ def verify_data_contract(
         verified_tables[table_name] = sorted(required_columns)
 
     verified_views: list[str] = []
-    for view_name in sorted(REQUIRED_SOURCE_VIEWS):
+    for view_name in sorted(required_views):
         view = client.get_table(f"{dataset_ref}.{view_name}")
         if str(getattr(view, "table_type", "") or "").upper() != "VIEW":
             raise ValueError(f"{view_name} is not a view")
@@ -398,6 +426,11 @@ def verify_data_contract(
         ),
     }
 
+    news_usage = _verify_news_usage_contract(
+        client, project=project, dataset=dataset, location=location,
+        expected_environment=expected_news_environment,
+    ) if expected_news_environment else None
+
     return {
         "receiptType": "monitor_data_contract_v1",
         "project": project,
@@ -419,9 +452,70 @@ def verify_data_contract(
         "apiRoutines": verified_routines,
         "apiRoutineReads": api_reads,
         "apiReadMaximumBytes": API_READ_MAXIMUM_BYTES,
+        "newsUsage": news_usage,
         "capturedAt": datetime.now(timezone.utc)
         .isoformat()
         .replace("+00:00", "Z"),
+    }
+
+
+def _verify_news_usage_contract(
+    client: Any, *, project: str, dataset: str, location: str,
+    expected_environment: dict[str, str],
+) -> dict[str, Any]:
+    settings = Settings(
+        _env_file=None,
+        monitor_project_id=project, monitor_bq_dataset=dataset,
+        monitor_bq_location=location,
+        monitor_query_maximum_bytes=API_READ_MAXIMUM_BYTES,
+        **{key.lower(): value for key, value in expected_environment.items()},
+    )
+    if settings.news_usage_configuration_status != "enabled":
+        raise ValueError("news usage release configuration is invalid")
+    rows = list(client.query(
+        f"""SELECT source_service, measurement_start_at, published_run_id,
+                   roster_snapshot_run_id, data_through, status,
+                   lease_run_id, lease_expires_at
+            FROM `{project}.{dataset}.pipeline_state`
+            WHERE source = 'news_usage'""",
+        job_config=bigquery.QueryJobConfig(
+            maximum_bytes_billed=10_485_760, use_query_cache=False,
+        ), location=location,
+    ).result())
+    if len(rows) != 1:
+        raise ValueError("news usage has no single published pointer")
+    state = _row_values(rows[0])
+    if state.get("status") != "succeeded" or not state.get("published_run_id"):
+        raise ValueError("news usage has not published successfully")
+    if state.get("lease_run_id") or state.get("lease_expires_at"):
+        raise ValueError("news usage still has an active or unreleased lease")
+    if state.get("source_service") != settings.monitor_news_usage_source_service:
+        raise ValueError("news usage published source does not match the release")
+    start = _as_utc_datetime(settings.monitor_news_usage_start_at)
+    if _as_utc_datetime(state.get("measurement_start_at")) != start:
+        raise ValueError("news usage measurement start does not match the release")
+    end = _as_utc_datetime(state.get("data_through"))
+    if end <= start or not state.get("roster_snapshot_run_id"):
+        raise ValueError("news usage has no measured window or bound roster")
+    # Exercise the actual dashboard reader, including its published roster and
+    # fingerprint checks. No employee identifiers or event payloads enter receipts.
+    dashboard = NewsUsageService(
+        repository=NewsUsageRepository(settings, client=client), settings=settings,
+    ).dashboard(window=MetricsTimeWindow(
+        start_utc=max(start, end - timedelta(days=1)), end_utc=end,
+        timezone="Asia/Tokyo", source="custom", preset="",
+        requested_days=1, bucket_minutes=1440,
+    ))
+    if dashboard["state"]["availability"] != "available" or dashboard["totals"] is None:
+        raise ValueError("news usage dashboard is not readable: " + dashboard["state"]["reasonCode"])
+    if dashboard["publishedRunId"] != state["published_run_id"]:
+        raise ValueError("news usage publication changed during verification; retry")
+    return {
+        "readable": True, "sourceService": state["source_service"],
+        "measurementStartAt": _iso(start), "dataThrough": _iso(end),
+        "publishedRunId": state["published_run_id"],
+        "rosterSnapshotRunId": state["roster_snapshot_run_id"],
+        "dashboardState": dashboard["state"], "dashboardTotals": dashboard["totals"],
     }
 
 
@@ -456,6 +550,7 @@ def main() -> int:
     print(
         "checks=required-tables-and-columns,source-views,api-table-functions-and-reads,"
         "released-published-watermark"
+        ",configured-news-schema-publication-and-dashboard"
     )
     if not args.verify:
         return 0
@@ -471,6 +566,7 @@ def main() -> int:
         location=args.location,
         git_sha=args.expected_git_sha,
         image=args.expected_image,
+        expected_news_environment=news_usage_environment(),
     )
     with output.open("x", encoding="utf-8") as handle:
         json.dump(receipt, handle, ensure_ascii=False, indent=2, sort_keys=True)

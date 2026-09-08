@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from scripts.render_runtime_env import news_usage_environment
     from scripts.verify_candidate_service import verify_candidate
     from scripts.verify_service_access_contract import (
         ReconciliationPending,
@@ -18,6 +19,7 @@ try:
         verify as verify_access,
     )
 except ModuleNotFoundError:  # Direct execution from scripts/.
+    from render_runtime_env import news_usage_environment
     from verify_candidate_service import verify_candidate
     from verify_service_access_contract import (
         ReconciliationPending,
@@ -78,6 +80,7 @@ def capture_and_verify(
     candidate_tag: str,
     max_attempts: int,
     poll_seconds: float,
+    expected_news_environment: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     if max_attempts <= 0:
         raise ValueError("max attempts must be positive")
@@ -167,6 +170,7 @@ def capture_and_verify(
         expected_service_account=expected_service_account,
         expected_git_sha=expected_git_sha,
         candidate_tag=candidate_tag,
+        expected_news_environment=expected_news_environment,
     )
     return receipt, candidate_service, candidate_revision, candidate_iam
 
@@ -208,6 +212,7 @@ def main() -> int:
             candidate_tag=args.candidate_tag,
             max_attempts=args.max_attempts,
             poll_seconds=args.poll_seconds,
+            expected_news_environment=news_usage_environment(),
         )
     except (
         OSError,

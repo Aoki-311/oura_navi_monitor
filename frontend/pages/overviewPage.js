@@ -316,8 +316,8 @@ export class OverviewPage {
     if (!model.available) {
       const unavailable = model.state.availability === "unavailable";
       const message = unavailable ? "利用状況を取得できませんでした。"
-        : model.state.availability === "before_measurement" ? "選択した期間のデータはありません。"
-        : "利用データはまだありません。";
+        : model.state.availability === "before_measurement" ? "選択した期間は計測開始前です。"
+        : "利用状況の計測はまだ始まっていません。";
       for (const part of this.moduleNames("news")) this.body(part).innerHTML = moduleMessage(message, unavailable ? "error" : "empty");
       return;
     }

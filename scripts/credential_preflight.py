@@ -23,12 +23,16 @@ def approved_credential_path(explicit_path: str | Path) -> Path:
     if not path.is_absolute() or Path(os.path.normpath(configured)) != path:
         raise ValueError("approved credential must be one normalized absolute path")
     try:
-        metadata = path.lstat()
+        locator_metadata = path.lstat()
+        # An explicitly selected, user-owned link is a locator for the same
+        # credential. Validate its target without changing the selected path
+        # or reading/copying any credential contents.
+        metadata = path.stat()
     except OSError as exc:
         raise ValueError("approved credential metadata is unavailable") from exc
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-        raise ValueError("approved credential must be a regular non-symlink file")
-    if metadata.st_uid != os.getuid():
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("approved credential must resolve to a regular file")
+    if locator_metadata.st_uid != os.getuid() or metadata.st_uid != os.getuid():
         raise ValueError("approved credential must be owned by the current user")
     if stat.S_IMODE(metadata.st_mode) != 0o600:
         raise ValueError("approved credential mode must be exactly 0600")

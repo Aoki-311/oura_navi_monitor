@@ -84,6 +84,8 @@ def _job_json(image: str = IMAGE) -> dict:
                                 "name": "MONITOR_ANALYTICS_START_AT",
                                 "value": "2026-03-16T00:00:00Z",
                             },
+                            {"name": "MONITOR_NEWS_USAGE_SOURCE_SERVICE", "value": "lcs-rag-app"},
+                            {"name": "MONITOR_NEWS_USAGE_START_AT", "value": "2026-09-06T14:37:25.339Z"},
                         ],
                     }
                 ],
@@ -378,6 +380,7 @@ def _run(
     current_job_image: str = IMAGE,
     current_dts_disabled: bool = True,
     api_routines_readable: bool = True,
+    news_dashboard_readable: bool = True,
     unreadable_schema_routine: str = "",
     observation_72h_minutes: int = 4320,
     service_before: dict | None = None,
@@ -452,6 +455,14 @@ def _run(
                 "gitSha": GIT_SHA,
                 "image": IMAGE,
                 "schemaReady": True,
+                "newsUsage": {
+                    "readable": news_dashboard_readable,
+                    "sourceService": "lcs-rag-app",
+                    "measurementStartAt": "2026-09-06T14:37:25.339Z",
+                    "publishedRunId": "news-run-1",
+                    "rosterSnapshotRunId": "roster-1",
+                    "dataThrough": "2026-09-08T00:00:00Z",
+                },
                 "sourceViewsReady": True,
                 "apiRoutinesReady": True,
                 "apiRoutinesReadable": api_routines_readable,
@@ -1112,6 +1123,14 @@ def test_promotion_rejects_a_schema_receipt_that_only_saw_routine_names(
 
     assert result.returncode != 0
     assert "schema receipt is missing apiRoutinesReadable" in result.stderr
+    assert not marker.exists()
+    assert not snapshot.exists()
+
+
+def test_promotion_stops_before_traffic_without_a_real_news_read(tmp_path: Path):
+    result, snapshot, marker = _run(tmp_path, news_dashboard_readable=False)
+    assert result.returncode != 0
+    assert "schema receipt has no real news dashboard read" in result.stderr
     assert not marker.exists()
     assert not snapshot.exists()
 

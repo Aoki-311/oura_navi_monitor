@@ -187,7 +187,11 @@ test("news read failures and unstarted measurement never become zero or perpetua
   await expect(page.locator('#kpis .kpiCard')).toHaveCount(6);
   await page.route(/\/api\/news-usage\/overview(?:\?.*)?$/, (route) => route.fulfill({ json: { ...newsPayload(), state: { availability: "not_enabled" }, totals: null } }));
   await page.locator('#mainPeriod [data-range-refresh]').click();
-  await expect(page.locator('[data-module="newsTrend"]')).toContainText("利用データはまだありません。");
+  await expect(page.locator('[data-module="newsTrend"]')).toContainText("利用状況の計測はまだ始まっていません。");
+  await expect(page.locator('.newsUsageDashboard canvas')).toHaveCount(0);
+  await page.route(/\/api\/news-usage\/overview(?:\?.*)?$/, (route) => route.fulfill({ json: { ...newsPayload(), state: { availability: "before_measurement" }, totals: null } }));
+  await page.locator('#mainPeriod [data-range-refresh]').click();
+  await expect(page.locator('[data-module="newsTrend"]')).toContainText("選択した期間は計測開始前です。");
   await expect(page.locator('.newsUsageDashboard canvas')).toHaveCount(0);
 });
 

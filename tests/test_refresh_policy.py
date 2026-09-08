@@ -17,6 +17,7 @@ from app.refresh_policy import (
     safe_scheduler_bootstrap_cron,
 )
 from app.settings import Settings
+from scripts.validate_refresh_job import validate_refresh_job
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +71,8 @@ def _refresh_job_json(image: str) -> dict[str, object]:
                                 "name": "MONITOR_ANALYTICS_START_AT",
                                 "value": "2026-03-16T00:00:00Z",
                             },
+                            {"name": "MONITOR_NEWS_USAGE_SOURCE_SERVICE", "value": "lcs-rag-app"},
+                            {"name": "MONITOR_NEWS_USAGE_START_AT", "value": "2026-09-06T14:37:25.339Z"},
                         ],
                     }
                 ],
@@ -125,12 +128,36 @@ def _validated_refresh_contract(image: str) -> dict[str, object]:
             "MONITOR_BQ_LOCATION": "US",
             "MONITOR_SOURCE_SERVICE": "lcs-rag-app",
             "MONITOR_ANALYTICS_START_AT": "2026-03-16T00:00:00Z",
+            "MONITOR_NEWS_USAGE_SOURCE_SERVICE": "lcs-rag-app",
+            "MONITOR_NEWS_USAGE_START_AT": "2026-09-06T14:37:25.339Z",
         },
         "taskCount": 1,
         "parallelism": 1,
         "maxRetries": 1,
         "timeoutSeconds": 1800,
     }
+
+
+@pytest.mark.parametrize("key", ["MONITOR_NEWS_USAGE_SOURCE_SERVICE", "MONITOR_NEWS_USAGE_START_AT"])
+@pytest.mark.parametrize("value", [None, "wrong-source-or-start"])
+def test_refresh_job_rejects_missing_or_different_news_binding(key, value):
+    job = _refresh_job_json("immutable-image")
+    rows = job["template"]["template"]["containers"][0]["env"]
+    if value is None:
+        rows[:] = [row for row in rows if row["name"] != key]
+    else:
+        next(row for row in rows if row["name"] == key)["value"] = value
+    with pytest.raises(ValueError, match=key):
+        validate_refresh_job(
+            job, expected_image="immutable-image",
+            expected_service_account=TEST_JOB_SERVICE_ACCOUNT,
+            project_id="test-project", dataset_id="oura_navi_monitor",
+            location="US", source_service="lcs-rag-app", timeout_minutes=30,
+            expected_news_environment={
+                "MONITOR_NEWS_USAGE_SOURCE_SERVICE": "lcs-rag-app",
+                "MONITOR_NEWS_USAGE_START_AT": "2026-09-06T14:37:25.339Z",
+            },
+        )
 
 
 def _successful_reconciliation(

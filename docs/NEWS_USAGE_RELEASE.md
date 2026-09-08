@@ -101,6 +101,54 @@ before release. No local credential belongs in source, build input or runtime.
 
 ## Local acceptance and performance
 
+### Repair an already deployed producer
+
+For the verified LCS deployment, the checked-in environment binds News to
+`lcs-rag-app` from `2026-09-06T14:37:25.339Z`, the earliest observed usage event.
+Keep this measurement boundary after the first publication. Reader and refresh
+Job consume the same `deploy/cloudrun.env.yaml`; runtime-only settings would be
+lost on the next deployment using `--env-vars-file`.
+
+When producer events already exist in the current sink's raw table, no producer
+redeployment or sink rewrite is needed. Use the existing schema installer with
+`--news-usage-only` to apply the two canonical News SQL files and republish the
+Chat source view's News-family exclusion:
+
+```sh
+scripts/bootstrap_monitor_data.sh --project <project> --dataset <dataset> \
+  --location US --python .venv/bin/python --credential-file <approved-path> \
+  --news-usage-only --apply
+```
+
+This mode does not bootstrap Chat aggregates, change IAM/TTL, or create a writer.
+An explicitly selected credential locator may be a user-owned symbolic link;
+its target must still be a current-user-owned regular file with exact mode 0600.
+The locator is preserved and credential contents are never copied.
+
+Build the Monitor candidate through the existing trigger. After schema readiness,
+update the existing refresh Job to the candidate's immutable digest and the same
+environment file. Preserve its identity, command, limits, and Scheduler settings.
+Freeze the current Scheduler while updating the Job and executing a bounded
+catch-up through `app.jobs.refresh_analytics --until-current`; use the News
+publisher's independent cursor and reconcile actual raw events. Resume the
+existing Scheduler after successful readback. Do not deploy a second Job.
+
+`verify_candidate_readback.py`, `validate_refresh_job.py`, and
+`verify_monitor_data_contract.py` now read the News binding from the checked-in
+environment owner. Candidate and Job verification reject missing or different
+source/start values. Data verification requires the News tables, three views,
+released publication pointer, matching source/start, bound roster, and a real
+dashboard read. The promotion receipt owner requires that News read evidence.
+A successful image build alone therefore does not complete the data release.
+
+After the existing authenticated candidate acceptance and promotion checks,
+verify the production report and a later automatic execution separately. Compare
+counts over one frozen event window with the published roster scope; raw admin
+events are not eligible-user KPIs. Keep real publication evidence separate from
+the earlier read-only preview and local browser fixtures.
+
+### Test coverage
+
 Run the complete Monitor Python suite and browser suite against the candidate
 frontend. New dashboard regressions cover category hover totals, applied dates,
 independent requests, refresh errors retaining prior charts, delayed response
@@ -125,8 +173,9 @@ NFKC plus case folding; the matching SQL uses GoogleSQL's documented
 
 `scripts/validate_news_usage_temp_sql.py --render-only` prepares the anonymous
 fixture script without cloud access. `--execute --credential-file <approved
-regular file>` submits that script with explicit SDK credentials and a 100 MiB
-billing ceiling. It derives schemas and source/publisher statements from the
+regular file>` submits that script with explicit SDK credentials and a 1 GiB
+total billing ceiling, including BigQuery's minimum charge per child statement.
+The receipt records actual billed bytes. It derives schemas and source/publisher statements from the
 canonical SQL, replacing only exact table owners with session TEMP tables;
 unexpected persistent references are rejected before submission. Assertions
 cover repeated actions, event-ID replay, primary versus secondary links,

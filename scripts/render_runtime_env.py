@@ -8,6 +8,34 @@ from pathlib import Path
 
 
 _UTC_SECOND_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+NEWS_USAGE_ENV_KEYS = (
+    "MONITOR_NEWS_USAGE_SOURCE_SERVICE",
+    "MONITOR_NEWS_USAGE_START_AT",
+)
+
+
+def news_usage_environment(source: Path | None = None) -> dict[str, str]:
+    """Read the news release expectation from the existing flat env owner.
+
+    Cloud SDK build images run this module without application dependencies.
+    The deployment file uses JSON-quoted string scalars for environment values.
+    """
+    source = source or Path(__file__).resolve().parents[1] / "deploy/cloudrun.env.yaml"
+    text = source.read_text(encoding="utf-8")
+    values: dict[str, str] = {}
+    for key in NEWS_USAGE_ENV_KEYS:
+        matches = re.findall(rf"^{key}:[ \t]*(.*)$", text, re.MULTILINE)
+        if len(matches) > 1:
+            raise ValueError(f"{key} must have one source owner")
+        value = json.loads(matches[0]) if matches else ""
+        if not isinstance(value, str):
+            raise ValueError(f"{key} must be a string")
+        values[key] = value
+    if not any(values.values()):
+        return {}
+    if not all(values.values()):
+        raise ValueError("news release requires both source service and measurement start")
+    return values
 
 
 def render_refresh_env(

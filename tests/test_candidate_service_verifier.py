@@ -22,6 +22,10 @@ SERVICE_ACCOUNT = "runtime@project.iam.gserviceaccount.com"
 GIT_SHA = "b" * 40
 SERVICE_FULL = f"projects/{PROJECT}/locations/{REGION}/services/{SERVICE}"
 REVISION_FULL = f"{SERVICE_FULL}/revisions/{REVISION}"
+NEWS_ENV = {
+    "MONITOR_NEWS_USAGE_SOURCE_SERVICE": "lcs-rag-app",
+    "MONITOR_NEWS_USAGE_START_AT": "2026-09-06T14:37:25.339Z",
+}
 
 
 def _revision() -> dict[str, Any]:
@@ -36,7 +40,9 @@ def _revision() -> dict[str, Any]:
             },
         },
         "spec": {
-            "containers": [{"image": IMAGE}],
+            "containers": [{"image": IMAGE, "env": [
+                {"name": key, "value": value} for key, value in NEWS_ENV.items()
+            ]}],
             "serviceAccountName": SERVICE_ACCOUNT,
         },
         "status": {
@@ -97,6 +103,7 @@ def _verify(
         expected_service_account=SERVICE_ACCOUNT,
         expected_git_sha=GIT_SHA,
         candidate_tag="candidate",
+        expected_news_environment=NEWS_ENV,
     )
 
 
@@ -106,6 +113,19 @@ def test_candidate_tag_binds_exact_revision_url_and_zero_traffic() -> None:
     assert receipt["candidateRevision"] == REVISION
     assert receipt["candidateUrl"].startswith("https://candidate---")
     assert receipt["trafficPercent"] == 0
+
+
+@pytest.mark.parametrize("key", list(NEWS_ENV))
+@pytest.mark.parametrize("value", [None, "wrong-source-or-start"])
+def test_candidate_rejects_missing_or_different_news_binding(key, value) -> None:
+    revision = _revision()
+    rows = revision["spec"]["containers"][0]["env"]
+    if value is None:
+        rows[:] = [row for row in rows if row["name"] != key]
+    else:
+        next(row for row in rows if row["name"] == key)["value"] = value
+    with pytest.raises(ValueError, match=key):
+        _verify(_service(), revision)
 
 
 def test_candidate_accepts_omitted_protobuf_zero_percent_on_a_tagged_target() -> None:
