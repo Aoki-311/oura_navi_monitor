@@ -14,18 +14,19 @@ from app.domain.analytics_snapshot import content_fingerprint, roster_fingerprin
 from app.domain.analysis_scopes import (
     AnalysisScope,
     SCOPE_POLICY_VERSION,
+    LEGACY_SCOPE_POLICY_VERSION,
+    READABLE_SCOPE_POLICY_VERSIONS,
     SummaryCohort,
     summary_cohort_matches,
     display_area,
-    membership_for,
 )
 from app.domain.question_categories import (
     analytics_question_category,
     question_category_label,
 )
 from app.domain.label_records import read_canonical_label_collection
-from app.domain.roster_records import (
-    read_canonical_roster_collection,
+from app.domain.published_roster import (
+    current_scope_rows, published_scope_rows, validated_published_roster,
 )
 from app.settings import Settings
 from app.refresh_policy import REFRESH_POLICY
@@ -565,7 +566,7 @@ class AnalyticsService:
             publication.get("published_run_id") or ""
         ).strip()
         if (
-            receipt_values["scope_policy_version"] != SCOPE_POLICY_VERSION
+            receipt_values["scope_policy_version"] not in READABLE_SCOPE_POLICY_VERSIONS
             or not published_run_id
             or any(not receipt_values[field] for field in receipt_fields[1:])
         ):
@@ -804,25 +805,13 @@ class AnalyticsService:
                     )
                 labels_by_id[label_id] = label
 
-        records = read_canonical_roster_collection(projected_rows)
-        if len(records.analytics_records) != len(projected_rows):
-            raise AnalyticsSnapshotConflictError(
-                "published roster projection contains invalid rows"
+        policy_version = str(publication.get("scope_policy_version") or "")
+        try:
+            canonical_rows = validated_published_roster(
+                projected_rows, policy_version=policy_version,
             )
-        for record in records.analytics_records:
-            value = record.value
-            structural = membership_for(
-                role=value.get("role"),
-                department=value.get("department", ""),
-                is_active=True,
-            )
-            if (
-                value.get("global_scope_enabled") is not structural.global_enabled
-                or value.get("user_map_scope_enabled") is not structural.user_map_enabled
-            ):
-                raise AnalyticsSnapshotConflictError(
-                    "published roster projection has invalid scope flags"
-                )
+        except ValueError as exc:
+            raise AnalyticsSnapshotConflictError(str(exc)) from exc
 
         isolated_values = {
             int(row.get("roster_isolated_count") or 0) for row in raw_rows
@@ -853,41 +842,56 @@ class AnalyticsService:
                 "published roster projection contains invalid labels"
             )
         label_rows = [record.value for record in label_records]
-        scope_rows = [
-            record.value
-            for record in records.analytics_records
-            if record.value.get("is_active") is True
-            and (
-                record.value.get("global_scope_enabled") is True
-                if scope is AnalysisScope.GLOBAL
-                else record.value.get("user_map_scope_enabled") is True
-            )
-        ]
-        try:
-            roster_receipt = self._roster_fingerprint(
-                scope_rows,
-                diagnostic_fingerprint=diagnostic_fingerprint,
-            )
-            content_receipt = self._content_fingerprint(
-                roster_fingerprint=roster_receipt,
-                roster=scope_rows,
-                labels=label_rows,
-                label_catalog_status=label_catalog_status,
-                label_catalog_issues=label_catalog_issues,
-            )
-        except ValueError as exc:
-            raise AnalyticsSnapshotConflictError(
-                "published roster projection has invalid receipt input"
-            ) from exc
-        if (
-            roster_receipt
-            != str(publication.get(f"{scope.value}_roster_fingerprint") or "")
-            or content_receipt
-            != str(publication.get(f"{scope.value}_content_fingerprint") or "")
-        ):
-            raise AnalyticsSnapshotConflictError(
-                "published roster projection fingerprint does not match pointer"
-            )
+        # Verify the writer's unchanged rows and membership before normalizing
+        # departments or applying today's scope. A legacy global publication
+        # can contain HQ users and omit 社員MR, so also verify USER_MAP before
+        # deriving the new summary population from that complete roster.
+        receipt_scopes = (
+            (AnalysisScope.GLOBAL, AnalysisScope.USER_MAP)
+            if policy_version == LEGACY_SCOPE_POLICY_VERSION else (scope,)
+        )
+        for receipt_scope in receipt_scopes:
+            receipt_rows = published_scope_rows(projected_rows, receipt_scope)
+            receipt_status = uniform_text(f"{receipt_scope.value}_label_catalog_status")
+            receipt_issues_field = f"{receipt_scope.value}_label_catalog_issues_json"
+            receipt_issues = [str(value) for value in json_list(
+                uniform_text(receipt_issues_field), receipt_issues_field,
+            )]
+            try:
+                roster_receipt = self._roster_fingerprint(
+                    receipt_rows,
+                    diagnostic_fingerprint=diagnostic_fingerprint,
+                )
+                content_receipt = self._content_fingerprint(
+                    roster_fingerprint=roster_receipt,
+                    roster=receipt_rows,
+                    labels=label_rows,
+                    label_catalog_status=receipt_status,
+                    label_catalog_issues=receipt_issues,
+                )
+            except ValueError as exc:
+                raise AnalyticsSnapshotConflictError(
+                    "published roster projection has invalid receipt input"
+                ) from exc
+            if (
+                roster_receipt
+                != str(publication.get(f"{receipt_scope.value}_roster_fingerprint") or "")
+                or content_receipt
+                != str(publication.get(f"{receipt_scope.value}_content_fingerprint") or "")
+            ):
+                raise AnalyticsSnapshotConflictError(
+                    "published roster projection fingerprint does not match pointer"
+                )
+        scope_rows = current_scope_rows(canonical_rows, scope)
+        if policy_version == LEGACY_SCOPE_POLICY_VERSION and scope is AnalysisScope.GLOBAL:
+            # 社員MR may be newly included from the verified USER_MAP source.
+            # Its catalog diagnostics cover labels absent from the old global
+            # scope; retain them conservatively rather than claiming complete.
+            label_catalog_status = uniform_text("user_map_label_catalog_status")
+            label_catalog_issues = [str(value) for value in json_list(
+                uniform_text("user_map_label_catalog_issues_json"),
+                "user_map_label_catalog_issues_json",
+            )]
         return _RosterSnapshot(
             rows=scope_rows,
             isolated_count=isolated_count,

@@ -36,6 +36,10 @@ class SummaryCohort(StrEnum):
 
 SUMMARY_ROLES: Final[tuple[str, ...]] = ("社員MR", "本社MR", "コントラクトMR")
 SCOPE_POLICY_VERSION: Final[str] = "summary_department_v2"
+LEGACY_SCOPE_POLICY_VERSION: Final[str] = "summary_role_v1"
+READABLE_SCOPE_POLICY_VERSIONS: Final[frozenset[str]] = frozenset(
+    {SCOPE_POLICY_VERSION, LEGACY_SCOPE_POLICY_VERSION}
+)
 _SUMMARY_DEPARTMENTS: Final[frozenset[Department]] = frozenset(
     {Department.DM_FIELD, Department.HCS_FIELD}
 )

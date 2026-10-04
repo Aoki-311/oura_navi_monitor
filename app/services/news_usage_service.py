@@ -15,9 +15,12 @@ from zoneinfo import ZoneInfo
 from app.csv_safety import safe_csv_cell
 from app.domain.analytics_snapshot import roster_fingerprint
 from app.domain.analysis_scopes import (
-    AnalysisScope, SCOPE_POLICY_VERSION, SummaryCohort, membership_for, summary_cohort_matches,
+    AnalysisScope, SCOPE_POLICY_VERSION, LEGACY_SCOPE_POLICY_VERSION,
+    READABLE_SCOPE_POLICY_VERSIONS, SummaryCohort, summary_cohort_matches,
 )
-from app.domain.roster_records import read_canonical_roster_collection
+from app.domain.published_roster import (
+    current_scope_rows, published_scope_rows, validated_published_roster,
+)
 from app.refresh_policy import REFRESH_POLICY
 from app.repositories.news_usage_repository import (
     NewsUsageConfiguration,
@@ -292,6 +295,7 @@ class NewsUsageService:
             "scope": "global",
             "cohort": SummaryCohort(cohort).value,
             "scopePolicyVersion": SCOPE_POLICY_VERSION,
+            "publicationScopePolicyVersion": "",
             "rosterFingerprint": "",
             "contentFingerprint": "",
             "publishedRunId": "",
@@ -349,7 +353,7 @@ class NewsUsageService:
             raise NewsUsageSnapshotConflictError(
                 "news usage source service does not match configuration"
             )
-        if _text(publication.get("scope_policy_version")) != SCOPE_POLICY_VERSION:
+        if _text(publication.get("scope_policy_version")) not in READABLE_SCOPE_POLICY_VERSIONS:
             raise NewsUsageSnapshotConflictError(
                 "news usage scope policy does not match the application"
             )
@@ -425,46 +429,35 @@ class NewsUsageService:
                     ),
                 }
             )
-        records = read_canonical_roster_collection(projected)
-        if len(records.analytics_records) != len(projected):
-            raise NewsUsageSnapshotConflictError(
-                "referenced roster contains invalid rows"
-            )
-        for record in records.analytics_records:
-            structural = membership_for(
-                role=record.value.get("role"),
-                department=record.value.get("department", ""),
-                is_active=True,
-            )
-            if (
-                record.value.get("global_scope_enabled")
-                is not structural.global_enabled
-                or record.value.get("user_map_scope_enabled")
-                is not structural.user_map_enabled
-            ):
-                raise NewsUsageSnapshotConflictError(
-                    "referenced roster contains invalid scope flags"
-                )
-        scope_rows = [
-            record.value
-            for record in records.analytics_records
-            if record.value.get("is_active") is True
-            and record.value.get(f"{scope.value}_scope_enabled") is True
-        ]
+        policy_version = _text(publication.get("scope_policy_version"))
         try:
-            fingerprint = roster_fingerprint(
-                scope_rows,
-                diagnostic_fingerprint=diagnostic_fingerprints.pop(),
+            canonical_rows = validated_published_roster(
+                projected, policy_version=policy_version,
             )
         except ValueError as exc:
-            raise NewsUsageSnapshotConflictError(
-                "referenced roster receipt input is invalid"
-            ) from exc
-        if fingerprint != _text(publication.get(f"{scope.value}_roster_fingerprint")):
-            raise NewsUsageSnapshotConflictError(
-                "referenced roster fingerprint does not match publication"
-            )
-        return scope_rows
+            raise NewsUsageSnapshotConflictError(str(exc)) from exc
+        # A v1 global scope is not the v2 population. Validate both original
+        # receipts before deriving the current population from USER_MAP.
+        receipt_scopes = (
+            (AnalysisScope.GLOBAL, AnalysisScope.USER_MAP)
+            if policy_version == LEGACY_SCOPE_POLICY_VERSION else (scope,)
+        )
+        diagnostic_fingerprint = diagnostic_fingerprints.pop()
+        for receipt_scope in receipt_scopes:
+            try:
+                fingerprint = roster_fingerprint(
+                    published_scope_rows(projected, receipt_scope),
+                    diagnostic_fingerprint=diagnostic_fingerprint,
+                )
+            except ValueError as exc:
+                raise NewsUsageSnapshotConflictError(
+                    "referenced roster receipt input is invalid"
+                ) from exc
+            if fingerprint != _text(publication.get(f"{receipt_scope.value}_roster_fingerprint")):
+                raise NewsUsageSnapshotConflictError(
+                    "referenced roster fingerprint does not match publication"
+                )
+        return current_scope_rows(canonical_rows, scope)
 
     @staticmethod
     def _validate_events(
@@ -1162,7 +1155,7 @@ class NewsUsageService:
             )
             payload.update(
                 {
-                    "scopePolicyVersion": _text(
+                    "publicationScopePolicyVersion": _text(
                         publication.get("scope_policy_version")
                     ),
                     "rosterFingerprint": _text(
@@ -1213,7 +1206,12 @@ class NewsUsageService:
                 ),
                 publication_data_through=data_through,
                 source_service=configuration.source_service,
-                scope=_scope,
+                # Legacy global flags omitted 社員MR. Read the verified
+                # USER_MAP population, then apply the current cohort below.
+                scope=(AnalysisScope.USER_MAP if (
+                    _scope is AnalysisScope.GLOBAL
+                    and publication["scope_policy_version"] == LEGACY_SCOPE_POLICY_VERSION
+                ) else _scope),
                 roster_id=_roster_id,
                 area_key=_area_key,
             )
@@ -1284,7 +1282,8 @@ class NewsUsageService:
             "contractVersion": "news_usage_report_v1",
             "scope": "global",
             "cohort": SummaryCohort(cohort).value,
-            "scopePolicyVersion": _text(publication.get("scope_policy_version")),
+            "scopePolicyVersion": SCOPE_POLICY_VERSION,
+            "publicationScopePolicyVersion": _text(publication.get("scope_policy_version")),
             "rosterFingerprint": _text(
                 publication.get("global_roster_fingerprint")
             ),

@@ -185,6 +185,9 @@ class NewsUsageReportResponse(NewsUsageModel):
     contractVersion: Literal["news_usage_report_v1"]
     scope: Literal["global"]
     scopePolicyVersion: str
+    # Fingerprints identify the original publication; its policy can predate
+    # the effective scopePolicyVersion used to select the displayed users.
+    publicationScopePolicyVersion: str = ""
     rosterFingerprint: str
     contentFingerprint: str
     publishedRunId: str

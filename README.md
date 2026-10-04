@@ -106,6 +106,10 @@ PYTHONPATH=. .venv/bin/python scripts/import_monitor_users.py ../userlist.xlsx \
 同步逐用户事务提交并写审计，任一失败后重新比对可继续，不能把它当作全名单原子事务。
 保留原无 `--sync` 的 bootstrap 模式，其禁止覆盖既有不同记录。
 
-发布需协调 Monitor Web 和 Refresh Job 的同一版范围策略 `summary_department_v2`，
-并在同步名单后成功发布新的分析快照。旧策略快照不会被当成新范围使用。
+Monitor Web 支持读取 `summary_role_v1` 和 `summary_department_v2` 已发布快照。
+读取旧快照时先按原策略验证范围标志和指纹，再从已验证的用户范围派生 DM/HCS 筛选；
+Web 更新不要求 Refresh Job 同时完成更新，未知策略和损坏的快照仍拒绝读取。
+新增名单需完成 Firestore 同步、Refresh Job 更新和新快照发布后才会出现在分析页面。
+发布前应使用候选代码只读验证当前线上快照的全体、DM、HCS、用户明细和 News 接口，
+仅通过模拟 API 的浏览器测试或部署信息校验不足以确认数据可读。
 `team` 只进入用户管理 Firestore，不增加 BigQuery 的个人资料字段。
