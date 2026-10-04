@@ -181,6 +181,7 @@ class NewsUsageOrganizations(NewsUsageModel):
 
 
 class NewsUsageReportResponse(NewsUsageModel):
+    cohort: Literal["all", "dm", "hcs"] = "all"
     contractVersion: Literal["news_usage_report_v1"]
     scope: Literal["global"]
     scopePolicyVersion: str
@@ -252,6 +253,7 @@ class NewsUsageSocietyCategoryClicks(NewsUsageModel):
 
 
 class NewsUsageDashboardResponse(NewsUsageModel):
+    cohort: Literal["all", "dm", "hcs"] = "all"
     contractVersion: Literal["news_usage_dashboard_v1"]
     scope: Literal["global", "user_map"]
     rosterId: str

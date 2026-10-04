@@ -174,6 +174,76 @@ def test_create_user_derives_scope_from_department_and_never_from_labels() -> No
     )
 
 
+def test_hcs_team_roundtrip_edit_clear_and_transfer_preserve_user_identity() -> None:
+    manager, directory = service()
+    user = manager.create_user(
+        user_create(
+            name="HCS利用者", email="hcs@example.com", area="関西", workplace="大阪",
+            role="社員MR", department="MR（HCS）", mr_experience="20年以上", team=" 関西Ａ チーム ",
+        ),
+        actor="admin@example.com",
+    )
+    assert user["department"] == "MR(HCS)"
+    assert user["mr_experience"] == "20年以上"
+    assert user["team"] == "関西A チーム"
+    assert "team" in directory.audit[-1]["changed_fields"]
+    bound = manager.bind_chat_identity(user["roster_id"], chat_user_id="chat-hcs", user_id="subject-hcs")
+    updated = manager.update_user(
+        user["roster_id"], patch_for(bound, team="新チーム"), actor="admin@example.com",
+    )
+    assert updated["team"] == "新チーム"
+    assert updated["roster_id"] == user["roster_id"]
+    assert updated["user_id"] == "subject-hcs"
+    assert updated["chat_user_id"] == "chat-hcs"
+    cleared = manager.update_user(
+        user["roster_id"], patch_for(updated, team=""), actor="admin@example.com",
+    )
+    assert cleared["team"] == ""
+    filled = manager.update_user(
+        user["roster_id"], patch_for(cleared, team="関西チーム"), actor="admin@example.com",
+    )
+    transferred = manager.update_user(
+        user["roster_id"], patch_for(filled, department="DM専任"), actor="admin@example.com",
+    )
+    assert transferred["department"] == "MR(DM)"
+    assert transferred["team"] == ""
+    assert transferred["mr_experience"] == "20年以上"
+    assert transferred["user_id"] == "subject-hcs"
+    assert directory.audit[-1]["before"]["team"] == "関西チーム"
+    assert directory.audit[-1]["after"]["team"] == ""
+
+
+@pytest.mark.parametrize("department", ["MR(DM)", "DM専任", "ヘルスケア本社", "DM本社", "管理者"])
+def test_non_hcs_create_and_edit_never_save_submitted_team(department: str) -> None:
+    manager, _ = service()
+    user = manager.create_user(
+        user_create(
+            name="利用者", email="field@example.com", area="関西", workplace="大阪",
+            role="社員MR", department=department, team="入力不可のチーム",
+        ),
+        actor="admin@example.com",
+    )
+    assert user["team"] == ""
+    updated = manager.update_user(
+        user["roster_id"], patch_for(user, team="別のチーム"), actor="admin@example.com",
+    )
+    assert updated["team"] == ""
+
+
+def test_hcs_team_is_optional_and_legacy_department_is_canonicalized_on_edit() -> None:
+    manager, directory = service()
+    user = manager.create_user(
+        user_create(name="利用者", email="optional@example.com", area="関西", workplace="大阪", role="社員MR", department="MR(HCS)"),
+        actor="admin@example.com",
+    )
+    assert user["team"] == ""
+    directory.users[user["roster_id"]]["department"] = "DM専任"
+    directory.users[user["roster_id"]].pop("team")
+    updated = manager.update_user(user["roster_id"], patch_for(user, name="改名"), actor="admin@example.com")
+    assert updated["department"] == "MR(DM)"
+    assert updated["team"] == ""
+
+
 def test_duplicate_email_is_rejected_after_normalization() -> None:
     manager, _ = service()
     payload = user_create(

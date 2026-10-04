@@ -24,6 +24,7 @@ from app.jobs.project_firestore import (
 from app.jobs.rebuild_history import ANSWER_SCHEMA, QUESTION_SCHEMA
 from app.jobs.refresh_analytics import render_publish_sql, render_sql
 from app.settings import get_settings
+from app.domain.analysis_scopes import SCOPE_POLICY_VERSION
 from app.refresh_policy import REFRESH_POLICY
 from scripts.credential_preflight import approved_credential_path
 
@@ -58,7 +59,7 @@ def _publish_parameters(settings) -> list[Any]:
         bigquery.ScalarQueryParameter("lease_id", "STRING", "dry-run-lease"),
         bigquery.ScalarQueryParameter("expected_watermark", "TIMESTAMP", None),
         bigquery.ScalarQueryParameter(
-            "scope_policy_version", "STRING", "summary_role_v1"
+            "scope_policy_version", "STRING", SCOPE_POLICY_VERSION
         ),
         bigquery.ScalarQueryParameter(
             "global_roster_fingerprint", "STRING", "dry-run-global-roster"

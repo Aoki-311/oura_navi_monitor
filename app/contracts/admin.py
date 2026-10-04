@@ -21,6 +21,7 @@ class UserCreate(BaseModel):
     role: str = Field(min_length=1, max_length=80)
     department: Department
     mr_experience: str = Field(default="-", max_length=80)
+    team: str = Field(default="", max_length=120)
     label_ids: list[str] = Field(default_factory=list, max_length=30)
     is_active: bool = True
     expected_scope_policy_version: str = Field(min_length=1, max_length=80)
@@ -38,6 +39,7 @@ class UserPatch(BaseModel):
     role: str | None = Field(default=None, min_length=1, max_length=80)
     department: Department | None = None
     mr_experience: str | None = Field(default=None, max_length=80)
+    team: str | None = Field(default=None, max_length=120)
     label_ids: list[str] | None = Field(default=None, max_length=30)
     is_active: bool | None = None
     expected_updated_at: str = Field(default="", max_length=80)
@@ -98,6 +100,7 @@ class UserView(BaseModel):
     role: str
     department: str
     mrExperience: str
+    team: str
     labelIds: list[str]
     isActive: bool
     identityBound: bool

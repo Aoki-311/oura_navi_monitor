@@ -3,16 +3,24 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Final, Iterable
+from typing import Final, Iterable, Mapping
 
 
 class Department(StrEnum):
     """Closed roster departments used for administration and USER_MAP access."""
 
-    DM_FIELD = "DM専任"
+    DM_FIELD = "MR(DM)"
+    HCS_FIELD = "MR(HCS)"
     HEALTHCARE_HQ = "ヘルスケア本社"
     DM_HQ = "DM本社"
     ADMIN = "管理者"
+
+    @classmethod
+    def _missing_(cls, value: object) -> Department | None:
+        normalized = unicodedata.normalize("NFKC", str(value or "")).strip()
+        if normalized == "DM専任":
+            return cls.DM_FIELD
+        return next((member for member in cls if member.value == normalized), None)
 
 
 class AnalysisScope(StrEnum):
@@ -20,10 +28,19 @@ class AnalysisScope(StrEnum):
     USER_MAP = "user_map"
 
 
-SUMMARY_ROLES: Final[tuple[str, ...]] = ("本社MR", "コントラクトMR")
-SCOPE_POLICY_VERSION: Final[str] = "summary_role_v1"
+class SummaryCohort(StrEnum):
+    ALL = "all"
+    DM = "dm"
+    HCS = "hcs"
+
+
+SUMMARY_ROLES: Final[tuple[str, ...]] = ("社員MR", "本社MR", "コントラクトMR")
+SCOPE_POLICY_VERSION: Final[str] = "summary_department_v2"
+_SUMMARY_DEPARTMENTS: Final[frozenset[Department]] = frozenset(
+    {Department.DM_FIELD, Department.HCS_FIELD}
+)
 _USER_MAP_DEPARTMENTS: Final[frozenset[Department]] = frozenset(
-    {Department.DM_FIELD, Department.HEALTHCARE_HQ, Department.DM_HQ}
+    {*_SUMMARY_DEPARTMENTS, Department.HEALTHCARE_HQ, Department.DM_HQ}
 )
 
 
@@ -61,9 +78,9 @@ def evaluate_membership(
 ) -> ScopeEvaluation:
     """Safely derive scopes for both valid and legacy roster rows.
 
-    Summary membership is owned by the current canonical role.  Department
-    remains the owner of USER_MAP/admin eligibility.  Monitor labels are
-    annotations only and never grant either scope.
+    Summary membership requires a field department and an exact MR role.
+    Headquarters remain eligible for USER_MAP. Monitor labels are annotations
+    only and never grant either scope.
     """
 
     del label_ids
@@ -83,7 +100,9 @@ def evaluate_membership(
         and resolved_department in _USER_MAP_DEPARTMENTS
     )
     global_enabled = bool(
-        user_map_enabled and normalized_role in SUMMARY_ROLES
+        user_map_enabled
+        and resolved_department in _SUMMARY_DEPARTMENTS
+        and normalized_role in SUMMARY_ROLES
     )
     return ScopeEvaluation(
         membership=ScopeMembership(
@@ -111,6 +130,26 @@ def membership_for(
         is_active=is_active,
         label_ids=label_ids,
     ).membership
+
+
+def summary_cohort_matches(
+    row: Mapping[str, object],
+    cohort: SummaryCohort | str = SummaryCohort.ALL,
+) -> bool:
+    """Select a summary cohort from the same governed roster membership."""
+
+    selected = SummaryCohort(cohort)
+    evaluation = evaluate_membership(
+        role=row.get("role"),
+        department=str(row.get("department") or ""),
+        is_active=row.get("is_active") is True,
+    )
+    if not evaluation.membership.global_enabled:
+        return False
+    return selected is SummaryCohort.ALL or evaluation.department is {
+        SummaryCohort.DM: Department.DM_FIELD,
+        SummaryCohort.HCS: Department.HCS_FIELD,
+    }[selected]
 
 
 def display_area(area_key: str) -> str:

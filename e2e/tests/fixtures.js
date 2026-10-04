@@ -4,7 +4,7 @@ const freshness = {
 };
 const scopeMetadata = (scope) => ({
   scope,
-  scopePolicyVersion: "summary_role_v1",
+  scopePolicyVersion: "summary_department_v2",
   rosterFingerprint: "roster-fingerprint-1",
   contentFingerprint: "content-fingerprint-1",
   publishedRunId: "run-20260823-01",
@@ -100,8 +100,8 @@ const overview = {
 };
 
 const users = { ...scopeMetadata("user_map"), contentDiagnostics: completeContentDiagnostics, scopeUserCount: 80, freshness, users: [
-  { rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", role: "本社MR", department: "DM専任", workplace: "大阪", area: "関西", areaKey: "関西", labels: [{ labelId: "label_1", name: "重点", color: "#23d28f" }], lastActiveAt: "2026-08-23T01:00:00Z", activeDays7: 4, userMessageCount7: 12, activeDaysInPeriod: 4, userMessageCountInPeriod: 12, completeDelivery: measurement(.92, 11, 12), activity: "high", activityLabel: "高アクティブ" },
-  { rosterId: "roster_2", name: "佐藤 花子", email: "user2@example.com", role: "コントラクトMR", department: "DM本社", workplace: "虎ノ門", area: "本社", areaKey: "本社・虎ノ門", labels: [], lastActiveAt: "", activeDays7: 0, userMessageCount7: 0, activeDaysInPeriod: 0, userMessageCountInPeriod: 0, completeDelivery: measurement(null, 0, 0), activity: "dormant", activityLabel: "休眠ユーザー" },
+  { rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", role: "本社MR", department: "MR(DM)", workplace: "大阪", area: "関西", areaKey: "関西", labels: [{ labelId: "label_1", name: "重点", color: "#23d28f" }], lastActiveAt: "2026-08-23T01:00:00Z", activeDays7: 4, userMessageCount7: 12, activeDaysInPeriod: 4, userMessageCountInPeriod: 12, completeDelivery: measurement(.92, 11, 12), activity: "high", activityLabel: "高アクティブ" },
+  { rosterId: "roster_2", name: "佐藤 花子", email: "user2@example.com", role: "コントラクトMR", department: "MR(DM)", workplace: "虎ノ門", area: "本社", areaKey: "本社・虎ノ門", labels: [], lastActiveAt: "", activeDays7: 0, userMessageCount7: 0, activeDaysInPeriod: 0, userMessageCountInPeriod: 0, completeDelivery: measurement(null, 0, 0), activity: "dormant", activityLabel: "休眠ユーザー" },
 ] };
 const overviewUsers = { ...users, ...scopeMetadata("global"), scopeUserCount: 69 };
 
@@ -115,7 +115,7 @@ const detail = {
   contentDiagnostics: completeContentDiagnostics,
   freshness,
   analyticsQuality: analyticsQuality(18, 20),
-  profile: { rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", area: "関西", workplace: "大阪", role: "本社MR", department: "DM専任", mrExperience: "10年", labels: users.users[0].labels },
+  profile: { rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", area: "関西", workplace: "大阪", role: "本社MR", department: "MR(DM)", mrExperience: "10年", labels: users.users[0].labels },
   summary: { lastActiveAt: "2026-08-23T01:00:00Z", activeDays: 5, questions: 20, questionsPerActiveDay: 4, completeDelivery: measurement(.9, 18, 20), p95Latency: { valueMs: 72000, ...measurement(null, 18, 20) } },
   comparisons: {
     area: { label: "関西", peerCount: 10, averageQuestions: 8.2, averageActiveDays: 3.1, averageCompleteDelivery: measurement(.84, 8, 10) },
@@ -137,7 +137,7 @@ const detail = {
 const newsUsage = {
   contractVersion: "news_usage_dashboard_v1", scope: "global", rosterId: "",
   windowStart: "2026-08-16T15:00:00Z", windowEnd: "2026-08-23T01:00:00Z", windowTimezone: "Asia/Tokyo",
-  publishedRunId: "news_pub_1", rosterFingerprint: "roster_fixture", contentFingerprint: "news_fixture", scopePolicyVersion: "summary_role_v1",
+  publishedRunId: "news_pub_1", rosterFingerprint: "roster_fixture", contentFingerprint: "news_fixture", scopePolicyVersion: "summary_department_v2",
   state: { availability: "available", freshness: "fresh" },
   totals: { tabViews: 10, newsTabViews: 6, societyTabViews: 4, contentClicks: 14, newsContentClicks: 9, societyContentClicks: 5, newsDomesticClicks: 6, newsOverseasClicks: 3, newsUnknownGeographyClicks: 0 },
   trend: [{ date: "2026-08-23", tabViews: 10, newsTabViews: 6, societyTabViews: 4, contentClicks: 14, newsContentClicks: 9, societyContentClicks: 5 }],
@@ -146,9 +146,9 @@ const newsUsage = {
 };
 
 const conversations = { status: "ready", conversations: [{ conversationId: "conv_1", title: "製品情報の確認", messageCount: 4, updatedAt: "2026-08-23T01:00:00Z", updatedAtJst: "2026-08-23 10:00:00" }] };
-const managedUsers = { users: [{ rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", area: "関西", areaKey: "関西", workplace: "大阪", role: "本社MR", department: "DM専任", mrExperience: "10年", labelIds: ["label_1"], isActive: true, identityBound: true, globalScopeEnabled: true, userMapScopeEnabled: true, scopePolicyVersion: "summary_role_v1", rosterIssues: [], updatedAt: "2026-08-23T01:00:00Z", updatedBy: "admin@example.com" }] };
+const managedUsers = { users: [{ rosterId: "roster_1", name: "山田 太郎", email: "user1@example.com", area: "関西", areaKey: "関西", workplace: "大阪", role: "本社MR", department: "MR(DM)", mrExperience: "10年", labelIds: ["label_1"], isActive: true, identityBound: true, globalScopeEnabled: true, userMapScopeEnabled: true, scopePolicyVersion: "summary_department_v2", rosterIssues: [], updatedAt: "2026-08-23T01:00:00Z", updatedBy: "admin@example.com" }] };
 const managedLabels = { labels: [{ labelId: "label_1", name: "重点", color: "#23d28f", usageCount: 1, isActive: true, labelIssues: [], updatedAt: "2026-08-23T01:00:00Z", updatedBy: "admin@example.com" }] };
-const managementMetadata = { areas: ["北海道東北", "関東A", "関東B", "首都圏A", "首都圏B", "東海北陸", "関西", "中四国", "九州", "本社"], workplaces: ["大阪", "虎ノ門"], roles: ["本社MR", "コントラクトMR", "本社メンバー"], summaryRoles: ["本社MR", "コントラクトMR"], departments: ["DM専任", "ヘルスケア本社", "DM本社", "管理者"], scopePolicyVersion: "summary_role_v1", labelColors: ["#23d28f", "#386dff", "#ffb340", "#ff5b74", "#7c5cff", "#27d9d2", "#5f6285"] };
+const managementMetadata = { areas: ["北海道東北", "関東A", "関東B", "首都圏A", "首都圏B", "東海北陸", "関西", "中四国", "九州", "本社"], workplaces: ["大阪", "虎ノ門"], roles: ["社員MR", "本社MR", "コントラクトMR", "本社メンバー"], summaryRoles: ["社員MR", "本社MR", "コントラクトMR"], departments: ["MR(DM)", "MR(HCS)", "ヘルスケア本社", "DM本社", "管理者"], scopePolicyVersion: "summary_department_v2", labelColors: ["#23d28f", "#386dff", "#ffb340", "#ff5b74", "#7c5cff", "#27d9d2", "#5f6285"] };
 
 const canonicalText = (value) => String(value ?? "").normalize("NFKC").trim().replace(/\s+/gu, " ");
 const canonicalEmail = (value) => String(value ?? "").normalize("NFKC").trim().toLowerCase()
@@ -160,7 +160,7 @@ function makeAnalyticsUsers(count = 80) {
     name: `利用者 ${String(index + 1).padStart(2, "0")}`,
     email: `user${index + 1}@example.com`,
     role: index % 5 === 0 ? "コントラクトMR" : "本社MR",
-    department: index % 5 === 0 ? "DM本社" : "DM専任",
+    department: "MR(DM)",
     workplace: index % 5 === 0 ? "虎ノ門" : "大阪",
     area: index % 5 === 0 ? "本社" : "関西",
     areaKey: index % 5 === 0 ? "本社・虎ノ門" : "関西",
@@ -185,14 +185,14 @@ function makeManagedUsers(count = 83) {
     areaKey: index % 5 === 0 ? "本社・虎ノ門" : "関西",
     workplace: index % 5 === 0 ? "虎ノ門" : "大阪",
     role: index % 5 === 0 ? "本社メンバー" : "本社MR",
-    department: index >= 80 ? "管理者" : (index % 5 === 0 ? "DM本社" : "DM専任"),
+    department: index >= 80 ? "管理者" : (index % 5 === 0 ? "DM本社" : "MR(DM)"),
     mrExperience: index % 5 === 0 ? "-" : "10年",
     labelIds: index % 4 === 0 ? ["label_1"] : [],
     isActive: index % 11 !== 0,
     identityBound: index % 2 === 0,
     globalScopeEnabled: index < 80 && index % 5 !== 0 && index % 11 !== 0,
     userMapScopeEnabled: index < 80 && index % 11 !== 0,
-    scopePolicyVersion: "summary_role_v1",
+    scopePolicyVersion: "summary_department_v2",
     rosterIssues: [],
     updatedAt: "2026-08-23T01:00:00Z",
     updatedBy: "admin@example.com",
@@ -249,11 +249,12 @@ async function installApiMocks(page, {
   await page.route(/\/api\/(analytics|trace|admin|export|news-usage)\//, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    const cohort = url.searchParams.get("cohort") || "all";
     requests.push({ method: request.method(), path: url.pathname, search: url.search, body: request.postDataJSON?.() });
     if (url.pathname.startsWith("/api/news-usage/")) {
       if (failNewsUsage) return route.fulfill({ status: 503, json: { detail: "News usage unavailable" } });
       const userScope = url.pathname.startsWith("/api/news-usage/users/");
-      return route.fulfill({ json: { ...newsUsage, scope: userScope ? "user_map" : "global", rosterId: userScope ? url.pathname.split("/").at(-1) : "", ...newsUsageOverride } });
+      return route.fulfill({ json: { ...newsUsage, cohort, scope: userScope ? "user_map" : "global", rosterId: userScope ? url.pathname.split("/").at(-1) : "", ...newsUsageOverride } });
     }
     if (["/api/analytics/overview", "/api/analytics/environment", "/api/analytics/trend"].includes(url.pathname)) {
       const preset = url.searchParams.get("preset") || "last_7d";
@@ -261,15 +262,15 @@ async function installApiMocks(page, {
       if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
       return failOverview
         ? route.fulfill({ status: 503, json: { detail: { code: "source_unavailable", message: "集計停止" } } })
-        : route.fulfill({ json: { ...overview, ...overviewOverride, ...(overviewByPreset[preset] || {}) } });
+        : route.fulfill({ json: { ...overview, cohort, ...overviewOverride, ...(overviewByPreset[preset] || {}) } });
     }
-    if (url.pathname === "/api/analytics/regions") return route.fulfill({ json: { ...regions, ...regionsOverride } });
+    if (url.pathname === "/api/analytics/regions") return route.fulfill({ json: { ...regions, cohort, ...regionsOverride } });
     if (url.pathname === "/api/analytics/overview/users") {
       const query = url.searchParams.get("q") || "";
       const delay = Number(overviewUsersDelayByQuery[query] || 0);
       if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
       if (failOverviewUsers) return route.fulfill({ status: 503, json: { detail: { code: "source_unavailable", message: "ユーザー集計停止" } } });
-      return route.fulfill({ json: { ...overviewUsers, ...usersOverride, ...(overviewUsersByQuery[query] || {}) } });
+      return route.fulfill({ json: { ...overviewUsers, cohort, ...usersOverride, ...(overviewUsersByQuery[query] || {}) } });
     }
     if (url.pathname === "/api/analytics/users") return route.fulfill({ json: { ...users, ...usersOverride } });
     if (url.pathname === "/api/analytics/users/roster_1") {
@@ -295,9 +296,9 @@ async function installApiMocks(page, {
       const body = request.postDataJSON();
       const userMapScopeEnabled = body.is_active && body.department !== "管理者";
       return route.fulfill({ status: 200, json: {
-        globalScopeEnabled: userMapScopeEnabled && ["本社MR", "コントラクトMR"].includes(body.role),
+        globalScopeEnabled: userMapScopeEnabled && ["MR(DM)", "MR(HCS)"].includes(body.department) && ["社員MR", "本社MR", "コントラクトMR"].includes(body.role),
         userMapScopeEnabled,
-        scopePolicyVersion: "summary_role_v1",
+        scopePolicyVersion: "summary_department_v2",
       } });
     }
     if (url.pathname.startsWith("/api/admin/")) {
@@ -314,12 +315,13 @@ async function installApiMocks(page, {
         workplace: canonicalText(body.workplace),
         role: canonicalText(body.role),
         department: canonicalText(body.department),
+        team: body.department === "MR(HCS)" ? canonicalText(body.team) : "",
         mrExperience: canonicalText(body.mr_experience) || "-",
         labelIds: Object.hasOwn(body, "label_ids") ? [...body.label_ids] : [...(current.labelIds || [])],
         isActive: body.is_active,
-        globalScopeEnabled: body.is_active && body.department !== "管理者" && ["本社MR", "コントラクトMR"].includes(body.role),
+        globalScopeEnabled: body.is_active && ["MR(DM)", "MR(HCS)"].includes(body.department) && ["社員MR", "本社MR", "コントラクトMR"].includes(body.role),
         userMapScopeEnabled: body.is_active && body.department !== "管理者",
-        scopePolicyVersion: "summary_role_v1",
+        scopePolicyVersion: "summary_department_v2",
         rosterIssues: [],
         updatedAt: updatedAt(),
         updatedBy: "admin@example.com",

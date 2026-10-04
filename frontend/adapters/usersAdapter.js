@@ -1,5 +1,5 @@
 import { analyticsMetadataModel, coverageModel, measurementModel, scopeMetadataModel } from "./overviewAdapter.js";
-import { isSummaryRole } from "../contracts/analysisScopes.js";
+import { canonicalDepartment, isSummaryUser } from "../contracts/analysisScopes.js";
 import { contentDiagnosticsModel as parseContentDiagnostics } from "./contentDiagnosticsAdapter.js";
 
 const ACTIVITY_KEYS = new Set(["high", "middle", "low", "dormant"]);
@@ -63,10 +63,10 @@ export function usersModel(payload, expectedScope = "user_map") {
   const issues = [];
   let isolatedSummaryRoleCount = 0;
   const users = payload.users.flatMap((row, index) => {
-    if (expectedScope === "global" && !isSummaryRole(row?.role)) {
+    if (expectedScope === "global" && !isSummaryUser(row)) {
       isolatedSummaryRoleCount += 1;
       const role = typeof row?.role === "string" && row.role.trim() ? row.role : "未取得";
-      issues.push(`${index + 1}行目を表示できません: 全体サマリー対象外の役割「${role}」を検出しました。`);
+      issues.push(`${index + 1}行目を表示できません: 全体サマリー対象外の役割・部門「${role}・${optionalText(row?.department)}」を検出しました。`);
       return [];
     }
     try {
@@ -78,7 +78,7 @@ export function usersModel(payload, expectedScope = "user_map") {
       if (activeDays7 == null || userMessageCount7 == null) rowIssues.push("直近7日の利用値は未計測です。");
       const workplace = optionalText(row?.workplace);
       const role = optionalText(row?.role);
-      const department = optionalText(row?.department);
+      const department = canonicalDepartment(optionalText(row?.department));
       if (!workplace || !role || !department) rowIssues.push("旧形式のため役割・部門・勤務地の一部を確認できません。");
       let completeDelivery = null;
       try { completeDelivery = measurementModel(row?.completeDelivery); } catch (error) {
@@ -170,7 +170,7 @@ export function userProfileModel(payload) {
     area: legacyText(profile.area, "エリア"),
     workplace: legacyText(profile.workplace, "勤務地"),
     role: legacyText(profile.role, "役割"),
-    department: legacyText(profile.department, "部門"),
+    department: canonicalDepartment(legacyText(profile.department, "部門")),
     mrExperience: legacyText(profile.mrExperience, "MR経験"),
     labels: labels(profile.labels),
     issues,

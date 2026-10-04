@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from app.dependencies import get_user_management_service
+from app.domain.analysis_scopes import SCOPE_POLICY_VERSION
 from app.domain.management_errors import ManagementError
 from app.main import app
 from app.routers.admin import _label_payload, _user_payload
@@ -36,13 +37,13 @@ class _AdminService:
 
     def create_user(self, _payload, *, actor):
         assert actor == "admin@example.com"
-        if _payload.expected_scope_policy_version != "summary_role_v1":
+        if _payload.expected_scope_policy_version != SCOPE_POLICY_VERSION:
             raise ManagementError("scope_policy_conflict", "scope policy changed")
         return self._user()
 
     def update_user(self, _roster_id, payload, *, actor):
         assert actor == "admin@example.com"
-        if payload.expected_scope_policy_version != "summary_role_v1":
+        if payload.expected_scope_policy_version != SCOPE_POLICY_VERSION:
             raise ManagementError("scope_policy_conflict", "scope policy changed")
         return self._user()
 
@@ -55,9 +56,9 @@ class _AdminService:
             "areas": ["関西"],
             "workplaces": ["大阪"],
             "roles": ["本社MR"],
-            "summaryRoles": ["本社MR", "コントラクトMR"],
-            "departments": ["DM専任", "ヘルスケア本社", "DM本社", "管理者"],
-            "scopePolicyVersion": "summary_role_v1",
+            "summaryRoles": ["社員MR", "本社MR", "コントラクトMR"],
+            "departments": ["MR(DM)", "MR(HCS)", "ヘルスケア本社", "DM本社", "管理者"],
+            "scopePolicyVersion": SCOPE_POLICY_VERSION,
         }
 
     @staticmethod
@@ -65,7 +66,7 @@ class _AdminService:
         return {
             "globalScopeEnabled": True,
             "userMapScopeEnabled": True,
-            "scopePolicyVersion": "summary_role_v1",
+            "scopePolicyVersion": SCOPE_POLICY_VERSION,
         }
 
     def delete_label(self, label_id, *, actor, expected_updated_at):
@@ -98,7 +99,7 @@ def test_admin_contract_rejects_scope_flags_and_translates_label_conflict() -> N
         "workplace": "大阪",
         "role": "本社MR",
         "department": "DM専任",
-        "expected_scope_policy_version": "summary_role_v1",
+        "expected_scope_policy_version": SCOPE_POLICY_VERSION,
     }
     try:
         response = client.get("/api/admin/users", headers=headers)
@@ -111,9 +112,9 @@ def test_admin_contract_rejects_scope_flags_and_translates_label_conflict() -> N
         metadata = client.get("/api/admin/metadata", headers=headers)
         assert metadata.status_code == 200
         assert metadata.json()["areas"] == ["関西"]
-        assert metadata.json()["departments"] == ["DM専任", "ヘルスケア本社", "DM本社", "管理者"]
-        assert metadata.json()["summaryRoles"] == ["本社MR", "コントラクトMR"]
-        assert metadata.json()["scopePolicyVersion"] == "summary_role_v1"
+        assert metadata.json()["departments"] == ["MR(DM)", "MR(HCS)", "ヘルスケア本社", "DM本社", "管理者"]
+        assert metadata.json()["summaryRoles"] == ["社員MR", "本社MR", "コントラクトMR"]
+        assert metadata.json()["scopePolicyVersion"] == SCOPE_POLICY_VERSION
         assert "departmentScopes" not in metadata.json()
 
         preview = client.post(
@@ -126,14 +127,14 @@ def test_admin_contract_rejects_scope_flags_and_translates_label_conflict() -> N
 
         created = client.post("/api/admin/users", json=user_payload, headers=headers)
         assert created.status_code == 201
-        assert created.json()["scopePolicyVersion"] == "summary_role_v1"
+        assert created.json()["scopePolicyVersion"] == SCOPE_POLICY_VERSION
 
         updated = client.patch(
             "/api/admin/users/roster_1",
             json={
                 "name": "更新後",
                 "expected_updated_at": "2026-08-24T00:00:00+00:00",
-                "expected_scope_policy_version": "summary_role_v1",
+                "expected_scope_policy_version": SCOPE_POLICY_VERSION,
             },
             headers=headers,
         )
@@ -184,6 +185,42 @@ def test_management_payload_uses_document_id_to_expose_a_repairable_bad_roster()
 
     assert payload["rosterId"] == "firestore_doc"
     assert payload["rosterIssues"] == ["missing_roster_id"]
+
+
+def test_hcs_create_contract_accepts_team_and_returns_it_with_canonical_department() -> None:
+    class HcsService(_AdminService):
+        def __init__(self):
+            super().__init__()
+            self.value = super()._user()
+
+        def _user(self):
+            return self.value
+
+        def create_user(self, payload, *, actor):
+            assert actor == "admin@example.com"
+            self.value.update({"role": payload.role, "department": payload.department.value, "team": payload.team})
+            return self.value
+
+    service = HcsService()
+    app.dependency_overrides[get_settings] = _settings
+    app.dependency_overrides[get_user_management_service] = lambda: service
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/admin/users",
+            headers={"x-monitor-admin-email": "admin@example.com"},
+            json={
+                "name": "利用者", "email": "user@example.com", "area": "関西", "workplace": "大阪",
+                "role": "社員MR", "department": "MR（HCS）", "team": "関西チーム",
+                "expected_scope_policy_version": SCOPE_POLICY_VERSION,
+            },
+        )
+        assert response.status_code == 201
+        assert response.json()["team"] == "関西チーム"
+        assert response.json()["department"] == "MR(HCS)"
+        assert response.json()["globalScopeEnabled"] is True
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_management_api_keeps_all_duplicate_identity_rows_visible_for_repair() -> None:
@@ -278,7 +315,7 @@ def test_user_mutation_response_is_resolved_from_the_full_post_write_snapshot() 
                 "workplace": "大阪",
                 "role": "本社MR",
                 "department": "DM専任",
-                "expected_scope_policy_version": "summary_role_v1",
+                "expected_scope_policy_version": SCOPE_POLICY_VERSION,
             },
             headers={"x-monitor-admin-email": "admin@example.com"},
         )
@@ -287,7 +324,7 @@ def test_user_mutation_response_is_resolved_from_the_full_post_write_snapshot() 
             json={
                 "name": "更新後",
                 "expected_updated_at": "2026-08-24T00:00:00+00:00",
-                "expected_scope_policy_version": "summary_role_v1",
+                "expected_scope_policy_version": SCOPE_POLICY_VERSION,
             },
             headers={"x-monitor-admin-email": "admin@example.com"},
         )
@@ -318,7 +355,7 @@ def test_user_mutation_never_falls_back_when_post_write_target_is_missing() -> N
                 "workplace": "大阪",
                 "role": "本社MR",
                 "department": "DM専任",
-                "expected_scope_policy_version": "summary_role_v1",
+                "expected_scope_policy_version": SCOPE_POLICY_VERSION,
             },
             headers={"x-monitor-admin-email": "admin@example.com"},
         )

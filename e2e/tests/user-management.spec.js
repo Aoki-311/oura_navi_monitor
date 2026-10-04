@@ -17,7 +17,7 @@ test("user management edits roster fields, labels and active state without scope
     label_ids: ["label_1"],
     is_active: true,
     expected_updated_at: "2026-08-23T01:00:00Z",
-    expected_scope_policy_version: "summary_role_v1",
+    expected_scope_policy_version: "summary_department_v2",
   });
 });
 
@@ -56,7 +56,7 @@ for (const repairCase of [
     await page.locator('select[name="area"]').selectOption("関西");
     await page.locator('select[name="role"]').selectOption("本社MR");
     expect(requests.some((row) => row.path === "/api/admin/scope-preview")).toBeFalsy();
-    await page.locator('select[name="department"]').selectOption("DM専任");
+    await page.locator('select[name="department"]').selectOption("MR(DM)");
     await expect(page.locator("#scopeImpact")).toContainText("全体サマリーとユーザー分析");
     await expect(page.locator("#userForm").getByRole("button", { name: "保存" })).toBeEnabled();
   });
@@ -83,7 +83,7 @@ test("a mismatched save response becomes committed-unverified and never repeats 
   await page.getByRole("button", { name: "確認を再試行" }).click();
   await expect(page.locator("#userFormError")).toContainText("保存結果を確認できません");
   expect(patchCount).toBe(1);
-  expect(updateBody.expected_scope_policy_version).toBe("summary_role_v1");
+  expect(updateBody.expected_scope_policy_version).toBe("summary_department_v2");
 });
 
 test("role changes recompute summary membership through the server policy", async ({ page }) => {

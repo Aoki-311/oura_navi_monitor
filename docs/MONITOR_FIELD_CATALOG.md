@@ -29,8 +29,9 @@ Monitor 专用 Firestore 与受 IAP 保护的 API 中出现，不进入分析日
 | `area_key` | SVG 联动使用的内部地区键 | 后端由 area/workplace 生成 | 地图着色和点击，不展示给用户 |
 | `workplace` | Excel 的 `勤務地` | 名单，页面现用 | 个人工作地点 |
 | `role` | Excel 的角色 | 名单，页面现用 | 同角色比较、活性度堆叠图 |
-| `department` | `DM専任`、`ヘルスケア本社`、`DM本社` 或 `管理者` | 名单，页面现用 | 决定用户分析/地图的非管理员资格；不能单独决定 Summary |
+| `department` | `MR(DM)`、`MR(HCS)`、`ヘルスケア本社`、`DM本社` 或 `管理者` | 名单，兼容旧 `DM専任` | 与角色共同决定 Summary；决定 DM/HCS tab 和用户分析资格 |
 | `mr_experience` | MR 经历；本社人员显示 `-` | 名单，页面现用 | 个人画像和后续分组 |
+| `team` | HCS 的チーム；仅 HCS 可填写，可留空 | Excel I 列/用户管理，Firestore 保存 | 管理列表和编辑读回；非 HCS 为空，不进入 BQ |
 | `label_ids` | 这名员工在 Monitor 使用的标签 | 用户管理，页面现用 | Chip 展示；不能改变 scope/权限 |
 | `is_active` | 当前是否仍计入有效名单 | 用户管理，页面现用 | 分母、休眠用户、停用保留历史 |
 | `updated_at` | 名单最后修改时间 | 用户管理 | 管理审计 |
@@ -38,13 +39,14 @@ Monitor 专用 Firestore 与受 IAP 保护的 API 中出现，不进入分析日
 
 名单范围机械派生：
 
-- `global_scope_enabled`：是否为有效名单且角色精确为 `本社MR` 或 `コントラクトMR`，从而进入全体 Summary；
+- `global_scope_enabled`：是否为有效的 MR(DM)/MR(HCS) 名单，且角色精确为 `社員MR`、`本社MR` 或 `コントラクトMR`，从而进入全体 Summary；
 - `user_map_scope_enabled`：是否为有效的非管理员名单用户，从而进入用户分析/地图/详细；
 - `is_admin`：部门是否为名单中的 `管理者`，只用于排除分析，不代表 IAP 权限。
 
 这三项只存在 BigQuery 小型 `user_scope` 投影，不在前端提供编辑开关。Summary flag
-由规范化角色、用户分析资格和 `is_active` 共同派生；部门只拥有用户分析/地图的结构性
-资格。这样停用用户的既有事实仍可重建，但不会继续显示在当前分析名单里。分析标签永远
+由规范化角色、DM/HCS 部門和 `is_active` 共同派生；策略版本为 `summary_department_v2`。
+`cohort=all|dm|hcs` 在同一已发布快照中按部門筛选，作用于整页及导出。
+这样停用用户的既有事实仍可重建，但不会继续显示在当前分析名单里。分析标签永远
 不能授予或移除这两个范围。
 
 ---

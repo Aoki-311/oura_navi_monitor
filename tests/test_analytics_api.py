@@ -33,7 +33,7 @@ def _content_diagnostics():
 def _scope(scope: str) -> dict:
     return {
         "scope": scope,
-        "scopePolicyVersion": "summary_role_v1",
+        "scopePolicyVersion": "summary_department_v2",
         "rosterFingerprint": f"roster-{scope}",
         "contentFingerprint": f"content-{scope}",
         "publishedRunId": "run-1",
@@ -161,7 +161,7 @@ class FakeAnalyticsService:
                 "area": "関西",
                 "workplace": "大阪",
                 "role": "本社MR",
-                "department": "DM専任",
+                "department": "MR(DM)",
                 "mrExperience": "8年",
                 "labels": [],
             },

@@ -9,6 +9,11 @@ LCS RAG APP 专用的用户使用数据分析平台。主导航只保留：
 本仓库现在采用一套未版本化的正式契约：没有第二套 dashboard、旧 API
 fallback、旧 BigQuery 读取链或关键词分类器。
 
+全体サマリー标题旁提供 `全体MR`、`MR(DM)`、`MR(HCS)` 三个筛选标签。
+`cohort=all|dm|hcs` 与日期、地域共同作用于整页指标及导出。全体 MR 是有效的
+DM/HCS MR 合集，不包含本社或管理员。用户管理中的 `チーム` 仅 HCS 可填写，
+允许留空，切换到其他部門时清空；DM/HCS 都保留 MR 经历。
+
 ## 文档入口
 
 - [最终产品与数据规范](docs/OURA_NAVI_MONITOR_FINAL_SPEC.md)
@@ -65,7 +70,7 @@ MONITOR_ADMIN_ALLOWLIST=2401145@tc.terumo.co.jp \
 
 - 名单姓名、邮箱和标签只保存在 Monitor 专用 Firestore 集合；分析事件和
   BigQuery 事实表只使用 LCS 已验证登录 `user_id`，不保存邮箱或问答正文。
-- 标签只影响 Monitor 展示，不能改变 69/80 范围或 IAP 权限。
+- 标签只影响 Monitor 展示，不能改变 MR/用户分析范围或 IAP 权限。
 - 仓库修改不等于 BigQuery、Firestore、Logging、IAM、Scheduler、Cloud Run
   或流量已经改变。
 - 历史原始来源 `run_googleapis_com_requests`、stdout、stderr 与 LCS Firestore
@@ -73,3 +78,34 @@ MONITOR_ADMIN_ALLOWLIST=2401145@tc.terumo.co.jp \
   才能删除；它的旧成功标志不会迁移成“完整交付率”。
 - 构建成功、候选 revision、IAP 登录验收、业务验收和生产流量是六个不同
   状态，不能互相代替。
+
+## 用户名单更新
+
+`scripts/import_monitor_users.py` 按 A:G 标题识别唯一名单 sheet，兼容旧工作表名和
+新版 `Sheet1`，I 列 `HCSチーム` 保存到 `team`。G 列识别 `MR(DM)`、`MR(HCS)`
+及全角括号；旧 `MR`/`DM専任` 仍对应 DM。新版本社/管理员的 `東京 + 虎ノ門`
+在导入时沿用已有 `本社・虎ノ門` 地区身份，field 地区不推断。
+
+默认仅核对工作簿，不联网。重复邮箱必须用 `--resolve-duplicate 'EMAIL=MR(HCS)'`
+等明确选择其中一个部門，不能自动保留最后一行。2026-10-04 名单按用户确认排除
+第 36 行、保留第 119 行 HCS 记录后，是 163 名用户，其中 MR 139 名
+（DM 64、HCS 75），用户分析 160 名。人数是本次输入核对结果，不是运行时常量。
+
+既有名单更新使用 `--sync`，按规范化邮箱匹配原记录，保留 roster ID、已绑定登录
+身份、标签、启停状态和创建时间。未出现在工作簿中的用户保持原状。先读当前名单：
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/import_monitor_users.py ../userlist.xlsx \
+  --resolve-duplicate 'EMAIL=MR(HCS)' --sync --compare-current \
+  --credential-file '<APPROVED_CREDENTIAL_PATH>'
+```
+
+核对输出的新增数、修改数、字段变化数后，使用同一份输入及参数，移除
+`--compare-current`，增加 `--apply --actor '<ADMIN_EMAIL>'`
+和 `--expected-sync-digest '<syncDigest>'`。摘要变化时拒绝执行，必须重新比对。
+同步逐用户事务提交并写审计，任一失败后重新比对可继续，不能把它当作全名单原子事务。
+保留原无 `--sync` 的 bootstrap 模式，其禁止覆盖既有不同记录。
+
+发布需协调 Monitor Web 和 Refresh Job 的同一版范围策略 `summary_department_v2`，
+并在同步名单后成功发布新的分析快照。旧策略快照不会被当成新范围使用。
+`team` 只进入用户管理 Firestore，不增加 BigQuery 的个人资料字段。

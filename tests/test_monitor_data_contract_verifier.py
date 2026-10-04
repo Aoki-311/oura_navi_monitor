@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.domain.analysis_scopes import SCOPE_POLICY_VERSION
 from scripts.verify_monitor_data_contract import (
     API_READ_MAXIMUM_BYTES,
     REQUIRED_API_OUTPUT_COLUMNS,
@@ -115,7 +116,7 @@ class _Client:
                         status="succeeded",
                         published_run_id="run-1",
                         data_through="2026-08-29T00:00:00Z",
-                        scope_policy_version="summary_role_v1",
+                        scope_policy_version=SCOPE_POLICY_VERSION,
                         global_roster_fingerprint="global-roster",
                         global_content_fingerprint="global-content",
                         user_map_roster_fingerprint="user-map-roster",
@@ -191,7 +192,7 @@ def test_data_contract_receipt_requires_tables_views_routines_and_publication() 
     assert receipt["apiReadMaximumBytes"] == API_READ_MAXIMUM_BYTES
     assert receipt["apiRoutineReads"]["dashboard_events_v2"]["readable"] is True
     assert receipt["apiRoutineReads"]["dashboard_user_list_v2"]["readable"] is True
-    assert receipt["scopePolicyVersion"] == "summary_role_v1"
+    assert receipt["scopePolicyVersion"] == SCOPE_POLICY_VERSION
     assert receipt["scopeProjectionRowCount"] == 2
     assert any("dashboard_events" in sql for sql in client.queries)
     assert any("dashboard_user_list" in sql for sql in client.queries)

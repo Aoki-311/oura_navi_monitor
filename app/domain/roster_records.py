@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from typing import Any, Iterable, Mapping
 
-from app.domain.analysis_scopes import ScopeEvaluation, evaluate_membership
+from app.domain.analysis_scopes import Department, ScopeEvaluation, evaluate_membership
 from app.domain.roster_values import (
     CANONICAL_AREAS,
     HEADQUARTERS_AREA,
@@ -162,7 +162,16 @@ def read_canonical_roster(value: object | None) -> CanonicalRosterRecord:
         is_active=source["is_active"],
     )
     source["role"] = evaluation.normalized_role
-    source["department"] = str(source.get("department") or "").strip()
+    source["department"] = (
+        evaluation.department.value
+        if evaluation.department is not None
+        else str(source.get("department") or "").strip()
+    )
+    source["team"] = (
+        " ".join(unicodedata.normalize("NFKC", str(source.get("team") or "")).split())
+        if evaluation.department is Department.HCS_FIELD
+        else ""
+    )
     issues.extend(evaluation.issues)
     unique_issues = tuple(dict.fromkeys(issues))
     source[ROSTER_ISSUES_FIELD] = list(unique_issues)

@@ -24,10 +24,23 @@ def test_canonical_roster_reader_normalizes_one_valid_record() -> None:
     record = read_canonical_roster(_valid_row())
 
     assert record.value["email"] == "user@example.com"
+    assert record.value["department"] == "MR(DM)"
+    assert record.value["team"] == ""
     assert record.issues == ()
     assert record.identity_eligible is True
     assert record.projection_eligible is True
     assert record.analytics_eligible is True
+
+
+def test_team_is_read_only_for_canonical_hcs_and_old_records_remain_valid() -> None:
+    hcs = read_canonical_roster({**_valid_row(), "department": "MR（HCS）", "team": "　関西Ａ  チーム　"})
+    assert hcs.value["department"] == "MR(HCS)"
+    assert hcs.value["team"] == "関西A チーム"
+    assert hcs.analytics_eligible is True
+    assert hcs.evaluation.membership.global_enabled is True
+    dm = read_canonical_roster({**_valid_row(), "team": "残存データ"})
+    assert dm.value["team"] == ""
+    assert dm.issues == ()
 
 
 def test_document_id_remains_the_repair_address_for_a_missing_or_mismatched_roster_id() -> None:

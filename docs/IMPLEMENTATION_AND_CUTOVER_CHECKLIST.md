@@ -24,8 +24,8 @@
 - [x] overview、regions、users、user detail、conversations 独立合同和失败边界。
 - [x] 缺失、未测量、真实 0 和零事件日期轴的语义分开。
 - [x] 单日回访率返回 `null`；P95 和完整交付返回 measured/total 覆盖数量。
-- [x] 活性度、7 日消息数与唯一 answer join 统一；Summary 人群由当前有效名簿中
-  `本社MR` / `コントラクトMR` 角色动态计算，用户分析使用独立的 USER_MAP 范围，
+- [x] 活性度、7 日消息数与唯一 answer join 统一；Summary 人群由当前有效 DM/HCS 名簿中
+  `社員MR` / `本社MR` / `コントラクトMR` 角色动态计算，用户分析使用独立的 USER_MAP 范围，
   不再把历史 69/80 人数当成运行合同。
 - [x] 前端导航、preset、导出统一 AbortController，旧响应不能覆盖新页面。
 - [x] 用户编辑、标签编辑/删除携带 expected revision，repository transaction 再检查。

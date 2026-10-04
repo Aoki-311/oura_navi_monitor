@@ -21,6 +21,7 @@ SQL_DIR = ROOT / "sql"
 sys.path.insert(0, str(ROOT))
 
 from scripts.credential_preflight import approved_credential_path
+from app.domain.analysis_scopes import SCOPE_POLICY_VERSION
 
 
 SOURCE_SERVICE = "lcs-rag-app"
@@ -43,7 +44,7 @@ PARAMETERS = {
     "event_future_tolerance_minutes": ("INT64", 5),
     "source_service": ("STRING", SOURCE_SERVICE),
     "roster_snapshot_run_id": ("STRING", "fixture-chat-roster"),
-    "scope_policy_version": ("STRING", "summary_role_v1"),
+    "scope_policy_version": ("STRING", SCOPE_POLICY_VERSION),
     "global_roster_fingerprint": ("STRING", "fixture-global-roster"),
     "global_content_fingerprint": ("STRING", "fixture-global-content"),
     "user_map_roster_fingerprint": ("STRING", "fixture-user-map-roster"),

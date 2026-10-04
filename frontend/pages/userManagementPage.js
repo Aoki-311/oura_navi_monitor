@@ -189,7 +189,7 @@ export class UserManagementPage {
       throw new Error("保存した対象ユーザーの版が更新されていません。");
     }
     this.assertSameValues(target, expected, [
-      "name", "email", "area", "workplace", "role", "department", "mrExperience",
+      "name", "email", "area", "workplace", "role", "department", "team", "mrExperience",
       "isActive", "globalScopeEnabled", "userMapScopeEnabled", "scopePolicyVersion",
     ], "保存したユーザー");
     expected.rosterId = target.rosterId;
@@ -307,7 +307,7 @@ export class UserManagementPage {
       const matchesDepartment = !this.userDepartment || row.department === this.userDepartment;
       const matchesRole = !this.userRole || row.role === this.userRole;
       const matchesLabel = !this.userLabel || row.labelIds.includes(this.userLabel);
-      const haystack = [row.name, row.email, row.area, row.workplace, row.role, row.department].join(" ").toLocaleLowerCase("ja-JP");
+      const haystack = [row.name, row.email, row.area, row.workplace, row.role, row.department, row.team].join(" ").toLocaleLowerCase("ja-JP");
       return matchesStatus && matchesDepartment && matchesRole && matchesLabel && (!query || haystack.includes(query));
     });
   }
@@ -367,8 +367,8 @@ export class UserManagementPage {
     }
     const scopeText = (row) => !row.scopePolicyVerified ? "対象判定未確認" : row.globalScopeEnabled ? "全体サマリー・ユーザー分析" : row.userMapScopeEnabled ? "ユーザー分析のみ" : "管理のみ";
     const issueText = (row) => row.rosterIssues.length ? `<small class="rowIssue">要修正: ${escapeHtml(row.rosterIssues.join(", "))}</small>` : "";
-    const tableRows = page.items.map((row) => `<tr class="${row.isActive ? "" : "isInactive"}"><td><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.email)}</small>${issueText(row)}</td><td>${escapeHtml(row.area)}<small>${escapeHtml(row.workplace)}</small></td><td>${escapeHtml(row.role || "未設定")}<small>${escapeHtml(row.department || "未設定")}</small></td><td>${row.labelIds.length ? `<div class="chips">${chips(row.labelIds.map(labelFor))}</div>` : ""}</td><td><span class="scopeBadge">${scopeText(row)}</span></td><td><span class="statusBadge ${row.isActive ? "active" : "inactive"}">${row.isActive ? "有効" : "停用"}</span></td><td>${displayDateTime(row.updatedAt)}</td><td><button class="linkButton" data-edit-user="${escapeHtml(row.rosterId)}" ${row.rosterId && this.metadata ? "" : "disabled"}>編集</button></td></tr>`).join("");
-    const cards = page.items.map((row) => `<article class="userCard managementCard"><header><div><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.email)}</small>${issueText(row)}</div><span class="statusBadge ${row.isActive ? "active" : "inactive"}">${row.isActive ? "有効" : "停用"}</span></header><dl><div><dt>地域</dt><dd>${escapeHtml(row.area)}・${escapeHtml(row.workplace)}</dd></div><div><dt>役割・部門</dt><dd>${escapeHtml(row.role || "未設定")}・${escapeHtml(row.department || "未設定")}</dd></div><div><dt>分析範囲</dt><dd>${scopeText(row)}</dd></div><div><dt>分析ラベル</dt><dd>${row.labelIds.length ? `<span class="chips">${chips(row.labelIds.map(labelFor))}</span>` : "なし"}</dd></div></dl><button class="linkButton" data-edit-user="${escapeHtml(row.rosterId)}" ${row.rosterId && this.metadata ? "" : "disabled"}>編集</button></article>`).join("");
+    const tableRows = page.items.map((row) => `<tr class="${row.isActive ? "" : "isInactive"}"><td><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.email)}</small>${issueText(row)}</td><td>${escapeHtml(row.area)}<small>${escapeHtml(row.workplace)}</small></td><td>${escapeHtml(row.role || "未設定")}<small>${escapeHtml(row.department || "未設定")}</small>${row.department === "MR(HCS)" ? `<small>チーム: ${escapeHtml(row.team || "未設定")}</small>` : ""}</td><td>${row.labelIds.length ? `<div class="chips">${chips(row.labelIds.map(labelFor))}</div>` : ""}</td><td><span class="scopeBadge">${scopeText(row)}</span></td><td><span class="statusBadge ${row.isActive ? "active" : "inactive"}">${row.isActive ? "有効" : "停用"}</span></td><td>${displayDateTime(row.updatedAt)}</td><td><button class="linkButton" data-edit-user="${escapeHtml(row.rosterId)}" ${row.rosterId && this.metadata ? "" : "disabled"}>編集</button></td></tr>`).join("");
+    const cards = page.items.map((row) => `<article class="userCard managementCard"><header><div><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.email)}</small>${issueText(row)}</div><span class="statusBadge ${row.isActive ? "active" : "inactive"}">${row.isActive ? "有効" : "停用"}</span></header><dl><div><dt>地域</dt><dd>${escapeHtml(row.area)}・${escapeHtml(row.workplace)}</dd></div><div><dt>役割・部門</dt><dd>${escapeHtml(row.role || "未設定")}・${escapeHtml(row.department || "未設定")}</dd></div>${row.department === "MR(HCS)" ? `<div><dt>チーム</dt><dd>${escapeHtml(row.team || "未設定")}</dd></div>` : ""}<div><dt>分析範囲</dt><dd>${scopeText(row)}</dd></div><div><dt>分析ラベル</dt><dd>${row.labelIds.length ? `<span class="chips">${chips(row.labelIds.map(labelFor))}</span>` : "なし"}</dd></div></dl><button class="linkButton" data-edit-user="${escapeHtml(row.rosterId)}" ${row.rosterId && this.metadata ? "" : "disabled"}>編集</button></article>`).join("");
     target.innerHTML = page.total ? `<div class="desktopTable"><div class="tableScroll" tabindex="0" aria-label="管理ユーザー一覧"><table><caption>Monitorに登録されたユーザー</caption><thead><tr><th>社員名 / メール</th><th>地域・勤務地</th><th>役割・部門</th><th>ラベル</th><th>分析範囲</th><th>状態</th><th>最終更新</th><th></th></tr></thead><tbody>${tableRows}</tbody></table></div></div><div class="mobileCards">${cards}</div>${paginationMarkup(page)}` : moduleMessage("条件に一致するユーザーはいません。", "empty");
     target.querySelectorAll("[data-edit-user]").forEach((button) => button.addEventListener("click", () => this.openUser(this.users.find((row) => row.rosterId === button.dataset.editUser))));
     bindPagination(target, page, (next) => this.updateUserCollection({ page: next }));
@@ -443,6 +443,7 @@ export class UserManagementPage {
       <label>勤務地<input name="workplace" list="workplaceOptions" required maxlength="80" value="${escapeHtml(user?.workplace || "")}"><datalist id="workplaceOptions">${this.metadata.workplaces.map((value) => `<option value="${escapeHtml(value)}"></option>`).join("")}</datalist></label>
       <label>役割<select name="role" required>${roleOptions}</select></label>
       <label>部門<select name="department" required>${departmentOptions}</select></label>
+      <label>チーム<input name="team" maxlength="120" value="${escapeHtml(user?.team || "")}" aria-describedby="teamNote"><small id="teamNote" class="fieldNote">MR(HCS)の場合に入力できます（任意）。</small></label>
       <label>MR経験<input name="mr_experience" maxlength="80" value="${escapeHtml(user?.mrExperience || "-")}"></label>
       <fieldset ${labelEditingEnabled ? "" : "disabled"}><legend>分析ラベル</legend><div class="labelChoices">${labelChoices.map((row) => `<label><input type="checkbox" name="label" value="${escapeHtml(row.labelId)}" ${selectedLabels.has(row.labelId) ? "checked" : ""} ${row.isActive ? "" : "disabled"}><span style="--chip:${escapeHtml(row.color)}">${escapeHtml(row.name)}${row.isActive ? "" : "（停用・保持）"}</span></label>`).join("") || '<span class="muted">利用可能な分析ラベルはありません</span>'}</div>${!labelEditingEnabled ? '<p class="fieldNote">ラベル台帳を確認できないため、現在の関係を変更せず保存します。</p>' : danglingLabelIds.length ? `<p class="fieldNote">存在しないラベル参照（${escapeHtml(danglingLabelIds.join("、"))}）は、このユーザーを保存すると削除されます。</p>` : ""}</fieldset>
       ${isNew ? '<label class="switchRow"><input name="is_active" type="checkbox" checked>登録時から有効</label>' : `<label class="switchRow"><input name="is_active" type="checkbox" ${user.isActive ? "checked" : ""}>このユーザーを有効にする</label>`}
@@ -454,7 +455,9 @@ export class UserManagementPage {
     const submitButton = form.querySelector('[type="submit"]');
     const updateDepartmentFields = () => {
       const department = form.elements.department.value;
-      const isMr = department === "DM専任";
+      const isMr = ["MR(DM)", "MR(HCS)"].includes(department);
+      form.elements.team.disabled = department !== "MR(HCS)";
+      if (department !== "MR(HCS)") form.elements.team.value = "";
       form.elements.mr_experience.disabled = !isMr;
       if (this.metadata.departments.includes(department) && !isMr) form.elements.mr_experience.value = "-";
     };
@@ -545,6 +548,7 @@ export class UserManagementPage {
       const fields = {
         name: data.get("name"), email: data.get("email"), area: data.get("area"), workplace: data.get("workplace"),
         role: data.get("role"), department: data.get("department"), mr_experience: data.get("mr_experience") || "-",
+        team: data.get("department") === "MR(HCS)" ? (data.get("team") || "") : "",
         is_active: data.get("is_active") === "on",
         expected_scope_policy_version: verifiedScopePreview.scopePolicyVersion,
       };
@@ -569,6 +573,7 @@ export class UserManagementPage {
         workplace: normalizeManagementText(fields.workplace),
         role: normalizeManagementText(fields.role),
         department: normalizeManagementText(fields.department),
+        team: normalizeManagementText(fields.team),
         mrExperience: normalizeManagementText(fields.mr_experience) || "-",
         labelIds: Object.hasOwn(fields, "label_ids") ? [...fields.label_ids] : [...(user?.labelIds || [])],
         isActive: fields.is_active,
@@ -598,7 +603,7 @@ export class UserManagementPage {
           if (!responseUser || responseModel.issues.length) throw new Error("保存応答のユーザー形式が不正です。");
           if (!isNew && responseUser.rosterId !== user.rosterId) throw new Error("保存応答のユーザーIDが一致しません。");
           this.assertSameValues(responseUser, expected, [
-            "name", "email", "area", "workplace", "role", "department", "mrExperience",
+            "name", "email", "area", "workplace", "role", "department", "team", "mrExperience",
             "isActive", "globalScopeEnabled", "userMapScopeEnabled", "scopePolicyVersion",
           ], "保存応答");
           expected.rosterId = responseUser.rosterId;

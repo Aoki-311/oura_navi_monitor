@@ -138,6 +138,10 @@ small { display: block; color: var(--muted); }
 .pageHeading p { margin: 4px 0; color: var(--muted); line-height: 1.55; }
 .eyebrow { color: #75d7ce !important; font-size: 10px !important; font-weight: 850; letter-spacing: .15em; text-transform: uppercase; }
 .scopeSummary { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.cohortTabs { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.cohortTabs [role="tab"] { border-color: transparent; padding: 8px 12px; white-space: nowrap; font-weight: 700; }
+.cohortTabs [aria-selected="true"] { border-color: rgba(36, 184, 174, .5); background: rgba(36, 184, 174, .12); }
+.cohortTabs [data-summary-total] { margin-left: 4px; color: var(--muted); font-size: 12px; }
 .scopeSummary > span, .managementScopeSummary > span {
   padding: 7px 10px;
   color: var(--text-soft);

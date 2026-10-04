@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.contracts.analytics import EnvironmentResponse, TrendResponse, OverviewResponse, RegionsResponse, UserDetailResponse, UsersResponse
+from app.domain.analysis_scopes import SummaryCohort
 from app.dependencies import get_analytics_service
 from app.security.auth import AdminIdentity, require_admin
 from app.services.analytics_service import (
@@ -43,6 +44,7 @@ def analytics_window(
 
 @router.get("/overview", response_model=OverviewResponse)
 def overview(
+    cohort: SummaryCohort = Query(default=SummaryCohort.ALL),
     days: int = Query(default=7, ge=1, le=365),
     preset: str = Query(default=""),
     start: str = Query(default=""),
@@ -55,13 +57,14 @@ def overview(
 ) -> dict:
     window = analytics_window(settings=settings, days=days, preset=preset, start=start, end=end, as_of=as_of)
     try:
-        return service.overview(window=window, area_key=area_key)
+        return service.overview(window=window, area_key=area_key, cohort=cohort)
     except AnalyticsSnapshotConflictError as exc:
         raise _snapshot_conflict(exc) from exc
 
 
 @router.get("/environment", response_model=EnvironmentResponse)
 def environment(
+    cohort: SummaryCohort = Query(default=SummaryCohort.ALL),
     days: int = Query(default=7, ge=1, le=365),
     preset: str = Query(default=""),
     start: str = Query(default=""),
@@ -74,13 +77,14 @@ def environment(
 ) -> dict:
     window = analytics_window(settings=settings, days=days, preset=preset, start=start, end=end, as_of=as_of)
     try:
-        return service.environment(window=window, area_key=area_key)
+        return service.environment(window=window, area_key=area_key, cohort=cohort)
     except AnalyticsSnapshotConflictError as exc:
         raise _snapshot_conflict(exc) from exc
 
 
 @router.get("/trend", response_model=TrendResponse)
 def trend(
+    cohort: SummaryCohort = Query(default=SummaryCohort.ALL),
     days: int = Query(default=7, ge=1, le=365),
     preset: str = Query(default=""),
     start: str = Query(default=""),
@@ -93,13 +97,14 @@ def trend(
 ) -> dict:
     window = analytics_window(settings=settings, days=days, preset=preset, start=start, end=end, as_of=as_of)
     try:
-        return service.trend(window=window, area_key=area_key)
+        return service.trend(window=window, area_key=area_key, cohort=cohort)
     except AnalyticsSnapshotConflictError as exc:
         raise _snapshot_conflict(exc) from exc
 
 
 @router.get("/regions", response_model=RegionsResponse)
 def regions(
+    cohort: SummaryCohort = Query(default=SummaryCohort.ALL),
     days: int = Query(default=7, ge=1, le=365),
     preset: str = Query(default=""),
     start: str = Query(default=""),
@@ -111,7 +116,7 @@ def regions(
 ) -> dict:
     window = analytics_window(settings=settings, days=days, preset=preset, start=start, end=end, as_of=as_of)
     try:
-        return service.regions(window=window)
+        return service.regions(window=window, cohort=cohort)
     except AnalyticsSnapshotConflictError as exc:
         raise _snapshot_conflict(exc) from exc
 
@@ -140,6 +145,7 @@ def users(
 
 @router.get("/overview/users", response_model=UsersResponse)
 def overview_users(
+    cohort: SummaryCohort = Query(default=SummaryCohort.ALL),
     days: int = Query(default=30, ge=1, le=365),
     preset: str = Query(default=""),
     start: str = Query(default=""),
@@ -156,6 +162,7 @@ def overview_users(
     window = analytics_window(settings=settings, days=days, preset=preset, start=start, end=end, as_of=as_of)
     try:
         return service.overview_users(
+            cohort=cohort,
             q=q,
             area_key=area_key,
             activity=activity,

@@ -43,7 +43,7 @@ def _roster() -> list[dict]:
             "area_key": "関西",
             "workplace": "大阪",
             "role": "本社MR",
-            "department": "DM専任",
+            "department": "MR(DM)",
             "mr_experience": "10年",
             "label_ids_json": "[]",
             "is_active": True,
@@ -68,7 +68,7 @@ def _publication() -> dict:
         "published_run_id": "usage-run-2",
         "roster_snapshot_run_id": "roster-new",
         "source_service": "oura-navi-test",
-        "scope_policy_version": "summary_role_v1",
+        "scope_policy_version": "summary_department_v2",
         "global_roster_fingerprint": roster_fingerprint(
             roster, diagnostic_fingerprint="diag-1"
         ),

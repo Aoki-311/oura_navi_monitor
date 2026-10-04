@@ -42,7 +42,7 @@ test("summary CSV is anchored to the visible run and downloaded before success i
     expectedPublishedRunId: "run-20260823-01",
     expectedRosterFingerprint: "roster-fingerprint-1",
     expectedContentFingerprint: "content-fingerprint-1",
-    expectedScopePolicyVersion: "summary_role_v1",
+    expectedScopePolicyVersion: "summary_department_v2",
     expectedWindowStart: "2026-08-16T15:00:00Z",
     expectedWindowEnd: "2026-08-23T01:00:00Z",
     expectedWindowTimezone: "Asia/Tokyo",

@@ -14,6 +14,7 @@ let mainDateControlPage = "";
 const exportButton = document.querySelector("#exportButton");
 const toastElement = document.querySelector("#toast");
 const validPresets = new Set(["today", "last_7d", "last_14d", "last_30d", "last_60d", "all", "custom"]);
+const validCohorts = new Set(["all", "dm", "hcs"]);
 const validActivities = new Set(["", "high", "middle", "low", "dormant"]);
 const validManagementStatuses = new Set(["all", "active", "inactive"]);
 const validOverviewSorts = new Set(["last_desc", "name_asc", "messages_desc", "success_desc"]);
@@ -53,6 +54,7 @@ function stateFromUrl() {
   const pageNumber = (key) => Math.max(1, Number.parseInt(params.get(key) || "1", 10) || 1);
   return {
     page,
+    cohort: validCohorts.has(params.get("cohort")) ? params.get("cohort") : "all",
     roster: page === "user" || page === "management" ? (params.get("roster") || "") : "",
     area: page === "overview" ? (params.get("area") || "") : "",
     ...mainRange,
@@ -78,6 +80,7 @@ function stateFromUrl() {
 function dashboardUrl(state) {
   const params = new URLSearchParams();
   if (state.page !== "overview") params.set("page", state.page);
+  if (state.cohort && state.cohort !== "all") params.set("cohort", state.cohort);
   if (state.roster && (state.page === "user" || state.page === "management")) params.set("roster", state.roster);
   if (state.area && state.page === "overview") params.set("area", state.area);
   if (state.preset !== "last_7d") params.set("preset", state.preset);
@@ -129,6 +132,7 @@ function navigate(page, values = {}, options = {}) {
   const next = {
     ...current,
     page,
+    cohort: values.cohort ?? current.cohort,
     preset: values.preset ?? current.preset,
     start: values.start ?? current.start,
     end: values.end ?? current.end,
@@ -155,7 +159,7 @@ function navigate(page, values = {}, options = {}) {
   if (exportRouteKey(current) !== exportRouteKey(next)) invalidateExportContext();
   const canStageSamePage = options.render !== false
     && page === current.page
-    && (page === "overview" || page === "user")
+    && (page === "user" || (page === "overview" && next.cohort === current.cohort))
     && activePage?.name === page
     && activePage.controller === renderController
     && !activePage.controller.signal.aborted;
@@ -168,7 +172,7 @@ function navigate(page, values = {}, options = {}) {
     return true;
   }
   writeState(next, options);
-  if (options.render !== false) void render({ focusMain: true });
+  if (options.render !== false) void render({ focusMain: !options.focusCohort, focusCohort: Boolean(options.focusCohort) });
   return true;
 }
 
@@ -264,6 +268,7 @@ function exportRouteContext(state) {
     end: state.end,
     roster: isUser ? state.roster : "",
     area: isOverview ? state.area : "",
+    cohort: isOverview ? state.cohort : "all",
     q: isOverview ? state.overviewQuery : "",
     activity: isOverview ? state.overviewActivity : "",
     sort: isOverview ? state.overviewSort : "",
@@ -331,7 +336,7 @@ function isCurrentExportTransaction(transaction) {
     && exportContextKey(stateFromUrl(), analyticsSnapshot) === transaction.contextKey;
 }
 
-async function render({ focusMain = false, requestedState = null, navigation = null, forceAnalyticsRefresh = false } = {}) {
+async function render({ focusMain = false, focusCohort = false, requestedState = null, navigation = null, forceAnalyticsRefresh = false } = {}) {
   const state = requestedState || stateFromUrl();
   if (!navigation) {
     renderedHistoryIndex = historyIndex;
@@ -356,6 +361,7 @@ async function render({ focusMain = false, requestedState = null, navigation = n
   if (
     state.page === "overview"
     && activePage?.name === "overview"
+    && activePage.instance.cohort === state.cohort
     && activePage.controller === renderController
     && !activePage.controller.signal.aborted
   ) {
@@ -373,6 +379,7 @@ async function render({ focusMain = false, requestedState = null, navigation = n
         trendRange: { ...activePage.instance.moduleRanges.usage },
         preset: context.preset,
         area: context.areaKey,
+        cohort: context.cohort,
         overviewQuery: context.query,
         overviewActivity: context.activity,
         overviewSort: context.sort,
@@ -491,7 +498,8 @@ async function render({ focusMain = false, requestedState = null, navigation = n
   } finally {
     if (isCurrent()) setBusy(root, false);
   }
-  if (focusMain && isCurrent() && !document.querySelector("[data-range-popup]:popover-open")) root.focus({ preventScroll: true });
+  if (focusCohort && isCurrent()) root.querySelector('[data-cohort][aria-selected="true"]')?.focus({ preventScroll: true });
+  else if (focusMain && isCurrent() && !document.querySelector("[data-range-popup]:popover-open")) root.focus({ preventScroll: true });
 }
 
 document.querySelectorAll(".mainNav [data-page]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.page)));
@@ -555,6 +563,7 @@ exportButton.addEventListener("click", async () => {
       rosterId: state.roster,
       ...requestDateRange(state),
       areaKey: state.area,
+      cohort: state.page === "overview" ? state.cohort : "all",
       q: state.overviewQuery,
       activity: state.overviewActivity,
       sort: state.overviewSort,

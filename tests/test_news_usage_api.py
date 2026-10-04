@@ -21,7 +21,7 @@ def _payload() -> dict:
     return {
         "contractVersion": "news_usage_report_v1",
         "scope": "global",
-        "scopePolicyVersion": "summary_role_v1",
+        "scopePolicyVersion": "summary_department_v2",
         "rosterFingerprint": "roster-fingerprint-1",
         "contentFingerprint": "content-fingerprint-1",
         "publishedRunId": "usage-run-1",
@@ -173,7 +173,7 @@ def _payload() -> dict:
                     "areaKey": "関西",
                     "workplace": "大阪",
                     "role": "本社MR",
-                    "department": "DM専任",
+                    "department": "MR(DM)",
                     "actions": 2,
                     "activeDays": 1,
                     "lastActiveAt": "2026-09-02T01:00:00Z",
@@ -181,8 +181,8 @@ def _payload() -> dict:
             ],
             "departments": [
                 {
-                    "key": "DM専任",
-                    "label": "DM専任",
+                    "key": "MR(DM)",
+                    "label": "MR(DM)",
                     "scopeUsers": 1,
                     "activeUsers": 1,
                     "actions": 2,

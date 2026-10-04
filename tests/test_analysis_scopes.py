@@ -1,10 +1,14 @@
+import pytest
+
 from app.domain.analysis_scopes import (
     AnalysisScope,
     Department,
     SCOPE_POLICY_VERSION,
     SUMMARY_ROLES,
+    SummaryCohort,
     evaluate_membership,
     membership_for,
+    summary_cohort_matches,
 )
 
 
@@ -27,17 +31,40 @@ def test_summary_scope_is_owned_by_exact_canonical_role() -> None:
         assert not result.includes(AnalysisScope.GLOBAL)
         assert result.includes(AnalysisScope.USER_MAP)
 
-    assert SCOPE_POLICY_VERSION == "summary_role_v1"
+    assert SCOPE_POLICY_VERSION == "summary_department_v2"
 
 
-def test_department_only_controls_user_map_and_admin_exclusion() -> None:
+def test_headquarters_and_admin_never_join_field_summary() -> None:
     contract = membership("コントラクトMR", Department.DM_HQ)
-    assert contract.includes(AnalysisScope.GLOBAL)
+    assert not contract.includes(AnalysisScope.GLOBAL)
     assert contract.includes(AnalysisScope.USER_MAP)
 
     admin = membership("本社MR", Department.ADMIN)
     assert not admin.includes(AnalysisScope.GLOBAL)
     assert not admin.includes(AnalysisScope.USER_MAP)
+
+
+@pytest.mark.parametrize("department", ["DM専任", "MR(DM)", " ＭＲ（ＤＭ） "])
+def test_legacy_department_and_fullwidth_names_select_the_dm_cohort(department: str) -> None:
+    row = {"role": "社員MR", "department": department, "is_active": True}
+    assert summary_cohort_matches(row)
+    assert summary_cohort_matches(row, SummaryCohort.DM)
+    assert not summary_cohort_matches(row, SummaryCohort.HCS)
+
+
+def test_hcs_cohort_requires_active_field_mr_and_never_admits_hq() -> None:
+    row = {"role": "社員MR", "department": "MR（HCS）", "is_active": True}
+    assert summary_cohort_matches(row, "all")
+    assert summary_cohort_matches(row, "hcs")
+    assert not summary_cohort_matches(row, "dm")
+    for changes in (
+        {"is_active": False}, {"is_active": "true"}, {"role": "本部メンバー"},
+        {"department": "DM本社"}, {"department": "ヘルスケア本社"},
+        {"department": "管理者"},
+    ):
+        assert not summary_cohort_matches({**row, **changes})
+    with pytest.raises(ValueError):
+        summary_cohort_matches(row, "other")
 
 
 def test_inactive_user_is_excluded_from_every_analysis_scope() -> None:

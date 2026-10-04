@@ -1,4 +1,4 @@
-import { isExactSummaryRoleSet } from "../contracts/analysisScopes.js";
+import { canonicalDepartment, isExactSummaryRoleSet } from "../contracts/analysisScopes.js";
 
 function requiredText(value, field) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`管理データの${field}が不正です`);
@@ -39,7 +39,8 @@ function parseUser(row) {
     areaKey: optionalText(row.areaKey, "areaKey"),
     workplace: optionalText(row.workplace, "workplace"),
     role: optionalText(row.role, "role"),
-    department: optionalText(row.department, "department"),
+    department: canonicalDepartment(optionalText(row.department, "department")),
+    team: optionalText(row.team, "team"),
     mrExperience: optionalText(row.mrExperience, "mrExperience") || "-",
     labelIds: row.labelIds.map((value) => requiredText(value, "labelId")),
     isActive: row.isActive,

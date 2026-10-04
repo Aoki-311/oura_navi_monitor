@@ -208,6 +208,8 @@ def test_user_document_keeps_only_the_canonical_directory_contract() -> None:
             "identity_keys": [{"user_key": "obsolete-key"}],
             "login_subject": "obsolete-subject",
             "global_scope_enabled": True,
+            "department": "MR(HCS)",
+            "team": "関西チーム",
         }
     )
 
@@ -215,6 +217,7 @@ def test_user_document_keeps_only_the_canonical_directory_contract() -> None:
 
     stored = client.data["monitor_users"]["roster_a"]
     assert stored["user_id"] == "subject_a"
+    assert stored["team"] == "関西チーム"
     assert "user_key" not in stored
     assert "identity_keys" not in stored
     assert "login_subject" not in stored

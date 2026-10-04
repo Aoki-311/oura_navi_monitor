@@ -123,7 +123,7 @@ class UserManagementService:
         before = dict(before or {})
         after = dict(after or {})
         tracked_fields = (
-            ("role", "department", "is_active", "label_ids", "area", "workplace", "mr_experience")
+            ("role", "department", "is_active", "label_ids", "area", "workplace", "mr_experience", "team")
             if target_type == "user"
             else ("name", "color", "is_active")
         )
@@ -344,8 +344,13 @@ class UserManagementService:
             "department": department.value,
             "mr_experience": (
                 normalize_roster_text(payload.mr_experience) or "-"
-                if department is Department.DM_FIELD
+                if department in (Department.DM_FIELD, Department.HCS_FIELD)
                 else "-"
+            ),
+            "team": (
+                normalize_roster_text(payload.team)
+                if department is Department.HCS_FIELD
+                else ""
             ),
             "label_ids": label_ids,
             "chat_user_id": "",
@@ -396,7 +401,7 @@ class UserManagementService:
             if existing is not None and existing_document_id != roster_id:
                 raise ManagementError("duplicate_email", "email already exists")
             changes["email"] = email
-        for key in ("name", "area", "workplace", "role", "mr_experience"):
+        for key in ("name", "area", "workplace", "role", "mr_experience", "team"):
             if key in changes:
                 changes[key] = normalize_roster_text(str(changes[key]))
         if "department" in changes:
@@ -413,8 +418,15 @@ class UserManagementService:
         # repairs legacy documents whose internal roster_id is absent or stale.
         updated["roster_id"] = str(current.get("_document_id") or roster_id)
         updated["area_key"] = area_key_for(area=updated["area"], workplace=updated["workplace"])
-        if Department(updated["department"]) is not Department.DM_FIELD:
+        department = Department(updated["department"])
+        updated["department"] = department.value
+        if department not in (Department.DM_FIELD, Department.HCS_FIELD):
             updated["mr_experience"] = "-"
+        updated["team"] = (
+            normalize_roster_text(updated.get("team", ""))
+            if department is Department.HCS_FIELD
+            else ""
+        )
         updated.update({"updated_at": now, "updated_by": normalize_email(actor)})
         stored = self._directory.put_user_and_change(
             updated,

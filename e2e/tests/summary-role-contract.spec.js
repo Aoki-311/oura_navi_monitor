@@ -42,7 +42,7 @@ test("summary isolates non-exact roles, keeps valid rows, and disables CSV", asy
     const { usersModel } = await import("/dashboard-assets/adapters/usersAdapter.js");
     return usersModel({
       scope: "global",
-      scopePolicyVersion: "summary_role_v1",
+      scopePolicyVersion: "summary_department_v2",
       rosterFingerprint: "roster-fingerprint",
       contentFingerprint: "content-fingerprint",
       publishedRunId: "run-1",
@@ -58,7 +58,7 @@ test("summary isolates non-exact roles, keeps valid rows, and disables CSV", asy
           name: "Bad Role",
           email: "bad-role@example.com",
           role: "本社メンバー",
-          department: "DM専任",
+          department: "MR(DM)",
           workplace: "大阪",
           area: "関西",
           areaKey: "関西",

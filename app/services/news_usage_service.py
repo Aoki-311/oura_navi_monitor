@@ -14,7 +14,9 @@ from zoneinfo import ZoneInfo
 
 from app.csv_safety import safe_csv_cell
 from app.domain.analytics_snapshot import roster_fingerprint
-from app.domain.analysis_scopes import AnalysisScope, SCOPE_POLICY_VERSION, membership_for
+from app.domain.analysis_scopes import (
+    AnalysisScope, SCOPE_POLICY_VERSION, SummaryCohort, membership_for, summary_cohort_matches,
+)
 from app.domain.roster_records import read_canonical_roster_collection
 from app.refresh_policy import REFRESH_POLICY
 from app.repositories.news_usage_repository import (
@@ -283,10 +285,12 @@ class NewsUsageService:
         source_service: str = "",
         measurement_start_at: datetime | None = None,
         history_coverage: str = "none",
+        cohort: SummaryCohort = SummaryCohort.ALL,
     ) -> dict[str, Any]:
         return {
             "contractVersion": "news_usage_report_v1",
             "scope": "global",
+            "cohort": SummaryCohort(cohort).value,
             "scopePolicyVersion": SCOPE_POLICY_VERSION,
             "rosterFingerprint": "",
             "contentFingerprint": "",
@@ -902,11 +906,13 @@ class NewsUsageService:
     def dashboard(
         self, *, window: MetricsTimeWindow, roster_id: str = "",
         area_key: str = "", now: datetime | None = None,
+        cohort: SummaryCohort = SummaryCohort.ALL,
     ) -> dict[str, Any]:
         """Serve overview and personal cards from the same published fact owner."""
         scope = AnalysisScope.USER_MAP if roster_id else AnalysisScope.GLOBAL
         payload = self.report(
             window=window, now=now, _scope=scope,
+            cohort=cohort if not roster_id else SummaryCohort.ALL,
             _roster_id=roster_id, _area_key=area_key if not roster_id else "",
             _dashboard=True,
         )
@@ -917,6 +923,7 @@ class NewsUsageService:
         return {
             "contractVersion": "news_usage_dashboard_v1",
             "scope": scope.value,
+            "cohort": payload["cohort"],
             "rosterId": roster_id,
             "windowStart": payload["windowStart"],
             "windowEnd": payload["windowEnd"],
@@ -934,6 +941,7 @@ class NewsUsageService:
         *, rows: list[dict[str, Any]], window: MetricsTimeWindow,
         publication: dict[str, Any], measurement_start: datetime,
         scope: AnalysisScope, roster_id: str, now: datetime | None,
+        cohort: SummaryCohort = SummaryCohort.ALL,
     ) -> dict[str, Any]:
         catalog = _dashboard_catalog()
         data_through = publication["data_through"]
@@ -1032,6 +1040,7 @@ class NewsUsageService:
         return {
             "contractVersion": "news_usage_dashboard_v1",
             "scope": scope.value, "rosterId": roster_id,
+            "cohort": SummaryCohort(cohort).value,
             "windowStart": _iso(window.start_utc), "windowEnd": _iso(window.end_utc),
             "publishedRunId": _text(publication["published_run_id"]),
             "rosterFingerprint": _text(publication[f"{scope.value}_roster_fingerprint"]),
@@ -1062,13 +1071,16 @@ class NewsUsageService:
         _roster_id: str = "",
         _area_key: str = "",
         _dashboard: bool = False,
+        cohort: SummaryCohort = SummaryCohort.ALL,
     ) -> dict[str, Any]:
+        cohort = SummaryCohort(cohort)
         selection = query or NewsUsageQuery()
         configuration = self._repository.configuration()
         if configuration.state == "disabled":
             return self._empty_report(
                 window=window,
                 query=selection,
+                cohort=cohort,
                 availability="not_enabled",
                 reason_code="not_enabled",
                 message="News / 学会の利用計測はまだ有効化されていません。",
@@ -1077,6 +1089,7 @@ class NewsUsageService:
             return self._empty_report(
                 window=window,
                 query=selection,
+                cohort=cohort,
                 availability="unavailable",
                 reason_code=configuration.error_code or "invalid_config",
                 message="News / 学会の利用計測設定が不完全です。",
@@ -1091,6 +1104,7 @@ class NewsUsageService:
             return self._empty_report(
                 window=window,
                 query=selection,
+                cohort=cohort,
                 availability="before_measurement",
                 reason_code="before_measurement",
                 message="選択期間は利用計測の開始前です。過去の利用数は推測しません。",
@@ -1105,6 +1119,7 @@ class NewsUsageService:
             return self._empty_report(
                 window=window,
                 query=selection,
+                cohort=cohort,
                 availability="unavailable",
                 reason_code=error.code,
                 message="News / 学会の公開済み利用データを確認できません。",
@@ -1118,6 +1133,7 @@ class NewsUsageService:
             return self._empty_report(
                 window=window,
                 query=selection,
+                cohort=cohort,
                 availability="unavailable",
                 reason_code="never_published",
                 message="News / 学会の成功済み利用データはまだ公開されていません。",
@@ -1136,6 +1152,7 @@ class NewsUsageService:
             payload = self._empty_report(
                 window=window,
                 query=selection,
+                cohort=cohort,
                 availability="unavailable",
                 reason_code="window_not_published",
                 message="選択期間まで利用データが公開されていません。",
@@ -1175,6 +1192,8 @@ class NewsUsageService:
                 )
             )
             roster = self._roster_snapshot(raw_roster, publication, _scope)
+            if _scope is AnalysisScope.GLOBAL:
+                roster = [item for item in roster if summary_cohort_matches(item, cohort)]
             # Verify the complete scope receipt first. Area selection uses the
             # same canonical roster keys as the Chat overview, never event metadata.
             if _area_key:
@@ -1202,6 +1221,7 @@ class NewsUsageService:
             return self._empty_report(
                 window=window,
                 query=selection,
+                cohort=cohort,
                 availability="unavailable",
                 reason_code=error.code,
                 message="News / 学会の公開済み利用データを読み込めません。",
@@ -1249,7 +1269,7 @@ class NewsUsageService:
             return self._dashboard_report(
                 rows=filtered, window=window, publication=publication,
                 measurement_start=measurement_start, scope=_scope,
-                roster_id=_roster_id, now=now,
+                roster_id=_roster_id, now=now, cohort=cohort,
             )
         diagnostics = self._repository.unmatched_event_diagnostics(
             window=window,
@@ -1263,6 +1283,7 @@ class NewsUsageService:
         report = {
             "contractVersion": "news_usage_report_v1",
             "scope": "global",
+            "cohort": SummaryCohort(cohort).value,
             "scopePolicyVersion": _text(publication.get("scope_policy_version")),
             "rosterFingerprint": _text(
                 publication.get("global_roster_fingerprint")
@@ -1303,7 +1324,8 @@ class NewsUsageService:
             },
             "selection": self._selection(selection),
             "filterOptions": self._filter_options(
-                events, configuration.source_service
+                [item for item in events if _text(item.get("roster_id")) in roster_by_id],
+                configuration.source_service
             ),
         }
         report.update(

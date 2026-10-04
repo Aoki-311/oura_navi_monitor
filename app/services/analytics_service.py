@@ -14,6 +14,8 @@ from app.domain.analytics_snapshot import content_fingerprint, roster_fingerprin
 from app.domain.analysis_scopes import (
     AnalysisScope,
     SCOPE_POLICY_VERSION,
+    SummaryCohort,
+    summary_cohort_matches,
     display_area,
     membership_for,
 )
@@ -949,13 +951,14 @@ class AnalyticsService:
             "issues": issues,
         }
 
-    def _usage_panel(self, *, window: MetricsTimeWindow, area_key: str = "") -> dict[str, Any]:
+    def _usage_panel(self, *, window: MetricsTimeWindow, area_key: str = "", cohort: SummaryCohort = SummaryCohort.ALL) -> dict[str, Any]:
         publication = self._publication_snapshot()
         freshness = self._freshness(publication)
         scope_snapshot = self._roster_snapshot(AnalysisScope.GLOBAL, publication=publication)
         roster_ids = {
             str(row["roster_id"]) for row in scope_snapshot.rows
-            if not area_key or str(row.get("area_key") or "") == area_key
+            if summary_cohort_matches(row, cohort)
+            and (not area_key or str(row.get("area_key") or "") == area_key)
         }
         events = [
             row for row in self._analytics.overview_events(
@@ -966,24 +969,25 @@ class AnalyticsService:
         ]
         return {
             **self._scope_metadata(scope=AnalysisScope.GLOBAL, snapshot=scope_snapshot, publication=publication, window=window),
+            "cohort": SummaryCohort(cohort).value,
             "scopeUserCount": len(roster_ids),
             "freshness": freshness,
             **_usage_axes(events, window=window, data_through=_as_datetime(freshness.get("dataThrough"))),
         }
 
-    def environment(self, *, window: MetricsTimeWindow, area_key: str = "") -> dict[str, Any]:
-        payload = self._usage_panel(window=window, area_key=area_key)
+    def environment(self, *, window: MetricsTimeWindow, area_key: str = "", cohort: SummaryCohort = SummaryCohort.ALL) -> dict[str, Any]:
+        payload = self._usage_panel(window=window, area_key=area_key, cohort=cohort)
         for field in ("usageTrend", "requestTasks", "taskMeasurement"):
             payload.pop(field)
         return payload
 
-    def trend(self, *, window: MetricsTimeWindow, area_key: str = "") -> dict[str, Any]:
-        payload = self._usage_panel(window=window, area_key=area_key)
+    def trend(self, *, window: MetricsTimeWindow, area_key: str = "", cohort: SummaryCohort = SummaryCohort.ALL) -> dict[str, Any]:
+        payload = self._usage_panel(window=window, area_key=area_key, cohort=cohort)
         for field in ("hourlyQuestions", "deviceDistribution", "deviceMeasurement", "modeDistribution", "modeMeasurement"):
             payload.pop(field)
         return payload
 
-    def overview(self, *, window: MetricsTimeWindow, area_key: str = "") -> dict[str, Any]:
+    def overview(self, *, window: MetricsTimeWindow, area_key: str = "", cohort: SummaryCohort = SummaryCohort.ALL) -> dict[str, Any]:
         publication = self._publication_snapshot()
         freshness = self._freshness(publication)
         data_through = _as_datetime(freshness.get("dataThrough"))
@@ -991,7 +995,7 @@ class AnalyticsService:
             AnalysisScope.GLOBAL,
             publication=publication,
         )
-        scope_roster = scope_snapshot.rows
+        scope_roster = [item for item in scope_snapshot.rows if summary_cohort_matches(item, cohort)]
         roster = [
             item
             for item in scope_roster
@@ -1078,6 +1082,7 @@ class AnalyticsService:
             "contentDiagnostics": self._content_diagnostics(
                 roster=scope_snapshot
             ),
+            "cohort": SummaryCohort(cohort).value,
             "scopeUserCount": len(roster),
             "freshness": freshness,
             "analyticsQuality": _analytics_quality(
@@ -1138,14 +1143,14 @@ class AnalyticsService:
             ],
         }
 
-    def regions(self, *, window: MetricsTimeWindow) -> dict[str, Any]:
+    def regions(self, *, window: MetricsTimeWindow, cohort: SummaryCohort = SummaryCohort.ALL) -> dict[str, Any]:
         publication = self._publication_snapshot()
         freshness = self._freshness(publication)
         roster_snapshot = self._roster_snapshot(
             AnalysisScope.GLOBAL,
             publication=publication,
         )
-        roster = roster_snapshot.rows
+        roster = [item for item in roster_snapshot.rows if summary_cohort_matches(item, cohort)]
         roster_ids = {str(item["roster_id"]) for item in roster}
         events = [
             item for item in self._analytics.overview_events(
@@ -1194,6 +1199,7 @@ class AnalyticsService:
             "contentDiagnostics": self._content_diagnostics(
                 roster=roster_snapshot
             ),
+            "cohort": SummaryCohort(cohort).value,
             "scopeUserCount": len(roster),
             "freshness": freshness,
             "regions": regions,
@@ -1203,6 +1209,7 @@ class AnalyticsService:
         self,
         *,
         scope: AnalysisScope,
+        cohort: SummaryCohort = SummaryCohort.ALL,
         q: str = "",
         area_key: str = "",
         activity: str = "",
@@ -1215,7 +1222,10 @@ class AnalyticsService:
             scope,
             publication=publication,
         )
-        scope_roster = scope_snapshot.rows
+        scope_roster = [
+            item for item in scope_snapshot.rows
+            if scope is not AnalysisScope.GLOBAL or summary_cohort_matches(item, cohort)
+        ]
         roster = [
             item
             for item in scope_roster
@@ -1330,6 +1340,7 @@ class AnalyticsService:
                 window=window,
             ),
             "contentDiagnostics": content_diagnostics,
+            "cohort": SummaryCohort(cohort).value,
             "scopeUserCount": len(roster),
             "freshness": freshness,
             "users": rows,
@@ -1338,6 +1349,7 @@ class AnalyticsService:
     def overview_users(
         self,
         *,
+        cohort: SummaryCohort = SummaryCohort.ALL,
         q: str = "",
         area_key: str = "",
         activity: str = "",
@@ -1346,6 +1358,7 @@ class AnalyticsService:
     ) -> dict[str, Any]:
         return self._users_for_scope(
             scope=AnalysisScope.GLOBAL,
+            cohort=cohort,
             q=q,
             area_key=area_key,
             activity=activity,

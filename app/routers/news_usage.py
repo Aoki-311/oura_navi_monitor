@@ -5,6 +5,7 @@ from functools import lru_cache
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from app.contracts.news_usage import NewsUsageDashboardResponse, NewsUsageReportResponse
+from app.domain.analysis_scopes import SummaryCohort
 from app.repositories.news_usage_repository import NewsUsageRepository
 from app.security.auth import AdminIdentity, require_admin
 from app.services.news_usage_service import (
@@ -80,6 +81,7 @@ def _report(
     category: str,
     society: str,
     q: str,
+    cohort: SummaryCohort = SummaryCohort.ALL,
 ) -> dict:
     window = _window(
         settings=settings,
@@ -92,6 +94,7 @@ def _report(
     try:
         return service.report(
             window=window,
+            cohort=cohort,
             query=_selection(
                 channel=channel,
                 environment=environment,
@@ -115,12 +118,13 @@ def _report(
 def _dashboard(
     *, settings: Settings, service: NewsUsageService, days: int, preset: str,
     start: str, end: str, as_of: str, roster_id: str = "", area_key: str = "",
+    cohort: SummaryCohort = SummaryCohort.ALL,
 ) -> dict:
     window = _window(
         settings=settings, days=days, preset=preset, start=start, end=end, as_of=as_of,
     )
     try:
-        return service.dashboard(window=window, roster_id=roster_id, area_key=area_key)
+        return service.dashboard(window=window, roster_id=roster_id, area_key=area_key, cohort=cohort)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="user not found") from exc
     except NewsUsageSnapshotConflictError as exc:
@@ -132,6 +136,7 @@ def _dashboard(
 
 @router.get("/overview", response_model=NewsUsageDashboardResponse)
 def news_usage_overview(
+    cohort: SummaryCohort = Query(default=SummaryCohort.ALL),
     days: int = Query(default=7, ge=1, le=365),
     preset: str = Query(default=""),
     start: str = Query(default=""),
@@ -144,7 +149,7 @@ def news_usage_overview(
 ) -> dict:
     return _dashboard(
         settings=settings, service=service, days=days, preset=preset,
-        start=start, end=end, as_of=as_of, area_key=area_key,
+        start=start, end=end, as_of=as_of, area_key=area_key, cohort=cohort,
     )
 
 
@@ -168,6 +173,7 @@ def news_usage_user(
 
 @router.get("/report", response_model=NewsUsageReportResponse)
 def news_usage_report(
+    cohort: SummaryCohort = Query(default=SummaryCohort.ALL),
     days: int = Query(default=7, ge=1, le=365),
     preset: str = Query(default=""),
     start: str = Query(default=""),
@@ -199,11 +205,13 @@ def news_usage_report(
         category=category,
         society=society,
         q=q,
+        cohort=cohort,
     )
 
 
 @router.get("/report.csv")
 def news_usage_report_csv(
+    cohort: SummaryCohort = Query(default=SummaryCohort.ALL),
     days: int = Query(default=7, ge=1, le=365),
     preset: str = Query(default=""),
     start: str = Query(default=""),
@@ -237,6 +245,7 @@ def news_usage_report_csv(
         category=category,
         society=society,
         q=q,
+        cohort=cohort,
     )
     if report.get("state", {}).get("availability") != "available":
         raise HTTPException(
@@ -249,6 +258,7 @@ def news_usage_report_csv(
     if (
         report.get("publishedRunId") != expected_published_run_id
         or report.get("rosterFingerprint") != expected_roster_fingerprint
+        or report.get("cohort", "all") != cohort.value
     ):
         raise HTTPException(
             status_code=409,
@@ -257,7 +267,7 @@ def news_usage_report_csv(
                 "message": "表示後に公開データが更新されました。再読込してからCSVを作成してください。",
             },
         )
-    filename = f"news-usage-{report['windowStart'][:10]}-{report['windowEnd'][:10]}.csv"
+    filename = f"news-usage-{cohort.value}-{report['windowStart'][:10]}-{report['windowEnd'][:10]}.csv"
     return Response(
         content=service.csv_bytes(report),
         media_type="text/csv; charset=utf-8",

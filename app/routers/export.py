@@ -35,6 +35,7 @@ class ExportJobRequest(BaseModel):
     rosterId: str = Field(default="", max_length=80)
     preset: str = Field(default="")
     q: str = Field(default="", max_length=120)
+    cohort: Literal["all", "dm", "hcs"] = "all"
     areaKey: str = Field(default="", max_length=80)
     activity: str = Field(default="", pattern="^(|high|middle|low|dormant)$")
     sort: str = Field(default="last_desc", pattern="^(last_desc|name_asc|messages_desc|success_desc)$")
@@ -227,6 +228,7 @@ def _create_content(
         payload = _validated_export_payload(
             UsersResponse,
             service.overview_users(
+                cohort=request.cohort,
                 q=request.q,
                 area_key=request.areaKey,
                 activity=request.activity,
@@ -245,6 +247,14 @@ def _create_content(
             actual_window_timezone=payload.windowTimezone,
             request=request,
         )
+        if payload.cohort != request.cohort:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "cohort_changed",
+                    "message": "対象の所属が一致しません。再読込してからCSVを作成してください。",
+                },
+            )
         rows = [
             [
                 item.rosterId, item.name, item.email, item.role, item.department,
@@ -265,18 +275,19 @@ def _create_content(
                 payload.windowStart,
                 payload.windowEnd,
                 payload.windowTimezone,
+                payload.cohort,
             ]
             for item in payload.users
         ]
         stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
         return (
-            _safe_filename(f"monitor_summary_{request.preset or 'custom'}_{stamp}.csv"),
+            _safe_filename(f"monitor_summary_{request.cohort}_{request.preset or 'custom'}_{stamp}.csv"),
             _csv_text([
                 "roster_id", "社員名", "メール", "役割", "部門", "エリア", "勤務地", "分析ラベル",
                 "最終利用", "期間内利用日数", "期間内質問数", "回答成功率", "measurement_state",
                 "計測状態", "measurement_reason", "計測理由", "計測済み件数", "対象件数",
                 "活性度", "データ反映時点", "公開Run", "対象ポリシー",
-                "分析開始時刻", "分析終了時刻", "分析タイムゾーン",
+                "分析開始時刻", "分析終了時刻", "分析タイムゾーン", "対象MR",
             ], rows),
             len(rows),
             {
@@ -288,6 +299,7 @@ def _create_content(
                 "window_start": payload.windowStart,
                 "window_end": payload.windowEnd,
                 "window_timezone": payload.windowTimezone,
+                "cohort": payload.cohort,
             },
         )
     try:

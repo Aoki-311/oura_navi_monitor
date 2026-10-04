@@ -26,6 +26,7 @@ _USER_DOCUMENT_FIELDS = frozenset(
         "role",
         "department",
         "mr_experience",
+        "team",
         "label_ids",
         "is_active",
         "created_at",

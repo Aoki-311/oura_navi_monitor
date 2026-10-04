@@ -63,6 +63,7 @@ def _user_payload(
         "role": evaluation.normalized_role,
         "department": str(value.get("department") or ""),
         "mrExperience": value.get("mr_experience") or "-",
+        "team": value.get("team") or "",
         "labelIds": list(value.get("label_ids") or []),
         "isActive": bool(value.get("is_active")),
         "identityBound": bool(
