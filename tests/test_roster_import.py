@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 import scripts.import_monitor_users as importer
 from scripts.import_monitor_users import load_roster_plan
@@ -202,6 +202,90 @@ def test_duplicate_resolution_must_select_exactly_one_source_record(hcs_workbook
         load_roster_plan(hcs_workbook, duplicate_departments={"transfer@example.com": "MR(HCS)", "hcs@example.com": "MR(HCS)"})
 
 
+@pytest.fixture
+def current_multisheet_workbook(tmp_path: Path) -> Path:
+    """Synthetic October roster shape; never embed production identities in tests."""
+    path = tmp_path / "user_list.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "開発"
+    workbook.active.append(["開発用の別表", "このシートを名簿として読まない"])
+    workbook.create_sheet("選択肢マスタ").append(["役割", "部門"])
+    sheet = workbook.create_sheet("OurA-Naviユーザー管理")
+    sheet.append([*importer.EXPECTED_HEADERS, "役割", "HCSチーム"])
+    for department, count in (("DM", 64), ("HCS", 74)):
+        for index in range(count):
+            area, workplace = "関西", "大　阪"
+            if index == 0:
+                area, workplace = "九州", "沖　縄"
+            elif department == "HCS" and index <= 4:
+                area, workplace = "北海道東北", "新　潟"
+            sheet.append([
+                area, workplace, f"合成{department}{index}",
+                f"{department.lower()}{index}@example.com", "社員MR", "5年未満",
+                f"MR（{department}）", "アンバサダー",
+                "HCS新潟医療器･医薬品" if department == "HCS" else "ー",
+            ])
+    for group, count, remark in (
+        ("dm-hq", 13, "本社（DM）"),
+        ("healthcare-hq", 8, "本社（ヘルスケア）"),
+        ("admin", 3, "システム管理者"),
+    ):
+        for index in range(count):
+            sheet.append([
+                "東京", "虎ノ門", f"合成本部{group}{index}", f"{group}{index}@example.com",
+                "本部メンバー", "ー", remark, "DM・HRJ戦略ﾘｰﾀﾞｰ", "ー",
+            ])
+    geography = workbook.create_sheet("DMエリア追加 支店別対象管轄エリア ")
+    geography.append([None, "■支店別対象管轄エリア"])
+    geography.append([None, "支店名", "県名", "DMエリア区分"])
+    geography.append([None, "新潟", "新潟県", "関東A"])
+    workbook.save(path)
+    return path
+
+
+def test_current_multisheet_roster_uses_existing_fields_and_ignores_extra_role(
+    current_multisheet_workbook: Path,
+) -> None:
+    plan = load_roster_plan(current_multisheet_workbook)
+    assert plan.source_rows == 162
+    assert plan.resolved_duplicate_rows == []
+    assert plan.scope_counts == {"global": 138, "user_map": 159, "management": 162}
+    assert plan.department_counts == {
+        "MR(DM)": 64, "MR(HCS)": 74, "DM本社": 13, "ヘルスケア本社": 8, "管理者": 3,
+    }
+    assert len(plan.normalized_headquarters_rows) == 24
+    assert all(
+        item["area_key"] == "本社・虎ノ門" and item["mr_experience"] == "-"
+        for item in plan.users if item["role"] == "本部メンバー"
+    )
+    assert all(item["team"] == "" for item in plan.users if item["department"] != "MR(HCS)")
+    assert all(
+        item["team"] == "HCS新潟医療器・医薬品" and item["mr_experience"] == "5年未満"
+        for item in plan.users if item["department"] == "MR(HCS)"
+    )
+
+    # Changing every H value must not change any imported field or scope.
+    workbook = load_workbook(current_multisheet_workbook)
+    for row in workbook["OurA-Naviユーザー管理"].iter_rows(min_row=2, min_col=8, max_col=8):
+        row[0].value = "名簿に保存しない追加職務"
+    workbook.save(current_multisheet_workbook)
+    workbook.close()
+    assert load_roster_plan(current_multisheet_workbook) == plan
+
+
+def test_roster_area_is_not_inferred_from_workplace_or_map_coverage(
+    current_multisheet_workbook: Path,
+) -> None:
+    plan = load_roster_plan(current_multisheet_workbook)
+    okinawa = [item for item in plan.users if item["workplace"] == "沖 縄"]
+    assert len(okinawa) == 2
+    assert {item["department"] for item in okinawa} == {"MR(DM)", "MR(HCS)"}
+    assert all(item["area"] == item["area_key"] == "九州" for item in okinawa)
+    niigata_hcs = [item for item in plan.users if item["workplace"] == "新 潟"]
+    assert len(niigata_hcs) == 4
+    assert all(item["area"] == item["area_key"] == "北海道東北" for item in niigata_hcs)
+
+
 class SyncDirectory:
     def __init__(self, users):
         self.users = {item["roster_id"]: dict(item) for item in users}
@@ -225,6 +309,24 @@ class SyncDirectory:
         self.users[user["roster_id"]] = dict(user)
         self.audit.append(change)
         return dict(user)
+
+
+def test_sync_keeps_complete_roster_without_login_or_usage_records(
+    current_multisheet_workbook: Path,
+) -> None:
+    plan = load_roster_plan(current_multisheet_workbook)
+    directory = SyncDirectory([])
+    diff = importer._sync_diff(plan, directory.list_users())
+    receipt = importer._apply_sync(
+        plan, directory=directory, actor="admin@example.com",
+        expected_sync_digest=diff["summary"]["syncDigest"],
+    )
+    assert receipt["readbackMatched"] is True
+    assert len(directory.users) == 162
+    assert all(item["user_id"] == item["chat_user_id"] == "" for item in directory.users.values())
+    assert all(item["is_active"] is True for item in directory.users.values())
+    repeated = importer._sync_diff(plan, directory.list_users())["summary"]
+    assert repeated["createUsers"] == repeated["updateUsers"] == 0
 
 
 def test_sync_updates_stable_identity_preserves_history_and_is_resumable(hcs_workbook: Path) -> None:

@@ -6,13 +6,13 @@ import { escapeHtml } from "./dom.js";
 // the SVG which prefecture shapes visually represent each roster area.
 const AREA_BY_PREFECTURE_CODE = new Map([
   ...[1, 2, 3, 4, 5, 6, 7].map((code) => [code, "北海道東北"]),
-  ...[9, 11].map((code) => [code, "関東A"]),
+  ...[9, 10, 11, 15].map((code) => [code, "関東A"]),
   ...[8, 12].map((code) => [code, "関東B"]),
-  ...[13, 20].map((code) => [code, "首都圏A"]),
+  ...[13, 19, 20].map((code) => [code, "首都圏A"]),
   [14, "首都圏B"],
-  ...[17, 22, 23].map((code) => [code, "東海北陸"]),
-  ...[26, 27, 28].map((code) => [code, "関西"]),
-  ...[33, 34, 36, 37, 38, 39].map((code) => [code, "中四国"]),
+  ...[16, 17, 18, 21, 22, 23, 24].map((code) => [code, "東海北陸"]),
+  ...[25, 26, 27, 28, 29, 30].map((code) => [code, "関西"]),
+  ...[31, 32, 33, 34, 35, 36, 37, 38, 39].map((code) => [code, "中四国"]),
   ...[40, 41, 42, 43, 44, 45, 46].map((code) => [code, "九州"]),
 ]);
 const MAP_ZOOM_LEVELS = Object.freeze([1, 1.25, 1.5, 1.75, 2]);

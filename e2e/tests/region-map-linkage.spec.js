@@ -1,6 +1,77 @@
 const { test, expect } = require("@playwright/test");
 const { installApiMocks } = require("./fixtures");
 
+// Expected geography from DMエリア追加. Values are ordered by prefecture code
+// 01–46; Okinawa is intentionally absent from the SVG, not from area totals.
+const expectedAreas = [
+  "北海道東北", "北海道東北", "北海道東北", "北海道東北", "北海道東北", "北海道東北", "北海道東北",
+  "関東B", "関東A", "関東A", "関東A", "関東B", "首都圏A", "首都圏B", "関東A",
+  "東海北陸", "東海北陸", "東海北陸", "首都圏A", "首都圏A", "東海北陸", "東海北陸", "東海北陸", "東海北陸",
+  "関西", "関西", "関西", "関西", "関西", "関西",
+  "中四国", "中四国", "中四国", "中四国", "中四国", "中四国", "中四国", "中四国", "中四国",
+  "九州", "九州", "九州", "九州", "九州", "九州", "九州",
+];
+const newlyMappedCodes = [10, 19, 16, 25, 31, 15, 18, 29, 32, 21, 30, 35, 24];
+const filteredSummaryPaths = [
+  "/api/analytics/overview", "/api/analytics/overview/users",
+  "/api/analytics/environment", "/api/analytics/trend", "/api/news-usage/overview",
+];
+
+async function clickPrefecture(page, prefecture) {
+  await prefecture.scrollIntoViewIfNeeded();
+  // The bounding-box center can land in a lake or outside a concave coastline.
+  // Find an actual painted point and send a real pointer click through it.
+  const point = await prefecture.evaluate((shape) => {
+    const bounds = shape.getBoundingClientRect();
+    for (let row = 1; row < 10; row += 1) {
+      for (let column = 1; column < 10; column += 1) {
+        const x = bounds.left + bounds.width * column / 10;
+        const y = bounds.top + bounds.height * row / 10;
+        if (shape.contains(document.elementFromPoint(x, y))) return { x, y };
+      }
+    }
+    return null;
+  });
+  expect(point).not.toBeNull();
+  await page.mouse.click(point.x, point.y);
+}
+
+for (const cohort of ["all", "dm", "hcs"]) {
+  test(`${cohort} map assigns all 46 prefectures and newly covered prefectures filter area totals`, async ({ page }) => {
+    const requests = [];
+    const regions = [...new Set(expectedAreas)].map((areaKey) => ({
+      areaKey, area: areaKey, rosterUsers: 10, activeUsers: 6, questions: 42, adoptionRate: .6, returnRate: .5,
+    }));
+    await installApiMocks(page, { requests, regionsOverride: { regions } });
+    await page.goto(`/dashboard?cohort=${cohort}`);
+    await expect(page.locator(`#japanMap .mapRegion[data-code]`)).toHaveCount(46);
+    await expect(page.locator("#japanMap .mapNeutral")).toHaveCount(0);
+    await expect(page.locator('#japanMap [data-code="47"]')).toHaveCount(0);
+    const assignments = await page.locator("#japanMap .prefecture[data-code]").evaluateAll((shapes) =>
+      shapes.map((shape) => [Number(shape.dataset.code), shape.dataset.areaKey]).sort((a, b) => a[0] - b[0]));
+    expect(assignments).toEqual(expectedAreas.map((area, index) => [index + 1, area]));
+
+    for (const code of newlyMappedCodes) {
+      const area = expectedAreas[code - 1];
+      const prefecture = page.locator(`#japanMap [data-code="${code}"]`);
+      await clickPrefecture(page, prefecture);
+      await expect(page.locator("#areaChip")).toContainText(area);
+      await expect(prefecture).toHaveAttribute("aria-pressed", "true");
+      await expect(page.locator(`[data-cohort="${cohort}"]`)).toHaveAttribute("aria-selected", "true");
+      expect(new URL(page.url()).searchParams.get("area")).toBe(area);
+      for (const path of filteredSummaryPaths) {
+        await expect.poll(() => {
+          const query = new URLSearchParams(requests.filter((request) => request.path === path).at(-1)?.search || "");
+          return { area: query.get("area_key"), cohort: query.get("cohort") };
+        }).toEqual({ area, cohort });
+      }
+      // All prefectures in the selected area represent the same roster metric.
+      await expect(page.locator(`#japanMap .mapRegion[data-area-key="${area}"][aria-pressed="true"]`))
+        .toHaveCount(expectedAreas.filter((expected) => expected === area).length);
+    }
+  });
+}
+
 test("map removes the remote-island inset and gives the mainland map visual priority", async ({ page }) => {
   await installApiMocks(page);
   await page.setViewportSize({ width: 1440, height: 960 });

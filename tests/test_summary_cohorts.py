@@ -91,6 +91,56 @@ def test_cohort_composes_with_area_and_preserves_publication_identity():
     assert "hq" in {row["rosterId"] for row in service.users(window=window)["users"]}
 
 
+@pytest.mark.parametrize("has_usage", [False, True])
+@pytest.mark.parametrize("cohort,expected_areas", [
+    ("all", {"九州": 2, "北海道東北": 1, "関東A": 1}),
+    ("dm", {"九州": 1, "関東A": 1}),
+    ("hcs", {"九州": 1, "北海道東北": 1}),
+])
+def test_roster_regions_keep_okinawa_and_hcs_assignments_without_new_usage(
+    cohort, expected_areas, has_usage,
+):
+    """Map shapes and workplace geography must not redefine the roster area."""
+    now = datetime.now(timezone.utc)
+    directory = _Directory()
+    template = directory.users[0]
+    directory.users = [
+        {**template, "roster_id": key, "email": f"{key}@example.com",
+         "name": key, "department": department, "role": "社員MR",
+         "area": area, "area_key": area, "workplace": workplace}
+        for key, department, area, workplace in [
+            ("dm_okinawa", "MR(DM)", "九州", "沖 縄"),
+            ("hcs_okinawa", "MR(HCS)", "九州", "沖縄"),
+            ("hcs_niigata", "MR(HCS)", "北海道東北", "新 潟"),
+            ("dm_niigata", "MR(DM)", "関東A", "新 潟"),
+        ]
+    ]
+    rows = [
+        {"roster_id": user["roster_id"], "area_key": user["area_key"],
+         "question_ts": now - timedelta(hours=1), "valid_question": True,
+         "question_date": now.astimezone(ZoneInfo("Asia/Tokyo")).date().isoformat()}
+        for user in directory.users if has_usage
+    ]
+    service = AnalyticsService(
+        analytics=_Analytics(rows), pipeline=_Pipeline(),
+        directory=directory, settings=Settings(),
+    )
+    window = _window(now)
+    regions = service.regions(window=window, cohort=cohort)
+    assert {row["areaKey"]: row["rosterUsers"] for row in regions["regions"]} == expected_areas
+    for row in regions["regions"]:
+        assert row["questions"] == (expected_areas[row["areaKey"]] if has_usage else 0)
+        assert row["activeUsers"] == row["questions"]
+    overview = service.overview(window=window, cohort=cohort)
+    assert overview["scopeUserCount"] == sum(expected_areas.values())
+    for area, population in expected_areas.items():
+        users = service.overview_users(window=window, cohort=cohort, area_key=area)
+        assert len(users["users"]) == population
+        assert sum(row["userMessageCountInPeriod"] for row in users["users"]) == (
+            population if has_usage else 0
+        )
+
+
 def news_data():
     template = _roster()[0]
     roster = [template, {

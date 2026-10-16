@@ -19,6 +19,7 @@ DM/HCS MR 合集，不包含本社或管理员。用户管理中的 `チーム` 
 - [最终产品与数据规范](docs/OURA_NAVI_MONITOR_FINAL_SPEC.md)
 - [字段白话辞典](docs/MONITOR_FIELD_CATALOG.md)
 - [实施、删除与切换清单](docs/IMPLEMENTATION_AND_CUTOVER_CHECKLIST.md)
+- [MR 名单与地图更新发布步骤](docs/MR_ROSTER_RELEASE.md)
 - [文档权威说明](docs/README.md)
 
 ## 当前本地代码
@@ -81,22 +82,25 @@ MONITOR_ADMIN_ALLOWLIST=2401145@tc.terumo.co.jp \
 
 ## 用户名单更新
 
-`scripts/import_monitor_users.py` 按 A:G 标题识别唯一名单 sheet，兼容旧工作表名和
-新版 `Sheet1`，I 列 `HCSチーム` 保存到 `team`。G 列识别 `MR(DM)`、`MR(HCS)`
-及全角括号；旧 `MR`/`DM専任` 仍对应 DM。新版本社/管理员的 `東京 + 虎ノ門`
-在导入时沿用已有 `本社・虎ノ門` 地区身份，field 地区不推断。
+`scripts/import_monitor_users.py` 按 A:G 标题识别唯一名单 sheet，不依赖 sheet 顺序。
+当前来源是 `user_list.xlsx` 的 `OurA-Naviユーザー管理`，其余开发、选项和地图 sheet
+不会导入为用户。A:G 使用现有字段；H 列额外职务忽略，不保存、不显示；I 列
+`HCSチーム` 仅为 HCS 保存到 `team`。G 列识别 `MR(DM)`、`MR(HCS)` 及全角
+括号；旧 `MR`/`DM専任` 仍对应 DM。本社/管理员的 `東京 + 虎ノ門` 在导入时
+沿用已有 `本社・虎ノ門` 地区身份。MR 的所属区域以 A 列为准，不从勤務地推断。
 
 默认仅核对工作簿，不联网。重复邮箱必须用 `--resolve-duplicate 'EMAIL=MR(HCS)'`
-等明确选择其中一个部門，不能自动保留最后一行。2026-10-04 名单按用户确认排除
-第 36 行、保留第 119 行 HCS 记录后，是 163 名用户，其中 MR 139 名
-（DM 64、HCS 75），用户分析 160 名。人数是本次输入核对结果，不是运行时常量。
+等明确选择其中一个部門，不能自动保留最后一行。2026-10-16 最新文件没有重复邮箱，
+不需要旧名单的重复选择参数；共 162 名用户，其中 MR 138 名（DM 64、HCS 74）、
+本社 21 名、管理员 3 名，用户分析范围为 159 名。人数是本次输入核对结果，
+不是运行时常量；同步保留既有启停状态，实际启用范围须在写入后读回确认。
 
 既有名单更新使用 `--sync`，按规范化邮箱匹配原记录，保留 roster ID、已绑定登录
 身份、标签、启停状态和创建时间。未出现在工作簿中的用户保持原状。先读当前名单：
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/import_monitor_users.py ../userlist.xlsx \
-  --resolve-duplicate 'EMAIL=MR(HCS)' --sync --compare-current \
+PYTHONPATH=. .venv/bin/python scripts/import_monitor_users.py ../user_list.xlsx \
+  --sync --compare-current \
   --credential-file '<APPROVED_CREDENTIAL_PATH>'
 ```
 
@@ -113,3 +117,12 @@ Web 更新不要求 Refresh Job 同时完成更新，未知策略和损坏的快
 发布前应使用候选代码只读验证当前线上快照的全体、DM、HCS、用户明细和 News 接口，
 仅通过模拟 API 的浏览器测试或部署信息校验不足以确认数据可读。
 `team` 只进入用户管理 Firestore，不增加 BigQuery 的个人资料字段。
+
+地图使用 `DMエリア追加` sheet 的县域划分，并供三个 MR 标签共用。地图按エリア
+统计，46 个可见都道府县归入 9 个区域；冲绳不绘制，但冲绳用户仍计入九州及所属
+MR 人群。用户所属区域与县域图形是两个来源：例如最新名单中勤務地为新潟的
+4 名 HCS 仍按 A 列计入北海道東北，新潟县图形按地图表归関東A。
+
+Cloud Build 只创建无流量候选 Web 版本，不会自动同步名单或更新 Refresh Job。
+构建后仍须按 [MR 发布步骤](docs/MR_ROSTER_RELEASE.md) 更新统计任务、同步名单、
+核对并补齐新关联用户的历史覆盖、发布快照，以及验证候选页面和正常定时刷新。
