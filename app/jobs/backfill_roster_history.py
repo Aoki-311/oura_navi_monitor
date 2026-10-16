@@ -86,8 +86,24 @@ def check_root(user: dict[str, Any], root: dict[str, Any]) -> None:
         raise ValueError("selected chat root does not match its verified roster identity")
 
 
-def compile_selected(settings: Any, client: Any, users: list[dict[str, Any]], start: datetime, end: datetime) -> HistoryRows:
+def event_selection(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict) or set(value) != set(FAMILIES):
+        raise ValueError("event manifest must name exactly the four history families")
+    for family, ids in value.items():
+        if (not isinstance(ids, list) or any(not isinstance(item, str) or not item.strip() for item in ids)
+            or len(ids) != len(set(ids))):
+            raise ValueError("event manifest IDs must be nonempty unique strings")
+    if not 1 <= sum(map(len, value.values())) <= MAX_ROWS:
+        raise ValueError("event manifest must select between 1 and 10000 events")
+    return {family: sorted(ids) for family, ids in value.items()}
+
+
+def compile_selected(settings: Any, client: Any, users: list[dict[str, Any]], start: datetime, end: datetime,
+                     selection: dict[str, list[str]] | None = None) -> HistoryRows:
     rows = HistoryRows()
+    selected_ids = {family: set(ids) for family, ids in selection.items()} if selection is not None else None
+    def included(family: str, row: dict[str, Any]) -> bool:
+        return selected_ids is None or row["event_id"] in selected_ids[family]
     read_args = {"retry": NO_INTERNAL_RETRY, "timeout": settings.monitor_firestore_read_timeout_seconds}
     for user in users:
         root = client.collection(settings.monitor_firestore_chat_collection).document(user["chat_user_id"])
@@ -97,7 +113,7 @@ def compile_selected(settings: Any, client: Any, users: list[dict[str, Any]], st
         check_root(user, snapshot.to_dict() or {})
         # Intentionally no updatedAt filter: dormant users' old conversations
         # are precisely what the incremental refresh cannot discover.
-        for document in root.collection("conversations").stream(**read_args):
+        for document in list(root.collection("conversations").stream(**read_args)):
             messages = [{**(item.to_dict() or {}), "id": item.id}
                         for item in document.reference.collection("messages").stream(**read_args)]
             if not messages:
@@ -106,14 +122,19 @@ def compile_selected(settings: Any, client: Any, users: list[dict[str, Any]], st
                            conversation_id=document.id, messages=messages, timezone_name=settings.monitor_timezone)
             questions, answers = compile_conversation_history(
                 **context, conversation=document.to_dict() or {}, telemetry=TelemetryIndex(), issues=rows.issues)
-            rows.questions.extend(row for row in questions if start <= row["question_ts"] < end)
-            rows.answers.extend(row for row in answers if start <= row["answer_ts"] < end)
+            rows.questions.extend(row for row in questions if start <= row["question_ts"] < end and included("questions", row))
+            rows.answers.extend(row for row in answers if start <= row["answer_ts"] < end and included("answers", row))
             conversation = project_conversation(**context, conversation=document.to_dict() or {})
-            if start <= conversation["last_active_at"] < end:
+            if start <= conversation["last_active_at"] < end and included("conversations", conversation):
                 rows.conversations.append(conversation)
-            rows.citations.extend(row for row in project_citations(**context) if start <= row["answer_ts"] < end)
+            rows.citations.extend(row for row in project_citations(**context) if start <= row["answer_ts"] < end and included("citations", row))
             if sum(len(getattr(rows, name)) for name in FAMILIES) > MAX_ROWS:
                 raise ValueError("history recovery exceeds the 10000-row bound; use smaller selections")
+    if selected_ids is not None:
+        for family, ids in selected_ids.items():
+            actual = [row["event_id"] for row in getattr(rows, family)]
+            if set(actual) != ids or len(actual) != len(ids):
+                raise ValueError("event manifest does not resolve to unique source facts in the selected scope")
     if rows.issues:
         raise ValueError("selected history contains invalid source records; audit them before recovery")
     return rows
@@ -178,6 +199,78 @@ def insert_only_sql() -> str:
     return sql
 
 
+def reject_legacy_aliases(family: str, expected: list[dict[str, Any]], existing: list[dict[str, Any]]) -> None:
+    """An exact manifest is not permission to duplicate an older representation."""
+    if family not in {"questions", "answers"}:
+        return
+    for source in expected:
+        source_turn = re.fullmatch(r"(\d{13})-(?:user|assistant)", str(source.get("message_id") or ""))
+        for current in existing:
+            if _keys(family, source) & _keys(family, current):
+                continue  # The normal collision/ownership checks handle this.
+            trace = str(source.get("trace_id") or "")
+            trace_match = bool(trace and trace in {current.get("trace_id"), current.get("request_id")})
+            current_turn = re.fullmatch(r"(\d{13})-(?:user|assistant)", str(current.get("message_id") or ""))
+            paired_turn = (current.get("user_id") == source.get("user_id")
+                           and source_turn and current_turn
+                           and source_turn.group(1) == current_turn.group(1)
+                           and current.get("conversation_id") == source.get("conversation_id"))
+            if trace_match or paired_turn:
+                raise ValueError("selected event has a possible legacy identity alias; reconcile before recovery")
+
+
+def resolve_trace_linked_answers(
+    answers: list[dict[str, Any]], references: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Bind manifest-selected fallback answers to an exact existing question.
+
+    Older persisted assistant messages can retain a trace but no request ID.
+    The canonical question records the assistant placeholder ID, so the trace,
+    owner, conversation and exact assistant ID together prove this reference.
+    A timestamp or message suffix alone never authorizes a replacement ID.
+    """
+    resolved, proofs = [], []
+    proof_fields = ("event_id", "request_id", "trace_id", "user_id", "roster_id",
+                    "conversation_id", "message_id", "question_ts", "question_date")
+    for answer in answers:
+        request_id = str(answer.get("request_id") or "")
+        trace_id = str(answer.get("trace_id") or "").strip()
+        if not request_id.startswith("history:") or not trace_id:
+            resolved.append(answer)
+            continue
+        matches = [row for row in references
+                   if row.get("trace_id") == trace_id or row.get("request_id") == trace_id]
+        if not matches:
+            resolved.append(answer)
+            continue
+        if len(matches) != 1:
+            raise ValueError("trace-linked answer has ambiguous canonical question references")
+        question = matches[0]
+        if question.get("request_id") == request_id:
+            # A selected fallback Q+A pair can create this very question in
+            # the same transaction. It already uses the source request ID;
+            # retain it without an alias proof so post-write planning remains
+            # idempotent. The ordinary answer/question guard still applies.
+            if (question.get("trace_id") != trace_id or not question.get("event_id")
+                or any(not answer.get(field) or question.get(field) != answer.get(field)
+                       for field in ("user_id", "roster_id", "conversation_id"))):
+                raise ValueError("trace-linked answer conflicts with its canonical question identity")
+            resolved.append(answer)
+            continue
+        if (question.get("trace_id") != trace_id or question.get("request_id") != trace_id
+            or not question.get("event_id")
+            or any(not answer.get(field) or question.get(field) != answer.get(field)
+                   for field in ("user_id", "roster_id", "conversation_id", "message_id"))):
+            raise ValueError("trace-linked answer conflicts with its canonical question identity")
+        replacement = {**answer, "event_id": f"answer:{trace_id}", "request_id": trace_id}
+        resolved.append(replacement)
+        proofs.append({"sourceAnswerEventId": answer["event_id"],
+                       "sourceAnswerRequestId": request_id,
+                       "resolvedAnswerEventId": replacement["event_id"],
+                       "question": {field: question.get(field) for field in proof_fields}})
+    return resolved, sorted(proofs, key=_json)
+
+
 class RosterHistoryBackfill:
     def __init__(self, settings: Any, *, bigquery_client: Any, firestore_client: Any):
         self.settings, self.bigquery, self.firestore = settings, bigquery_client, firestore_client
@@ -207,13 +300,33 @@ class RosterHistoryBackfill:
         if active:
             raise ValueError("canonical BigQuery writers are still in flight")
 
+    def answer_reference_questions(self, answers: list[dict[str, Any]], coverage_start: date,
+                                   coverage_end: date) -> list[dict[str, Any]]:
+        traces = sorted({str(row.get("trace_id") or "").strip() for row in answers
+                         if str(row.get("request_id") or "").startswith("history:")
+                         and str(row.get("trace_id") or "").strip()})
+        if not traces:
+            return []
+        # Deliberately global across owners: filtering by the selected user
+        # would hide a conflicting use of a trace/request by another identity.
+        return self.query(f"""SELECT event_id, request_id, trace_id, user_id, roster_id,
+          conversation_id, message_id, question_ts, question_date
+          FROM `{self.dataset}.question_events`
+          WHERE question_date BETWEEN @coverage_start AND @coverage_end
+            AND (trace_id IN UNNEST(@answer_traces) OR request_id IN UNNEST(@answer_traces))""", [
+                bigquery.ScalarQueryParameter("coverage_start", "DATE", coverage_start),
+                bigquery.ScalarQueryParameter("coverage_end", "DATE", coverage_end),
+                bigquery.ArrayQueryParameter("answer_traces", "STRING", traces),
+            ])
+
     def existing(self, family: str, users: list[dict[str, Any]], expected: list[dict[str, Any]], coverage_start: date, coverage_end: date) -> list[dict[str, Any]]:
         table, partition, _schema = FAMILIES[family]
         columns = "event_id, user_id, roster_id"
-        columns += ", message_id, request_id, conversation_id" if family in {"questions", "answers"} else (
+        columns += ", message_id, request_id, conversation_id, trace_id" if family in {"questions", "answers"} else (
             ", conversation_id, last_active_at, user_message_count, assistant_message_count" if family == "conversations"
             else ", message_id, citation_order, document_key")
-        request_clause = " OR request_id IN UNNEST(@requests)" if family in {"questions", "answers"} else ""
+        request_clause = (" OR request_id IN UNNEST(@requests) OR trace_id IN UNNEST(@traces)"
+                          " OR request_id IN UNNEST(@traces)") if family in {"questions", "answers"} else ""
         parameters = [
             bigquery.ScalarQueryParameter("coverage_start", "DATE", coverage_start),
             bigquery.ScalarQueryParameter("coverage_end", "DATE", coverage_end),
@@ -222,27 +335,43 @@ class RosterHistoryBackfill:
         ]
         if request_clause:
             parameters.append(bigquery.ArrayQueryParameter("requests", "STRING", [row["request_id"] for row in expected]))
+            parameters.append(bigquery.ArrayQueryParameter("traces", "STRING", sorted({
+                str(row.get("trace_id") or "").strip() for row in expected if str(row.get("trace_id") or "").strip()})))
         return self.query(f"""SELECT {columns}, {partition} FROM `{self.dataset}.{table}`
           WHERE {partition} BETWEEN @coverage_start AND @coverage_end
           AND (user_id IN UNNEST(@users) OR event_id IN UNNEST(@events){request_clause})""", parameters)
 
-    def plan(self, roster_ids: list[str], start: datetime, end: datetime) -> dict[str, Any]:
+    def plan(self, roster_ids: list[str], start: datetime, end: datetime, selection: dict[str, list[str]] | None = None) -> dict[str, Any]:
         analytics_start = timestamp(self.settings.monitor_analytics_start_at)
         now = datetime.now(timezone.utc)
         if not analytics_start <= start < end <= now:
             raise ValueError("require analytics start <= start < end <= current time")
         zone = ZoneInfo(self.settings.monitor_timezone)
         users = select_users(self.directory, roster_ids)
-        rows = compile_selected(self.settings, self.firestore, users, start, end)
+        if selection is not None:
+            selection = event_selection(selection)
+        rows = compile_selected(self.settings, self.firestore, users, start, end, selection)
         # Include all current canonical partitions, not merely the requested
         # source window, to catch a conversation already saved on another day.
         coverage_start = analytics_start.astimezone(zone).date()
         coverage_end = now.astimezone(zone).date() + timedelta(days=1)
+        answer_trace_links = []
+        if selection is not None:
+            references = self.answer_reference_questions(rows.answers, coverage_start, coverage_end)
+            rows.answers, answer_trace_links = resolve_trace_linked_answers(rows.answers, references)
         existing, missing = {}, {}
         for family in FAMILIES:
             expected = getattr(rows, family)
             existing[family] = self.existing(family, users, expected, coverage_start, coverage_end)
-            missing[family] = missing_rows(family, expected, existing[family])
+            relevant = existing[family]
+            if selection is not None:
+                reject_legacy_aliases(family, expected, relevant)
+                # Explicit event selection isolates audited missing facts from
+                # unrelated legacy duplicates, while retaining every target
+                # collision (including another user's global request ID).
+                target_keys = set().union(*(_keys(family, row) for row in expected))
+                relevant = [row for row in relevant if _keys(family, row) & target_keys]
+            missing[family] = missing_rows(family, expected, relevant)
         question_identity = lambda row: (row.get("request_id"), row.get("user_id"), row.get("roster_id"))
         available_requests = {question_identity(row) for row in rows.questions}
         available_requests.update(question_identity(row) for row in existing["questions"])
@@ -260,12 +389,17 @@ class RosterHistoryBackfill:
             "compiled": {family: sorted([{key: value for key, value in row.items() if key != "materialized_at"}
                                         for row in getattr(rows, family)], key=_json) for family in FAMILIES},
         }
+        if selection is not None:
+            material["eventSelection"] = selection
+            material["answerTraceLinks"] = answer_trace_links
         digest = hashlib.sha256(_json(material).encode()).hexdigest()
         source_digest = hashlib.sha256(_json({key: value for key, value in material.items()
                                              if key not in {"existing", "publication", "coverageStart", "coverageEnd"}}).encode()).hexdigest()
         return {"planDigest": digest, "sourceDigest": source_digest, "publication": material["publication"], "users": users,
+                "answerTraceLinks": answer_trace_links,
                 "rows": rows, "missing": missing,
                 "summary": {"selectedUsers": len(users), "start": start.isoformat(), "end": end.isoformat(),
+                            "traceLinkedAnswers": len(answer_trace_links),
                             "source": {name: len(getattr(rows, name)) for name in FAMILIES},
                             "missing": {name: len(value) for name, value in missing.items()}}}
 
@@ -339,6 +473,8 @@ def main() -> int:
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
     parser.add_argument("--credential-file", required=True)
+    parser.add_argument("--event-manifest", type=Path,
+                        help="optional audited exact event IDs by family; unrelated existing facts are preserved")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--expected-plan-digest", default="")
     parser.add_argument("--freeze-snapshot", type=Path)
@@ -354,8 +490,10 @@ def main() -> int:
     job = RosterHistoryBackfill(settings, bigquery_client=bigquery.Client(project=settings.monitor_project_id, credentials=credentials),
                                firestore_client=firestore.Client(project=settings.monitor_project_id, database=settings.monitor_firestore_database, credentials=credentials))
     start, end = timestamp(args.start), timestamp(args.end)
+    selection = event_selection(json.loads(args.event_manifest.read_text(encoding="utf-8"))) if args.event_manifest else None
+    plan_args = (args.roster_id, start, end) if selection is None else (args.roster_id, start, end, selection)
     if not args.apply:
-        plan = job.plan(args.roster_id, start, end)
+        plan = job.plan(*plan_args)
         print(_json({"mode": "plan", "planDigest": plan["planDigest"], **plan["summary"]}))
         return 0
     verify_freeze(args.freeze_snapshot, settings, args.region, credential_file)
@@ -365,7 +503,7 @@ def main() -> int:
     owner._acquire_lease(lease_id)
     safe_release = True
     try:
-        plan = job.plan(args.roster_id, start, end)
+        plan = job.plan(*plan_args)
         if plan["planDigest"] != args.expected_plan_digest:
             raise ValueError("source, roster, canonical coverage, or publication changed; generate a new plan")
         verify_freeze(args.freeze_snapshot, settings, args.region, credential_file)
@@ -376,7 +514,7 @@ def main() -> int:
         safe_release = False  # A timeout may have committed; let the lease expire.
         job.apply_sql(plan, lease_id)
         safe_release = True
-        verification = job.plan(args.roster_id, start, end)
+        verification = job.plan(*plan_args)
         if (any(verification["missing"].values()) or verification["publication"] != plan["publication"]
             or verification["sourceDigest"] != plan["sourceDigest"]):
             raise ValueError("post-write coverage or unchanged-publication verification failed")

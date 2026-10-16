@@ -225,7 +225,8 @@ def test_existing_coverage_is_bounded_and_checks_global_request_collisions():
     sql, parameters = calls[0]
     assert "question_date BETWEEN @coverage_start AND @coverage_end" in sql
     assert "OR request_id IN UNNEST(@requests)" in sql
-    assert {parameter.name for parameter in parameters} == {"coverage_start", "coverage_end", "users", "events", "requests"}
+    assert "OR trace_id IN UNNEST(@traces)" in sql
+    assert {parameter.name for parameter in parameters} == {"coverage_start", "coverage_end", "users", "events", "requests", "traces"}
 
 
 def test_all_partitions_apply_in_one_atomic_insert_only_transaction_with_publication_cas():
@@ -396,3 +397,271 @@ def test_freeze_requires_recorded_empty_writer_inventory(monkeypatch, tmp_path):
     monkeypatch.setattr(recovery.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("invalid receipt must fail before live reads"))
     with pytest.raises(ValueError, match="freeze receipt"):
         recovery.verify_freeze(path, configured, "us-central1", "pinned.json")
+
+
+def selection(**overrides):
+    return {family: overrides.get(family, []) for family in recovery.FAMILIES}
+
+
+@pytest.mark.parametrize('manifest', [
+    {}, selection(), selection(questions=['']), selection(questions=['question:req1', 'question:req1']),
+    selection(questions='question:req1'), {**selection(questions=['question:req1']), 'unknown': []},
+])
+def test_exact_event_manifest_rejects_invalid_or_empty_scope(manifest):
+    with pytest.raises(ValueError, match='event manifest'):
+        recovery.event_selection(manifest)
+
+
+def test_manifest_filters_families_and_requires_every_source_identity():
+    manifest = selection(questions=['question:req1'])
+    rows = recovery.compile_selected(settings(), Firestore(), [user()], START, END, manifest)
+    assert len(rows.questions) == 1
+    assert not rows.answers and not rows.conversations and not rows.citations
+    with pytest.raises(ValueError, match='unique source facts'):
+        recovery.compile_selected(settings(), Firestore(), [user()], START, END,
+                                  selection(questions=['question:absent']))
+
+
+def test_manifest_preserves_unrelated_legacy_duplicates_but_default_stays_strict():
+    instance = job()
+    unrelated = question('question:old', request_id='old', message_id='old-message')
+    instance.existing = lambda family, *_args: [unrelated, dict(unrelated)] if family == 'questions' else []
+    instance.publication = lambda: {'data_through': END, 'published_run_id': 'run1', 'status': 'succeeded'}
+    with pytest.raises(ValueError, match='duplicate logical'):
+        instance.plan(['r1'], START, END)
+    plan = instance.plan(['r1'], START, END, selection(questions=['question:req1']))
+    assert len(plan['missing']['questions']) == 1 and not plan['missing']['answers']
+    # A concurrent change even to preserved facts still invalidates approval.
+    instance.existing = lambda family, *_args: [unrelated] if family == 'questions' else []
+    assert instance.plan(['r1'], START, END, selection(questions=['question:req1']))['planDigest'] != plan['planDigest']
+
+
+@pytest.mark.parametrize('current', [
+    question(user_id='other-owner'), question(roster_id='other-roster'),
+    question('other-event'), question(message_id='conflicting-message'),
+])
+def test_manifest_never_bypasses_target_collision_or_ownership_guards(current):
+    instance = job()
+    instance.existing = lambda family, *_args: [current] if family == 'questions' else []
+    instance.publication = lambda: {'data_through': END, 'published_run_id': 'run1', 'status': 'succeeded'}
+    with pytest.raises(ValueError):
+        instance.plan(['r1'], START, END, selection(questions=['question:req1']))
+
+
+def test_answer_only_manifest_requires_same_owner_question_and_binds_selection_digest():
+    instance = job()
+    instance.existing = lambda *_args: []
+    instance.publication = lambda: {'data_through': END, 'published_run_id': 'run1', 'status': 'succeeded'}
+    with pytest.raises(ValueError, match='answer without a question'):
+        instance.plan(['r1'], START, END, selection(answers=['answer:req1']))
+    instance.existing = lambda family, *_args: [question()] if family == 'questions' else []
+    first = instance.plan(['r1'], START, END, selection(answers=['answer:req1']))
+    assert len(first['missing']['answers']) == 1 and not first['missing']['questions']
+    second = instance.plan(['r1'], START, END, selection(questions=['question:req1'], answers=['answer:req1']))
+    assert first['sourceDigest'] != second['sourceDigest']
+
+
+def test_conversation_stream_is_exhausted_before_child_message_reads():
+    client = Firestore()
+    original = client.root.collection
+    state = {'active': False}
+    class StreamCollection(Collection):
+        def stream(self, **_kwargs):
+            state['active'] = True
+            yield from self.documents
+            state['active'] = False
+    conversation = client.root.children['conversations'][0]
+    child_collection = conversation.collection
+    def guarded(name):
+        assert not state['active'], 'outer stream held open during child RPC'
+        return child_collection(name)
+    conversation.collection = guarded
+    client.root.collection = lambda name: StreamCollection(original(name).documents)
+    assert len(recovery.compile_selected(settings(), client, [user()], START, END).questions) == 1
+
+
+def fallback_answer(**changes):
+    return {"event_id": "answer:history:source", "request_id": "history:source", "trace_id": "trace1",
+            "user_id": "subject-r1", "roster_id": "r1", "conversation_id": "c1", "message_id": "m2",
+            "measurement_available": False, "measurement_profile": "firestore_usage_only", **changes}
+
+
+def trace_question(**changes):
+    return question("question:trace1", request_id="trace1", trace_id="trace1", message_id="m2",
+                    question_ts=datetime(2026, 8, 20, 1, tzinfo=timezone.utc), **changes)
+
+
+def test_trace_answer_binding_changes_only_request_and_event_and_preserves_source():
+    source = fallback_answer()
+    current = trace_question()
+    resolved, proofs = recovery.resolve_trace_linked_answers([source], [current])
+    assert resolved == [{**source, "event_id": "answer:trace1", "request_id": "trace1"}]
+    assert source["event_id"] == "answer:history:source"
+    assert resolved[0]["measurement_available"] is False
+    assert proofs[0]["sourceAnswerEventId"] == source["event_id"]
+    assert proofs[0]["question"]["event_id"] == current["event_id"]
+
+
+@pytest.mark.parametrize("changes", [{"request_id": "producer-request"}, {"trace_id": ""}])
+def test_trace_binding_never_changes_explicit_request_or_trace_free_answer(changes):
+    source = fallback_answer(**changes)
+    assert recovery.resolve_trace_linked_answers([source], [trace_question()]) == ([source], [])
+
+
+def test_trace_answer_without_canonical_reference_preserves_fallback():
+    source = fallback_answer()
+    assert recovery.resolve_trace_linked_answers([source], []) == ([source], [])
+
+
+def test_trace_answer_ambiguous_global_question_reference_fails_closed():
+    current = trace_question()
+    with pytest.raises(ValueError, match="ambiguous canonical question"):
+        recovery.resolve_trace_linked_answers([fallback_answer()], [current, dict(current)])
+
+
+@pytest.mark.parametrize("changes", [
+    {"user_id": "other-user"}, {"roster_id": "other-roster"}, {"conversation_id": "other-conversation"},
+    {"message_id": "m1"}, {"trace_id": "other-trace"}, {"request_id": "other-request"}, {"event_id": ""},
+])
+def test_trace_answer_wrong_owner_or_incompatible_question_identity_is_rejected(changes):
+    with pytest.raises(ValueError, match="conflicts with its canonical question identity"):
+        recovery.resolve_trace_linked_answers([fallback_answer()], [{**trace_question(), **changes}])
+
+
+def test_trace_question_reference_query_is_global_and_partition_bounded():
+    instance = job()
+    calls = []
+    instance.query = lambda sql, parameters: calls.append((sql, parameters)) or []
+    instance.answer_reference_questions([fallback_answer()], START.date(), END.date())
+    sql, parameters = calls[0]
+    assert "question_date BETWEEN @coverage_start AND @coverage_end" in sql
+    assert "trace_id IN UNNEST(@answer_traces) OR request_id IN UNNEST(@answer_traces)" in sql
+    assert "user_id IN" not in sql
+    assert {parameter.name for parameter in parameters} == {"coverage_start", "coverage_end", "answer_traces"}
+    assert next(parameter for parameter in parameters if parameter.name == "answer_traces").values == ["trace1"]
+
+
+def trace_answer_job():
+    instance = job()
+    messages = instance.firestore.root.children["conversations"][0].children["messages"]
+    messages[1].payload.pop("requestId")
+    messages[1].payload["traceId"] = "trace1"
+    source = recovery.compile_selected(settings(), instance.firestore, [user()], START, END)
+    manifest = selection(answers=[source.answers[0]["event_id"]])
+    reference = trace_question()
+    instance.publication = lambda: {"data_through": END, "published_run_id": "run1", "status": "succeeded"}
+    instance.query = lambda *_args: [dict(reference)]
+    instance.existing = lambda family, *_args: [dict(reference)] if family == "questions" else []
+    return instance, manifest, reference
+
+
+def test_manifest_trace_answer_recovery_uses_validated_source_id_and_is_idempotent():
+    instance, manifest, reference = trace_answer_job()
+    first = instance.plan(["r1"], START, END, manifest)
+    assert not first["missing"]["questions"]
+    assert first["summary"]["traceLinkedAnswers"] == 1
+    assert first["missing"]["answers"][0]["event_id"] == "answer:trace1"
+    assert first["answerTraceLinks"][0]["sourceAnswerEventId"] == manifest["answers"][0]
+    saved_answer = dict(first["missing"]["answers"][0])
+    instance.existing = lambda family, *_args: ([dict(reference)] if family == "questions" else
+                                              [saved_answer] if family == "answers" else [])
+    after = instance.plan(["r1"], START, END, manifest)
+    assert all(not values for values in after["missing"].values())
+    assert after["sourceDigest"] == first["sourceDigest"]
+    assert after["planDigest"] != first["planDigest"]
+    assert after["answerTraceLinks"] == first["answerTraceLinks"]
+    with pytest.raises(ValueError, match="unique source facts"):
+        instance.plan(["r1"], START, END, selection(answers=["answer:trace1"]))
+
+
+def test_trace_reference_proof_changes_invalidate_source_digest_even_with_same_answer():
+    instance, manifest, reference = trace_answer_job()
+    first = instance.plan(["r1"], START, END, manifest)
+    reference["question_ts"] += timedelta(seconds=1)
+    after = instance.plan(["r1"], START, END, manifest)
+    assert after["rows"].answers == first["rows"].answers
+    assert after["sourceDigest"] != first["sourceDigest"]
+    assert after["planDigest"] != first["planDigest"]
+
+
+def test_manifest_trace_answer_no_reference_still_obeys_orphan_guard():
+    instance, manifest, _reference = trace_answer_job()
+    instance.query = lambda *_args: []
+    instance.existing = lambda *_args: []
+    with pytest.raises(ValueError, match="answer without a question"):
+        instance.plan(["r1"], START, END, manifest)
+
+
+def test_default_recovery_does_not_resolve_trace_linked_answers():
+    instance, _manifest, _reference = trace_answer_job()
+    instance.existing = lambda *_args: []
+    instance.answer_reference_questions = lambda *_args: pytest.fail("default mode must not resolve trace aliases")
+    plan = instance.plan(["r1"], START, END)
+    assert plan["rows"].answers[0]["request_id"].startswith("history:")
+    assert plan["answerTraceLinks"] == []
+
+
+def test_normalized_trace_answer_still_rejects_existing_answer_with_wrong_owner():
+    instance, manifest, reference = trace_answer_job()
+    conflicting = {**fallback_answer(), "event_id": "answer:trace1", "request_id": "trace1", "user_id": "other-user"}
+    instance.existing = lambda family, *_args: ([reference] if family == "questions" else
+                                              [conflicting] if family == "answers" else [])
+    with pytest.raises(ValueError, match="canonical identity conflicts"):
+        instance.plan(["r1"], START, END, manifest)
+
+
+def test_fallback_question_answer_pair_remains_idempotent_after_its_question_is_inserted():
+    instance, manifest, _reference = trace_answer_job()
+    source = recovery.compile_selected(settings(), instance.firestore, [user()], START, END)
+    manifest["questions"] = [source.questions[0]["event_id"]]
+    saved = {family: [] for family in recovery.FAMILIES}
+    instance.query = lambda *_args: list(saved["questions"])
+    instance.existing = lambda family, *_args: list(saved[family])
+    before = instance.plan(["r1"], START, END, manifest)
+    assert len(before["missing"]["questions"]) == len(before["missing"]["answers"]) == 1
+    assert before["answerTraceLinks"] == []
+    for family in recovery.FAMILIES:
+        saved[family] = list(before["missing"][family])
+    after = instance.plan(["r1"], START, END, manifest)
+    assert all(not values for values in after["missing"].values())
+    assert after["sourceDigest"] == before["sourceDigest"]
+    assert after["answerTraceLinks"] == []
+    assert after["rows"].answers[0]["request_id"].startswith("history:")
+
+
+@pytest.mark.parametrize("changes", [{"user_id": "other"}, {"roster_id": "other"}, {"conversation_id": "other"}])
+def test_existing_fallback_question_does_not_relax_ownership_or_conversation(changes):
+    source = fallback_answer()
+    current = {**trace_question(), "request_id": source["request_id"], **changes}
+    with pytest.raises(ValueError, match="conflicts with its canonical question identity"):
+        recovery.resolve_trace_linked_answers([source], [current])
+
+
+@pytest.mark.parametrize('alias', ['paired_message', 'trace'])
+def test_manifest_blocks_known_legacy_representations_without_counting_them_again(alias):
+    source = question(message_id='1787000000000-user', trace_id='source-trace')
+    current = question('old-event', request_id='old-request', message_id='1787000000000-assistant', trace_id='other-trace')
+    if alias == 'trace':
+        current.update(message_id='different-message', trace_id='source-trace')
+    with pytest.raises(ValueError, match='legacy identity alias'):
+        recovery.reject_legacy_aliases('questions', [source], [current])
+
+
+def test_legacy_alias_guard_leaves_exact_identity_to_normal_ownership_checks():
+    source = question(trace_id='trace')
+    current = question(user_id='wrong-owner', trace_id='trace')
+    recovery.reject_legacy_aliases('questions', [source], [current])
+    with pytest.raises(ValueError, match='identity conflicts'):
+        recovery.missing_rows('questions', [source], [current])
+
+
+def test_manifest_blocks_cross_owner_trace_alias_and_answer_paired_id_alias():
+    source = question(trace_id='source-trace')
+    other = question('other-event', request_id='other-request', message_id='other-message',
+                     user_id='other-owner', trace_id='source-trace')
+    with pytest.raises(ValueError, match='legacy identity alias'):
+        recovery.reject_legacy_aliases('questions', [source], [other])
+    source = question('answer:new', message_id='1787000000000-assistant')
+    old = question('answer:old', request_id='old', message_id='1787000000000-user')
+    with pytest.raises(ValueError, match='legacy identity alias'):
+        recovery.reject_legacy_aliases('answers', [source], [old])

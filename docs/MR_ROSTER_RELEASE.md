@@ -154,7 +154,19 @@ PYTHONPATH=. .venv/bin/python scripts/import_monitor_users.py ../user_list.xlsx 
    `requiresNormalRefresh=true`，并包含 `planDigest`、`verificationDigest`、
    原发布状态和验证时间。历史使用记录没有对应遥测时保留“未测量”状态，不能
    凭已有 Firestore 消息推断完整交付、耗时等遥测指标。
-6. 再运行新版普通刷新，发布包含完整名单和补齐历史的正式快照。
+6. 既有用户可能同时存在旧遥测与 Firestore 的不同事件表示。先核对请求、trace、
+   user/roster、会话和消息身份；不能凭原始条数差或引用序号变化认定缺失。
+   经逐项审查确实缺失时，可额外提供 `--event-manifest <JSON>`，JSON 必须包含
+   `questions`、`answers`、`conversations`、`citations` 四个事件 ID 数组；不写入的
+   家族使用空数组。仍需明确 `--roster-id`、时间窗口及新生成的 digest，且每批
+   不超过 20 人、10,000 条目标事实和 5 MB。所有目标 ID 必须在真实来源中唯一
+   找到，全部既有覆盖仍进入 digest；与目标相交的冲突、已知同一 turn 的旧消息
+   别名和 trace 别名仍会阻止写入，未选中的旧事实不会被更新或删除。
+   对只有 trace、缺少 request ID 的旧回答，仅在全局唯一的既有问题与其
+   user/roster、会话、assistant 消息 ID 完全一致，且 request ID 等于 trace
+   时，允许将该回答连接到既有问题。引用证明纳入 digest，并在写后重新核验；
+   不会因此新增问题，也不会把未测量指标改为成功。
+7. 再运行新版普通刷新，发布包含完整名单和补齐历史的正式快照。
    核对 `published_run_id`、`scope_policy_version=summary_department_v2`、
    范围指纹、数据质量结果和新 execution 的 immutable image/运行身份。
 
