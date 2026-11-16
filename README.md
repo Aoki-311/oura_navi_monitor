@@ -20,7 +20,7 @@ DM/HCS/ブロック MR 合集，比例按合并后的分子、分母重算。本
 - [最终产品与数据规范](docs/OURA_NAVI_MONITOR_FINAL_SPEC.md)
 - [字段白话辞典](docs/MONITOR_FIELD_CATALOG.md)
 - [实施、删除与切换清单](docs/IMPLEMENTATION_AND_CUTOVER_CHECKLIST.md)
-- [MR 名单与地图更新发布步骤](docs/MR_ROSTER_RELEASE.md)
+- [日常更新与名单发布流程](docs/MR_ROSTER_RELEASE.md)：以 `scripts/routine_release.py` 为入口
 - [文档权威说明](docs/README.md)
 
 ## 当前本地代码
@@ -34,7 +34,8 @@ DM/HCS/ブロック MR 合集，比例按合并后的分子、分母重算。本
 - `scripts/`：默认仅输出 plan；需要云端写入的脚本必须同时提供精确参数、
   受批准凭据和 `--apply`。
 - `deploy/`：唯一运行环境配置。Monitor Web 服务的候选创建由
-  `cloudbuild.yaml` 负责，正式流量只由 `scripts/promote_candidate.sh` 切换。
+  `cloudbuild.yaml` 负责；日常更新按 `scripts/routine_release.py` 的阶段与验收合同
+  切换 reader。`scripts/promote_candidate.sh` 保留初次迁移用途及原有校验合同。
 
 LCS 上游的结构化事件实现位于相邻仓库：
 
@@ -78,13 +79,18 @@ MONITOR_ADMIN_ALLOWLIST=2401145@tc.terumo.co.jp \
 - 历史原始来源 `run_googleapis_com_requests`、stdout、stderr 与 LCS Firestore
   不删除。旧 `monitor_answer_events` 只有在历史编译、数量核对和正式事实验收后
   才能删除；它的旧成功标志不会迁移成“完整交付率”。
+- 本次核对的旧 DTS 仍启用、观察状态为 `FAILED`，仅写四张旧表。实际 BigQuery
+  对象的依赖核对已证明它与当前 canonical API、增量 Chat/News 发布链分离。
+  日常更新保留 DTS 配置，并重新验证精确查询和依赖证明；这不代表初次迁移完成。
+  不调用仍读取旧 `monitor_answer_events` 的 `rebuild_history`；原始云端证据不入 Git。
 - 构建成功、候选 revision、IAP 登录验收、业务验收和生产流量是六个不同
   状态，不能互相代替。
 
 ## 用户名单更新
 
 `scripts/import_monitor_users.py` 按 A:G 标题识别唯一名单 sheet，不依赖 sheet 顺序。
-当前来源是 `user_list.xlsx` 的 `OurA-Naviユーザー管理`，其余开发、选项和地图 sheet
+当前来源是 `260811_OurANavi開発・運営業務チェックリスト_最終版_20261117.xlsx`
+的 `OurA-Naviユーザー管理`；每次使用前重算最新文件哈希，其余开发、选项和地图 sheet
 不会导入为用户。A:G 使用现有字段；H 列额外职务忽略，不保存、不显示；I 列
 `HCSチーム` 仅为 HCS 保存到 `team`。G 列同时识别 `MR(ブロック)`、
 `本社(MisW)`、`本社(セールスマーケ)` 及全角括号；旧 `MR`/`DM専任` 仍对应 DM。
@@ -102,7 +108,7 @@ MONITOR_ADMIN_ALLOWLIST=2401145@tc.terumo.co.jp \
 将其恢复。未出现在工作簿中的用户保持原状。先读当前名单：
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/import_monitor_users.py ../user_list.xlsx \
+PYTHONPATH=. .venv/bin/python scripts/import_monitor_users.py '<LATEST_WORKBOOK_XLSX>' \
   --sync --compare-current \
   --credential-file '<APPROVED_CREDENTIAL_PATH>'
 ```
@@ -128,8 +134,11 @@ MR 人群。用户所属区域与县域图形是两个来源：例如最新名�
 4 名 HCS 仍按 A 列计入北海道東北，新潟县图形按地图表归関東A。
 
 Cloud Build 只创建无流量候选 Web 版本，不会自动同步名单或更新 Refresh Job。
-构建后仍须按 [MR 发布步骤](docs/MR_ROSTER_RELEASE.md) 更新统计任务、同步名单、
-核对并补齐新关联用户的历史覆盖、发布快照，以及验证候选页面和正常定时刷新。
+构建后按 [日常更新流程](docs/MR_ROSTER_RELEASE.md) 保存 Chat/News 两条链路与
+Scheduler 原始状态，冻结任务及租约；先切换兼容 v2/v3 的 reader，再仅更新 Job
+镜像、按新生成的同步 digest 写入名单、刷新两条链路并完成 v3 真实验收，最后恢复
+触发器原始状态并验证自然定时执行。本次保留原有 7 名停用用户，不删除真实用户，
+不导入 H 列附加职务。新增关联用户的旧历史需单独核对覆盖，不能由增量刷新推定。
 
 ## 删除Monitor用户
 
