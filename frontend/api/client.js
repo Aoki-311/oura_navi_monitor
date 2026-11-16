@@ -26,6 +26,7 @@ function localizedError(status, detail) {
   const parsed = detailParts(detail);
   const byCode = {
     user_not_found: "対象ユーザーが見つかりません。",
+    user_deleted: "対象ユーザーは既に削除されています。最新の一覧を確認します。",
     update_conflict: "別の管理者が先に更新しました。最新の内容を読み直してください。",
     label_in_use: "使用中のラベルは削除できません。",
     duplicate_email: "同じメールアドレスのユーザーが既に登録されています。",
@@ -172,6 +173,7 @@ export const getManagementMetadata = (options = {}) => requestJson("GET", "/api/
 export const previewManagedUserScope = (body, options = {}) => requestJson("POST", "/api/admin/scope-preview", { body, ...options });
 export const createManagedUser = (body, options = {}) => requestJson("POST", "/api/admin/users", { body, ...options });
 export const updateManagedUser = (rosterId, body, options = {}) => requestJson("PATCH", `/api/admin/users/${encodeURIComponent(rosterId)}`, { body, ...options });
+export const deleteManagedUser = (rosterId, body, options = {}) => requestJson("DELETE", `/api/admin/users/${encodeURIComponent(rosterId)}`, { body, ...options });
 export const getManagedLabels = (params = {}, options = {}) => requestJson("GET", "/api/admin/labels", { params, ...options });
 export const createManagedLabel = (body, options = {}) => requestJson("POST", "/api/admin/labels", { body, ...options });
 export const updateManagedLabel = (labelId, body, options = {}) => requestJson("PATCH", `/api/admin/labels/${encodeURIComponent(labelId)}`, { body, ...options });

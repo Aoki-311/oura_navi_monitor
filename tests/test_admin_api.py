@@ -86,6 +86,58 @@ def _settings():
     )
 
 
+def test_user_delete_contract_readback_and_default_exclusion() -> None:
+    class ArchiveService(_AdminService):
+        def __init__(self):
+            super().__init__()
+            self.user = self._user()
+
+        def list_users(self, *, include_inactive=True, include_deleted=False):
+            if self.user.get("is_deleted") and not include_deleted:
+                return []
+            if not include_inactive and not self.user["is_active"]:
+                return []
+            return [self.user]
+
+        def delete_user(self, roster_id, payload, *, actor):
+            assert roster_id == "roster_1" and actor == "admin@example.com"
+            if self.user.get("is_deleted"):
+                raise ManagementError("user_deleted", "user is already deleted")
+            assert payload.expected_updated_at == "2026-08-24T00:00:00+00:00"
+            assert payload.expected_scope_policy_version == SCOPE_POLICY_VERSION
+            self.user = {
+                **self.user, "is_deleted": True, "is_active": False,
+                "deleted_at": self.user["updated_at"], "deleted_by": actor,
+            }
+            return self.user
+
+    service = ArchiveService()
+    app.dependency_overrides[get_settings] = _settings
+    app.dependency_overrides[get_user_management_service] = lambda: service
+    client = TestClient(app)
+    headers = {"x-monitor-admin-email": "admin@example.com"}
+    payload = {"expected_updated_at": "2026-08-24T00:00:00+00:00", "expected_scope_policy_version": SCOPE_POLICY_VERSION}
+    try:
+        assert client.request("DELETE", "/api/admin/users/roster_1", json=payload).status_code == 401
+        missing_receipt = client.request("DELETE", "/api/admin/users/roster_1", json={}, headers=headers)
+        assert missing_receipt.status_code == 422
+        response = client.request("DELETE", "/api/admin/users/roster_1", json=payload, headers=headers)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["isDeleted"] is True and result["isActive"] is False
+        assert result["deletedAt"] == "2026-08-24T00:00:00+00:00"
+        assert result["deletedBy"] == "admin@example.com"
+        assert result["globalScopeEnabled"] is False and result["userMapScopeEnabled"] is False
+        assert client.get("/api/admin/users", headers=headers).json()["users"] == []
+        archived = client.get("/api/admin/users?include_deleted=true", headers=headers).json()["users"]
+        assert len(archived) == 1 and archived[0]["isDeleted"] is True
+        repeated = client.request("DELETE", "/api/admin/users/roster_1", json=payload, headers=headers)
+        assert repeated.status_code == 409
+        assert repeated.json()["detail"]["code"] == "user_deleted"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_admin_contract_rejects_scope_flags_and_translates_label_conflict() -> None:
     service = _AdminService()
     app.dependency_overrides[get_settings] = _settings

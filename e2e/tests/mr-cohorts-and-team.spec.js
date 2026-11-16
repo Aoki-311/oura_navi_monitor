@@ -15,11 +15,12 @@ async function installCohortMocks(page, requests, { delayedCohort = "", failCoho
     requests.push({ path: url.pathname, search: url.search, method: "GET" });
     if (cohort === delayedCohort) await new Promise((resolve) => setTimeout(resolve, 400));
     if (cohort === failCohort) return route.fulfill({ status: 503, json: { detail: "unavailable" } });
-    const count = { all: 144, dm: 69, hcs: 75 }[cohort];
+    const count = { all: 155, dm: 69, hcs: 75, block: 11 }[cohort];
     const users = [
       { ...overviewUsers.users[0], rosterId: "dm_1", name: "DM利用者", department: "MR(DM)" },
       { ...overviewUsers.users[0], rosterId: "hcs_1", name: "HCS利用者", role: "社員MR", department: "MR(HCS)" },
-    ].filter((row) => cohort === "all" || row.department === `MR(${cohort.toUpperCase()})`);
+      { ...overviewUsers.users[0], rosterId: "block_1", name: "ブロック利用者", role: "社員MR", department: "MR(ブロック)" },
+    ].filter((row) => cohort === "all" || row.department === ({ dm: "MR(DM)", hcs: "MR(HCS)", block: "MR(ブロック)" })[cohort]);
     const base = url.pathname.endsWith("/regions") ? regions
       : url.pathname.endsWith("/overview/users") ? { ...overviewUsers, users }
         : url.pathname.startsWith("/api/news-usage/") ? newsUsage
@@ -40,10 +41,11 @@ test("MR tabs scope every overview module, preserve filters and roundtrip throug
   const requests = [];
   await installCohortMocks(page, requests, { delayedCohort: "hcs" });
   await page.goto("/dashboard?preset=last_30d&area=%E9%96%A2%E8%A5%BF");
-  await expectCohort(page, requests, "all", 144);
+  await expectCohort(page, requests, "all", 155);
   await expect(page.locator("#overviewUsers")).toContainText("DM利用者");
   await expect(page.locator("#overviewUsers")).toContainText("HCS利用者");
-  await page.getByRole("tab", { name: "MR(HCS)", exact: true }).click();
+  await expect(page.locator("#overviewUsers")).toContainText("ブロック利用者");
+  await page.getByRole("tab", { name: "HCS", exact: true }).click();
   await expect(page).toHaveURL(/cohort=hcs/);
   await expect(page.locator("#overviewUsers")).toHaveCount(0);
   await expectCohort(page, requests, "hcs", 75);
@@ -59,7 +61,7 @@ test("MR tabs scope every overview module, preserve filters and roundtrip throug
   await page.getByRole("button", { name: "CSV", exact: true }).click();
   await download;
   expect(requests.find((row) => row.path === "/api/export/jobs" && row.method === "POST").body).toMatchObject({ cohort: "hcs", areaKey: "関西", preset: "last_30d" });
-  await page.getByRole("tab", { name: "MR(DM)", exact: true }).click();
+  await page.getByRole("tab", { name: "DM", exact: true }).click();
   await expectCohort(page, requests, "dm", 69);
   await expect(page.locator("#overviewUsers")).toContainText("DM利用者");
   await page.goBack();
@@ -72,8 +74,8 @@ test("a failed cohort switch never leaves the previous cohort data under the new
   const requests = [];
   await installCohortMocks(page, requests, { failCohort: "hcs" });
   await page.goto("/dashboard");
-  await expectCohort(page, requests, "all", 144);
-  await page.getByRole("tab", { name: "MR(HCS)", exact: true }).click();
+  await expectCohort(page, requests, "all", 155);
+  await page.getByRole("tab", { name: "HCS", exact: true }).click();
   await expect(page.locator('[data-cohort="hcs"]')).toHaveAttribute("aria-selected", "true");
   await expect(page.locator('[data-module="kpis"]')).toContainText("データを読み込めませんでした");
   await expect(page.locator("#overviewUsers")).toHaveCount(0);
@@ -144,7 +146,7 @@ test("MR tabs support keyboard navigation without losing tab focus", async ({ pa
   const requests = [];
   await installCohortMocks(page, requests);
   await page.goto("/dashboard");
-  await expectCohort(page, requests, "all", 144);
+  await expectCohort(page, requests, "all", 155);
   await page.locator('[data-cohort="all"]').focus();
   await page.keyboard.press("ArrowRight");
   await expectCohort(page, requests, "dm", 69);
@@ -152,4 +154,28 @@ test("MR tabs support keyboard navigation without losing tab focus", async ({ pa
   await page.keyboard.press("ArrowRight");
   await expectCohort(page, requests, "hcs", 75);
   await expect(page.locator('[data-cohort="hcs"]')).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expectCohort(page, requests, "block", 11);
+  await expect(page.locator('[data-cohort="block"]')).toBeFocused();
+});
+
+test("block has its own overview, news, users and export and survives a reload", async ({ page }) => {
+  const requests = [];
+  await installCohortMocks(page, requests);
+  await page.goto("/dashboard?cohort=block");
+  await expectCohort(page, requests, "block", 11);
+  await expect(page.locator("#overviewUsers")).toContainText("ブロック利用者");
+  await expect(page.locator("#overviewUsers")).not.toContainText("DM利用者");
+  await expect(page.locator("#overviewUsers")).not.toContainText("HCS利用者");
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "CSV", exact: true }).click();
+  await download;
+  expect(requests.find((row) => row.path === "/api/export/jobs" && row.method === "POST").body.cohort).toBe("block");
+  await page.reload();
+  await expectCohort(page, requests, "block", 11);
+  await page.locator('[data-cohort="all"]').click();
+  await expectCohort(page, requests, "all", 69 + 75 + 11);
+  await expect(page.locator("#overviewUsers")).toContainText("DM利用者");
+  await expect(page.locator("#overviewUsers")).toContainText("HCS利用者");
+  await expect(page.locator("#overviewUsers")).toContainText("ブロック利用者");
 });

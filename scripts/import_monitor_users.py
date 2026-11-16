@@ -31,8 +31,11 @@ REMARK_TO_DEPARTMENT = {
     "MR": Department.DM_FIELD,
     "MR(DM)": Department.DM_FIELD,
     "MR(HCS)": Department.HCS_FIELD,
+    "MR(ブロック)": Department.BLOCK_FIELD,
     "本社(DM)": Department.DM_HQ,
     "本社(ヘルスケア)": Department.HEALTHCARE_HQ,
+    "本社(MisW)": Department.MISW_HQ,
+    "本社(セールスマーケ)": Department.SALES_MARKETING_HQ,
     "システム管理者": Department.ADMIN,
 }
 EXPECTED_HEADERS = (
@@ -101,7 +104,8 @@ def load_roster_plan(
         # This workbook calls the Toranomon headquarters 東京. Preserve the
         # existing canonical headquarters identity, never infer field regions.
         if (area, workplace) == ("東京", "虎ノ門") and department in {
-            Department.DM_HQ, Department.HEALTHCARE_HQ, Department.ADMIN,
+            Department.DM_HQ, Department.HEALTHCARE_HQ, Department.MISW_HQ,
+            Department.SALES_MARKETING_HQ, Department.ADMIN,
         }:
             area = "本社"
             normalized_headquarters_rows.append(row_number)
@@ -114,7 +118,7 @@ def load_roster_plan(
             department=department,
             mr_experience=(
                 normalize_roster_text(row["テルモMR経歴"])
-                if department in {Department.DM_FIELD, Department.HCS_FIELD}
+                if department in {Department.DM_FIELD, Department.HCS_FIELD, Department.BLOCK_FIELD}
                 else "-"
             ),
             team=normalize_roster_text(values[8]) if has_team and department is Department.HCS_FIELD else "",
@@ -195,7 +199,9 @@ def _directory_for(credential_file: str) -> UserDirectoryRepository:
 
 def _apply_plan(plan: RosterPlan, *, actor: str, credential_file: str) -> dict[str, Any]:
     directory = _directory_for(credential_file)
-    existing = directory.list_users(include_inactive=True)
+    existing = directory.list_users(include_inactive=True, include_deleted=True)
+    if any(item.get("is_deleted") is True for item in existing):
+        raise RuntimeError("bootstrap import cannot run with deleted roster identities; use --sync to preserve them")
     planned_by_id = {str(item["roster_id"]): item for item in plan.users}
     existing_by_id = {
         str(item.get("roster_id") or ""): item
@@ -242,7 +248,7 @@ def _apply_plan(plan: RosterPlan, *, actor: str, credential_file: str) -> dict[s
             actor=actor,
         )
         created += 1
-    applied = directory.list_users(include_inactive=True)
+    applied = directory.list_users(include_inactive=True, include_deleted=True)
     expected_ids = {str(item["roster_id"]) for item in plan.users}
     applied_ids = {str(item.get("roster_id") or "") for item in applied}
     if applied_ids != expected_ids:
@@ -260,7 +266,7 @@ def _apply_plan(plan: RosterPlan, *, actor: str, credential_file: str) -> dict[s
 
 
 _SOURCE_FIELDS = ("name", "email", "area", "workplace", "role", "department", "mr_experience", "team")
-_PRESERVED_FIELDS = ("label_ids", "is_active", "created_at")
+_PRESERVED_FIELDS = ("label_ids", "is_active", "created_at", "is_deleted", "deleted_at", "deleted_by")
 _IDENTITY_FIELDS = ("user_id", "chat_user_id", "identity_bound_at")
 
 
@@ -280,8 +286,14 @@ def _sync_diff(plan: RosterPlan, existing: list[dict[str, Any]]) -> dict[str, An
     creates: list[dict[str, Any]] = []
     updates: list[dict[str, Any]] = []
     unchanged = 0
+    deleted_in_workbook = 0
     for planned in plan.users:
         current = by_email.get(planned["email"])
+        if current is not None and current.get("is_deleted") is True:
+            # An administrator's deletion takes precedence over a stale Excel
+            # row. Keep the reserved identity; never recreate or reactivate it.
+            deleted_in_workbook += 1
+            continue
         if current is None:
             if planned["roster_id"] in ids:
                 raise RuntimeError("new email conflicts with an existing stable roster id")
@@ -311,11 +323,16 @@ def _sync_diff(plan: RosterPlan, existing: list[dict[str, Any]]) -> dict[str, An
     invalid = [
         record for record in records
         if "duplicate_identity" in record.issues
-        or (record.value.get("email") in planned_emails and not record.analytics_eligible)
+        or (
+            record.value.get("email") in planned_emails
+            and record.value.get("is_deleted") is not True
+            and not record.analytics_eligible
+        )
     ]
     if invalid:
         issues = sorted({issue for record in invalid for issue in record.issues})
         raise RuntimeError("sync candidate roster is invalid: " + ", ".join(issues))
+    retained = [record for record in records if record.value.get("is_deleted") is not True]
     digest_source = {
         "policy": SCOPE_POLICY_VERSION,
         "planned": sorted(plan.users, key=lambda item: item["email"]),
@@ -329,7 +346,18 @@ def _sync_diff(plan: RosterPlan, existing: list[dict[str, Any]]) -> dict[str, An
             "createUsers": len(creates),
             "updateUsers": len(updates),
             "unchangedUsers": unchanged,
-            "outsideWorkbookUsers": len(existing) - len(updates) - unchanged,
+            "outsideWorkbookUsers": len(existing) - len(updates) - unchanged - deleted_in_workbook,
+            "deletedWorkbookUsers": deleted_in_workbook,
+            "resultingRosterCounts": {
+                "registered": len(retained),
+                "active": sum(record.value.get("is_active") is True for record in retained),
+                "inactive": sum(record.value.get("is_active") is False for record in retained),
+                "deleted": len(records) - len(retained),
+            },
+            "resultingScopeCounts": {
+                "global": sum(record.analytics_eligible and record.evaluation.membership.global_enabled for record in retained),
+                "user_map": sum(record.analytics_eligible and record.evaluation.membership.user_map_enabled for record in retained),
+            },
             "changedFieldCounts": dict(Counter(key for item in updates for key in item["changes"])),
             "syncDigest": digest,
         },
@@ -340,7 +368,7 @@ def _apply_sync(
     plan: RosterPlan, *, directory: UserDirectoryRepository, actor: str,
     expected_sync_digest: str,
 ) -> dict[str, Any]:
-    before = directory.list_users(include_inactive=True)
+    before = directory.list_users(include_inactive=True, include_deleted=True)
     diff = _sync_diff(plan, before)
     if not expected_sync_digest or expected_sync_digest != diff["summary"]["syncDigest"]:
         raise RuntimeError("sync plan changed; compare the current roster and use its exact syncDigest")
@@ -368,7 +396,7 @@ def _apply_sync(
             UserCreate(**{key: item[key] for key in _SOURCE_FIELDS}, expected_scope_policy_version=SCOPE_POLICY_VERSION),
             actor=actor,
         )
-    after = directory.list_users(include_inactive=True)
+    after = directory.list_users(include_inactive=True, include_deleted=True)
     remaining = _sync_diff(plan, after)
     if remaining["creates"] or remaining["updates"]:
         raise RuntimeError("sync readback differs from the workbook")
@@ -381,7 +409,11 @@ def _apply_sync(
             raise RuntimeError("sync readback did not preserve existing labels/status/creation time")
         if any(old.get(key) and current.get(key) != old.get(key) for key in _IDENTITY_FIELDS):
             raise RuntimeError("sync readback did not preserve a bound identity")
-    return {**diff["summary"], "appliedUsers": len(plan.users), "readbackMatched": True}
+    return {
+        **diff["summary"],
+        "appliedUsers": len(plan.users) - diff["summary"]["deletedWorkbookUsers"],
+        "readbackMatched": True,
+    }
 
 
 def main() -> int:
@@ -417,7 +449,7 @@ def main() -> int:
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     if args.compare_current:
         directory = _directory_for(args.credential_file or "")
-        comparison = _sync_diff(plan, directory.list_users(include_inactive=True))
+        comparison = _sync_diff(plan, directory.list_users(include_inactive=True, include_deleted=True))
         print(json.dumps({"syncPlan": comparison["summary"]}, ensure_ascii=False, sort_keys=True))
         return 0
     if not args.apply:

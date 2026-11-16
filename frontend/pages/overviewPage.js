@@ -19,7 +19,7 @@ import {
   displayRate,
 } from "../viewModels/formatters.js";
 
-const COHORT_LABELS = Object.freeze({ all: "全体MR", dm: "MR(DM)", hcs: "MR(HCS)" });
+const COHORT_LABELS = Object.freeze({ all: "全体", dm: "DM", hcs: "HCS", block: "ブロック" });
 const OVERVIEW_MODULES = ["kpis", "activity", "products"];
 const MAX_SNAPSHOT_ATTEMPTS = 3;
 const MAX_COMMITTED_ANCHOR_AGE_MS = 4 * 60 * 1000;

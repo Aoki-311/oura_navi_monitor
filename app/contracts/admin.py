@@ -51,6 +51,13 @@ class UserPatch(BaseModel):
         return normalize_email(value) if value is not None else None
 
 
+class UserDelete(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    expected_updated_at: str = Field(max_length=80)
+    expected_scope_policy_version: str = Field(min_length=1, max_length=80)
+
+
 class LabelCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=40)
@@ -103,6 +110,9 @@ class UserView(BaseModel):
     team: str
     labelIds: list[str]
     isActive: bool
+    isDeleted: bool
+    deletedAt: str | None
+    deletedBy: str
     identityBound: bool
     globalScopeEnabled: bool
     userMapScopeEnabled: bool

@@ -4,7 +4,9 @@ from typing import Any
 
 from app.domain.analysis_scopes import (
     AnalysisScope,
+    Department,
     LEGACY_SCOPE_POLICY_VERSION,
+    PREVIOUS_SCOPE_POLICY_VERSION,
     READABLE_SCOPE_POLICY_VERSIONS,
     membership_for,
     normalize_role,
@@ -38,6 +40,21 @@ def validated_published_roster(
             global_enabled = user_map_enabled and normalize_role(raw.get("role")) in {
                 "本社MR", "コントラクトMR",
             }
+        elif policy_version == PREVIOUS_SCOPE_POLICY_VERSION:
+            # Freeze v2's department/role contract. Today's enum and membership
+            # include new departments that a v2 writer could never publish.
+            department = Department(raw.get("department", ""))
+            if department not in {
+                Department.DM_FIELD, Department.HCS_FIELD,
+                Department.HEALTHCARE_HQ, Department.DM_HQ, Department.ADMIN,
+            }:
+                raise ValueError("published roster contains invalid v2 department")
+            user_map_enabled = department is not Department.ADMIN
+            global_enabled = department in {
+                Department.DM_FIELD, Department.HCS_FIELD,
+            } and normalize_role(raw.get("role")) in {
+                "社員MR", "本社MR", "コントラクトMR",
+            }
         else:
             structural = membership_for(
                 role=raw.get("role"), department=raw.get("department", ""),
@@ -70,4 +87,5 @@ def current_scope_rows(
     return [row for row in rows if membership_for(
         role=row.get("role"), department=row.get("department", ""),
         is_active=row.get("is_active") is True,
+        is_deleted=row.get("is_deleted") is True,
     ).includes(scope)]

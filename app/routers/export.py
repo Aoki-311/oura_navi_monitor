@@ -35,7 +35,7 @@ class ExportJobRequest(BaseModel):
     rosterId: str = Field(default="", max_length=80)
     preset: str = Field(default="")
     q: str = Field(default="", max_length=120)
-    cohort: Literal["all", "dm", "hcs"] = "all"
+    cohort: Literal["all", "dm", "hcs", "block"] = "all"
     areaKey: str = Field(default="", max_length=80)
     activity: str = Field(default="", pattern="^(|high|middle|low|dormant)$")
     sort: str = Field(default="last_desc", pattern="^(last_desc|name_asc|messages_desc|success_desc)$")

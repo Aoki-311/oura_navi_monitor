@@ -239,7 +239,7 @@ class ConversationRow(AnalyticsModel):
 
 
 class UsagePanelResponse(AnalyticsModel):
-    cohort: Literal["all", "dm", "hcs"] = "all"
+    cohort: Literal["all", "dm", "hcs", "block"] = "all"
     scope: Literal["global"]
     scopePolicyVersion: str
     rosterFingerprint: str
@@ -267,7 +267,7 @@ class TrendResponse(UsagePanelResponse):
 
 
 class OverviewResponse(AnalyticsModel):
-    cohort: Literal["all", "dm", "hcs"] = "all"
+    cohort: Literal["all", "dm", "hcs", "block"] = "all"
     scope: Literal["global"]
     scopePolicyVersion: str
     rosterFingerprint: str
@@ -298,7 +298,7 @@ class OverviewResponse(AnalyticsModel):
 
 
 class RegionsResponse(AnalyticsModel):
-    cohort: Literal["all", "dm", "hcs"] = "all"
+    cohort: Literal["all", "dm", "hcs", "block"] = "all"
     scope: Literal["global"]
     scopePolicyVersion: str
     rosterFingerprint: str
@@ -314,7 +314,7 @@ class RegionsResponse(AnalyticsModel):
 
 
 class UsersResponse(AnalyticsModel):
-    cohort: Literal["all", "dm", "hcs"] = "all"
+    cohort: Literal["all", "dm", "hcs", "block"] = "all"
     scope: Literal["global", "user_map"]
     scopePolicyVersion: str
     rosterFingerprint: str

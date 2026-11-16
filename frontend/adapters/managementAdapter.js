@@ -26,6 +26,9 @@ function parseUser(row) {
   if (!Array.isArray(row?.labelIds) || typeof row.isActive !== "boolean" || typeof row.identityBound !== "boolean" || typeof row.globalScopeEnabled !== "boolean" || typeof row.userMapScopeEnabled !== "boolean") {
     throw new Error("管理ユーザーの行形式が不正です");
   }
+  if (row.isDeleted != null && typeof row.isDeleted !== "boolean") {
+    throw new Error("管理ユーザーの削除状態が不正です");
+  }
   const scopePolicyVersion = optionalText(row.scopePolicyVersion, "scope policy").trim();
   const scopePolicyVerified = Boolean(scopePolicyVersion);
   const rosterIssues = Array.isArray(row.rosterIssues)
@@ -44,6 +47,8 @@ function parseUser(row) {
     mrExperience: optionalText(row.mrExperience, "mrExperience") || "-",
     labelIds: row.labelIds.map((value) => requiredText(value, "labelId")),
     isActive: row.isActive,
+    isDeleted: row.isDeleted === true,
+    deletedAt: optionalText(row.deletedAt, "deletedAt"),
     identityBound: row.identityBound,
     globalScopeEnabled: row.globalScopeEnabled,
     userMapScopeEnabled: row.userMapScopeEnabled,
@@ -74,8 +79,10 @@ function parseLabel(row) {
   };
 }
 
-export function managementUsersModel(payload) {
-  return rowsModel(payload, "users", parseUser, "管理ユーザー");
+export function managementUsersModel(payload, { includeDeleted = false } = {}) {
+  const model = rowsModel(payload, "users", parseUser, "管理ユーザー");
+  if (!includeDeleted) model.items = model.items.filter((row) => !row.isDeleted);
+  return model;
 }
 
 export function managementLabelsModel(payload) {

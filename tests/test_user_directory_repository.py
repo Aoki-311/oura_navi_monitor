@@ -199,6 +199,60 @@ def test_user_claims_and_audit_are_written_in_the_same_transaction() -> None:
     }
 
 
+def test_archive_retains_claims_history_and_legacy_fields_and_hides_only_deleted() -> None:
+    repository, client = _repository()
+    user = _user("roster_a", "a@example.com", "subject_a")
+    repository.put_user_and_change(user, _change("create_a", "create", "roster_a"))
+    # Archive is permitted even when the profile needs repair; no unrelated
+    # fields or historical collections may be replaced by this operation.
+    client.data["monitor_users"]["roster_a"].update({"label_ids": ["missing-label"], "legacy_field": "retain"})
+    client.data["chat_users"] = {"chat_a": {"history": ["retained"]}}
+    inactive = {**_user("roster_b", "b@example.com"), "is_active": False}
+    repository.put_user_and_change(inactive, _change("create_b", "create", "roster_b"))
+    claims_before = dict(client.data["monitor_unique_claims"])
+    audit = _change("delete_a", "delete", "roster_a")
+    archived = repository.archive_user_and_change(
+        "roster_a", audit, expected_updated_at=revision_text(user["updated_at"]),
+    )
+    assert archived["is_deleted"] is True and archived["is_active"] is False
+    assert archived["legacy_field"] == "retain"
+    assert archived["label_ids"] == ["missing-label"]
+    assert archived["user_id"] == "subject_a"
+    assert client.data["monitor_unique_claims"] == claims_before
+    assert client.data["chat_users"] == {"chat_a": {"history": ["retained"]}}
+    assert client.data["monitor_admin_changes"]["delete_a"] == audit
+    assert [row["roster_id"] for row in repository.list_users()] == ["roster_b"]
+    assert len(repository.list_users(include_deleted=True)) == 2
+    assert repository.list_users(include_inactive=False, include_deleted=True) == []
+    assert repository.find_user_by_email("A@EXAMPLE.COM")["is_deleted"] is True
+
+
+def test_archive_cas_and_all_identity_writers_reject_deleted_user() -> None:
+    repository, client = _repository()
+    user = _user("roster_a", "a@example.com", "subject_a")
+    repository.put_user_and_change(user, _change("create_a", "create", "roster_a"))
+    with pytest.raises(ManagementError) as stale:
+        repository.archive_user_and_change("roster_a", _change("stale", "delete", "roster_a"), expected_updated_at="stale")
+    assert stale.value.code == "update_conflict"
+    assert "stale" not in client.data["monitor_admin_changes"]
+    assert "is_deleted" not in client.data["monitor_users"]["roster_a"]
+    repository.archive_user_and_change("roster_a", _change("delete", "delete", "roster_a"), expected_updated_at=revision_text(user["updated_at"]))
+    operations = (
+        lambda: repository.put_user(user),
+        lambda: repository.put_user_and_change(user, _change("update", "update", "roster_a"), expected_updated_at=revision_text(user["updated_at"])),
+        lambda: repository.bind_user_identity("roster_a", chat_user_id="chat_a", user_id="subject_a", bound_at=user["updated_at"], change=_change("bind", "identity_bind", "roster_a")),
+        lambda: repository.archive_user_and_change("roster_a", _change("again", "delete", "roster_a"), expected_updated_at=revision_text(user["updated_at"])),
+    )
+    for operation in operations:
+        with pytest.raises(ManagementError) as deleted:
+            operation()
+        assert deleted.value.code == "user_deleted"
+    assert set(client.data["monitor_admin_changes"]) == {"create_a", "delete"}
+    with pytest.raises(ManagementError) as duplicate:
+        repository.put_user_and_change(_user("roster_other", "a@example.com"), _change("duplicate", "create", "roster_other"))
+    assert duplicate.value.code == "duplicate_email"
+
+
 def test_user_document_keeps_only_the_canonical_directory_contract() -> None:
     repository, client = _repository()
     payload = _user("roster_a", "a@example.com", "subject_a")

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.contracts.admin import LabelCreate, LabelPatch, UserCreate, UserPatch
+from app.contracts.admin import LabelCreate, LabelPatch, UserCreate, UserDelete, UserPatch
 from app.domain.analysis_scopes import AnalysisScope, SCOPE_POLICY_VERSION, membership_for
 from app.domain.management_errors import ManagementError, revision_text
 from app.services.user_management import UserManagementService
@@ -16,8 +16,10 @@ class MemoryDirectory:
         self.labels: dict[str, dict] = {}
         self.audit: list[dict] = []
 
-    def list_users(self, *, include_inactive: bool = True) -> list[dict]:
+    def list_users(self, *, include_inactive: bool = True, include_deleted: bool = False) -> list[dict]:
         values = list(self.users.values())
+        if not include_deleted:
+            values = [item for item in values if item.get("is_deleted") is not True]
         return values if include_inactive else [item for item in values if item["is_active"]]
 
     def get_user(self, roster_id: str) -> dict | None:
@@ -74,6 +76,18 @@ class MemoryDirectory:
     def list_labels(self, *, include_inactive: bool = True) -> list[dict]:
         values = list(self.labels.values())
         return values if include_inactive else [item for item in values if item["is_active"]]
+
+    def archive_user_and_change(self, roster_id: str, change: dict, *, expected_updated_at: str) -> dict:
+        current = self.users[roster_id]
+        if revision_text(current.get("updated_at")) != expected_updated_at:
+            raise ManagementError("update_conflict", "user delete conflict")
+        current.update({
+            "is_deleted": True, "is_active": False,
+            "deleted_at": change["updated_at"], "deleted_by": change["updated_by"],
+            "updated_at": change["updated_at"], "updated_by": change["updated_by"],
+        })
+        self.audit.append(dict(change))
+        return dict(current)
 
     def get_label(self, label_id: str) -> dict | None:
         return self.labels.get(label_id)
@@ -172,6 +186,64 @@ def test_create_user_derives_scope_from_department_and_never_from_labels() -> No
     ) == membership_for(
         role=created["role"], department=created["department"], is_active=created["is_active"]
     )
+
+
+def test_delete_user_archives_identity_and_prevents_reactivation() -> None:
+    manager, directory = service()
+    original = manager.create_user(
+        user_create(name="利用者", email="archive@example.com", area="関西", workplace="大阪",
+                    role="社員MR", department="MR(ブロック)", mr_experience="10年"),
+        actor="admin@example.com",
+    )
+    assert original["mr_experience"] == "10年"
+    bound = manager.bind_chat_identity(original["roster_id"], chat_user_id="chat-a", user_id="subject-a")
+    archived = manager.delete_user(
+        bound["roster_id"],
+        UserDelete(expected_updated_at=revision_text(bound["updated_at"]), expected_scope_policy_version=SCOPE_POLICY_VERSION),
+        actor="admin@example.com",
+    )
+    assert archived["is_deleted"] is True and archived["is_active"] is False
+    assert archived["chat_user_id"] == "chat-a" and archived["user_id"] == "subject-a"
+    assert archived["deleted_at"] == archived["updated_at"]
+    assert archived["deleted_by"] == "admin@example.com"
+    assert manager.list_users() == []
+    assert manager.list_users(include_deleted=True) == [archived]
+    audit = directory.audit[-1]
+    assert audit["action"] == "delete" and "is_deleted" in audit["changed_fields"]
+    assert audit["scope_before"]["global_scope_enabled"] is True
+    assert audit["scope_after"]["global_scope_enabled"] is False
+    with pytest.raises(ManagementError, match="deleted"):
+        manager.update_user(archived["roster_id"], patch_for(archived, is_active=True), actor="admin@example.com")
+    with pytest.raises(ManagementError, match="deleted"):
+        manager.bind_chat_identity(archived["roster_id"], chat_user_id="chat-a", user_id="subject-a")
+    with pytest.raises(ManagementError, match="already deleted"):
+        manager.delete_user(archived["roster_id"], UserDelete(
+            expected_updated_at=revision_text(archived["updated_at"]), expected_scope_policy_version=SCOPE_POLICY_VERSION,
+        ), actor="admin@example.com")
+    with pytest.raises(ManagementError, match="email already exists"):
+        manager.create_user(user_create(name="再登録", email="archive@example.com", area="関西", workplace="大阪",
+                                        role="社員MR", department="MR(DM)"), actor="admin@example.com")
+
+
+def test_delete_user_rejects_stale_revision_and_policy_and_keeps_inactive_distinct() -> None:
+    manager, directory = service()
+    original = manager.create_user(
+        user_create(name="停用者", email="inactive@example.com", area="関西", workplace="大阪",
+                    role="社員MR", department="MR(DM)", is_active=False), actor="admin@example.com",
+    )
+    assert manager.list_users() == [original]
+    assert original["is_deleted"] is False
+    for expected_revision, expected_policy, expected_code in (
+        ("stale", SCOPE_POLICY_VERSION, "update_conflict"),
+        (revision_text(original["updated_at"]), "old-policy", "scope_policy_conflict"),
+    ):
+        with pytest.raises(ManagementError) as error:
+            manager.delete_user(original["roster_id"], UserDelete(
+                expected_updated_at=expected_revision, expected_scope_policy_version=expected_policy,
+            ), actor="admin@example.com")
+        assert error.value.code == expected_code
+    assert len(directory.audit) == 1
+    assert manager.list_users() == [original]
 
 
 def test_hcs_team_roundtrip_edit_clear_and_transfer_preserve_user_identity() -> None:

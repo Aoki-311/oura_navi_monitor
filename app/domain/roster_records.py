@@ -156,6 +156,15 @@ def read_canonical_roster(value: object | None) -> CanonicalRosterRecord:
         source["is_active"] = False
         issues.append("invalid_is_active")
 
+    raw_is_deleted = source.get("is_deleted", False)
+    if isinstance(raw_is_deleted, bool):
+        source["is_deleted"] = raw_is_deleted
+    else:
+        source["is_deleted"] = False
+        issues.append("invalid_is_deleted")
+    if source["is_deleted"] or "invalid_is_deleted" in issues:
+        source["is_active"] = False
+
     evaluation = evaluate_membership(
         role=source.get("role"),
         department=str(source.get("department") or ""),
@@ -183,6 +192,7 @@ def read_canonical_roster(value: object | None) -> CanonicalRosterRecord:
         "missing_email",
         "invalid_email",
         "invalid_is_active",
+        "invalid_is_deleted",
     }
     projection_blockers = {
         "invalid_roster_record",
@@ -199,6 +209,7 @@ def read_canonical_roster(value: object | None) -> CanonicalRosterRecord:
         "invalid_headquarters_workplace",
         "invalid_department",
         "invalid_is_active",
+        "invalid_is_deleted",
         "invalid_label_ids",
     }
     analytics_blockers = set(projection_blockers)
@@ -208,9 +219,9 @@ def read_canonical_roster(value: object | None) -> CanonicalRosterRecord:
         document_id=document_id,
         issues=unique_issues,
         evaluation=evaluation,
-        identity_eligible=not bool(issue_set & identity_blockers),
-        projection_eligible=not bool(issue_set & projection_blockers),
-        analytics_eligible=not bool(issue_set & analytics_blockers),
+        identity_eligible=not source["is_deleted"] and not bool(issue_set & identity_blockers),
+        projection_eligible=not source["is_deleted"] and not bool(issue_set & projection_blockers),
+        analytics_eligible=not source["is_deleted"] and not bool(issue_set & analytics_blockers),
     )
 
 

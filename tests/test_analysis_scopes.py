@@ -31,7 +31,7 @@ def test_summary_scope_is_owned_by_exact_canonical_role() -> None:
         assert not result.includes(AnalysisScope.GLOBAL)
         assert result.includes(AnalysisScope.USER_MAP)
 
-    assert SCOPE_POLICY_VERSION == "summary_department_v2"
+    assert SCOPE_POLICY_VERSION == "summary_department_v3"
 
 
 def test_headquarters_and_admin_never_join_field_summary() -> None:
@@ -71,6 +71,38 @@ def test_inactive_user_is_excluded_from_every_analysis_scope() -> None:
     result = membership("本社MR", Department.DM_FIELD, is_active=False)
     assert not result.includes(AnalysisScope.GLOBAL)
     assert not result.includes(AnalysisScope.USER_MAP)
+
+
+@pytest.mark.parametrize("role", SUMMARY_ROLES)
+def test_block_is_an_independent_field_cohort(role: str) -> None:
+    row = {"role": role, "department": "MR（ブロック）", "is_active": True}
+    assert summary_cohort_matches(row, "all")
+    assert summary_cohort_matches(row, "block")
+    assert not summary_cohort_matches(row, "dm")
+    assert not summary_cohort_matches(row, "hcs")
+    assert membership(role, Department.BLOCK_FIELD).user_map_enabled
+
+
+def test_new_headquarters_follow_their_distinct_statistics_boundaries() -> None:
+    misw = membership("社員MR", Department.MISW_HQ)
+    assert not misw.global_enabled
+    assert not misw.user_map_enabled
+    sales = membership("本部メンバー", Department.SALES_MARKETING_HQ)
+    assert not sales.global_enabled
+    assert sales.user_map_enabled
+
+
+def test_deleted_users_never_gain_membership_from_an_active_flag() -> None:
+    result = membership_for(
+        role="社員MR", department=Department.BLOCK_FIELD,
+        is_active=True, is_deleted=True,
+    )
+    assert not result.global_enabled
+    assert not result.user_map_enabled
+    assert not summary_cohort_matches({
+        "role": "社員MR", "department": "MR(ブロック)",
+        "is_active": True, "is_deleted": True,
+    }, "block")
 
 
 def test_initial_roster_shape_produces_61_80_83_without_count_constants() -> None:

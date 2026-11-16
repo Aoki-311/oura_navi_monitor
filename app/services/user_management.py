@@ -9,6 +9,7 @@ from app.contracts.admin import (
     LabelCreate,
     LabelPatch,
     UserCreate,
+    UserDelete,
     UserPatch,
     normalize_email,
 )
@@ -34,7 +35,7 @@ from app.domain.user_identity import roster_id_for_email
 
 
 class UserDirectory(Protocol):
-    def list_users(self, *, include_inactive: bool = True) -> list[dict[str, Any]]: ...
+    def list_users(self, *, include_inactive: bool = True, include_deleted: bool = False) -> list[dict[str, Any]]: ...
     def get_user(self, roster_id: str) -> dict[str, Any] | None: ...
     def find_user_by_email(self, email: str) -> dict[str, Any] | None: ...
     def put_user(self, user: dict[str, Any]) -> dict[str, Any]: ...
@@ -53,6 +54,9 @@ class UserDirectory(Protocol):
         user_id: str,
         bound_at: Any,
         change: dict[str, Any],
+    ) -> dict[str, Any]: ...
+    def archive_user_and_change(
+        self, roster_id: str, change: dict[str, Any], *, expected_updated_at: str,
     ) -> dict[str, Any]: ...
     def list_labels(self, *, include_inactive: bool = True) -> list[dict[str, Any]]: ...
     def get_label(self, label_id: str) -> dict[str, Any] | None: ...
@@ -123,7 +127,7 @@ class UserManagementService:
         before = dict(before or {})
         after = dict(after or {})
         tracked_fields = (
-            ("role", "department", "is_active", "label_ids", "area", "workplace", "mr_experience", "team")
+            ("role", "department", "is_active", "is_deleted", "deleted_at", "deleted_by", "label_ids", "area", "workplace", "mr_experience", "team")
             if target_type == "user"
             else ("name", "color", "is_active")
         )
@@ -277,8 +281,8 @@ class UserManagementService:
                 raise ManagementError("invalid_roster_value", "unknown or inactive labels")
         return list(dict.fromkeys([*requested, *preserved_inactive]))
 
-    def list_users(self, *, include_inactive: bool = True) -> list[dict[str, Any]]:
-        return self._directory.list_users(include_inactive=include_inactive)
+    def list_users(self, *, include_inactive: bool = True, include_deleted: bool = False) -> list[dict[str, Any]]:
+        return self._directory.list_users(include_inactive=include_inactive, include_deleted=include_deleted)
 
     def metadata(self) -> dict[str, Any]:
         users = self._directory.list_users(include_inactive=True)
@@ -344,7 +348,7 @@ class UserManagementService:
             "department": department.value,
             "mr_experience": (
                 normalize_roster_text(payload.mr_experience) or "-"
-                if department in (Department.DM_FIELD, Department.HCS_FIELD)
+                if department in (Department.DM_FIELD, Department.HCS_FIELD, Department.BLOCK_FIELD)
                 else "-"
             ),
             "team": (
@@ -355,6 +359,7 @@ class UserManagementService:
             "label_ids": label_ids,
             "chat_user_id": "",
             "is_active": bool(payload.is_active),
+            "is_deleted": False,
             "created_at": now,
             "updated_at": now,
             "updated_by": normalize_email(actor),
@@ -375,6 +380,8 @@ class UserManagementService:
         current = self._directory.get_user(roster_id)
         if current is None:
             raise KeyError("user not found")
+        if current.get("is_deleted") is True:
+            raise ManagementError("user_deleted", "deleted user cannot be edited")
         changes = payload.model_dump(exclude_unset=True, exclude_none=True)
         expected_scope_policy_version = str(
             changes.pop("expected_scope_policy_version", "") or ""
@@ -420,7 +427,7 @@ class UserManagementService:
         updated["area_key"] = area_key_for(area=updated["area"], workplace=updated["workplace"])
         department = Department(updated["department"])
         updated["department"] = department.value
-        if department not in (Department.DM_FIELD, Department.HCS_FIELD):
+        if department not in (Department.DM_FIELD, Department.HCS_FIELD, Department.BLOCK_FIELD):
             updated["mr_experience"] = "-"
         updated["team"] = (
             normalize_roster_text(updated.get("team", ""))
@@ -442,6 +449,33 @@ class UserManagementService:
         )
         return stored
 
+    def delete_user(self, roster_id: str, payload: UserDelete, *, actor: str) -> dict[str, Any]:
+        """Archive a roster identity without removing its history or claims."""
+
+        self._require_scope_policy_version(payload.expected_scope_policy_version)
+        current = self._directory.get_user(roster_id)
+        if current is None:
+            raise KeyError("user not found")
+        if current.get("is_deleted") is True:
+            raise ManagementError("user_deleted", "user is already deleted")
+        if revision_text(current.get("updated_at")) != payload.expected_updated_at:
+            raise ManagementError("update_conflict", "user delete conflict")
+        now = datetime.now(timezone.utc)
+        actor_email = normalize_email(actor)
+        archived = {
+            **current, "is_deleted": True, "is_active": False,
+            "deleted_at": now, "deleted_by": actor_email,
+        }
+        change = self._change(
+            action="delete", target_type="user", target_id=roster_id,
+            actor=actor_email, before=current, after=archived,
+        )
+        # A single timestamp owns both the archive marker and the audit receipt.
+        change["updated_at"] = now
+        return self._directory.archive_user_and_change(
+            roster_id, change, expected_updated_at=payload.expected_updated_at,
+        )
+
     def bind_chat_identity(
         self,
         roster_id: str,
@@ -455,6 +489,8 @@ class UserManagementService:
         current = self._directory.get_user(roster_id)
         if current is None:
             raise KeyError("user not found")
+        if current.get("is_deleted") is True:
+            raise ManagementError("user_deleted", "deleted user cannot be bound")
         resolved_chat_user_id = str(chat_user_id or "").strip()
         resolved_user_id = str(user_id or "").strip()
         if not resolved_chat_user_id or not resolved_user_id:

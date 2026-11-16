@@ -16,6 +16,7 @@ from app.contracts.admin import (
     ScopePreviewRequest,
     ScopePreviewResponse,
     UserCreate,
+    UserDelete,
     UserListResponse,
     UserPatch,
     UserView,
@@ -66,6 +67,9 @@ def _user_payload(
         "team": value.get("team") or "",
         "labelIds": list(value.get("label_ids") or []),
         "isActive": bool(value.get("is_active")),
+        "isDeleted": value.get("is_deleted") is True,
+        "deletedAt": _iso(value.get("deleted_at")),
+        "deletedBy": str(value.get("deleted_by") or ""),
         "identityBound": bool(
             str(value.get("chat_user_id") or "").strip()
             or str(value.get("user_id") or "").strip()
@@ -120,7 +124,7 @@ def _post_write_user_record(
         )
     try:
         records = read_canonical_roster_collection(
-            service.list_users(include_inactive=True)
+            service.list_users(include_inactive=True, include_deleted=True)
         )
     except Exception as exc:
         raise ManagementError(
@@ -194,6 +198,7 @@ def _translated(exc: Exception) -> HTTPException:
             "readback_conflict",
             "scope_policy_conflict",
             "update_conflict",
+            "user_deleted",
         } else 422
         return HTTPException(
             status_code=status_code,
@@ -208,11 +213,12 @@ def _translated(exc: Exception) -> HTTPException:
 @router.get("/users", response_model=UserListResponse)
 def list_users(
     include_inactive: bool = Query(default=True),
+    include_deleted: bool = Query(default=False),
     _admin: AdminIdentity = Depends(require_admin),
     service: UserManagementService = Depends(get_user_management_service),
 ) -> dict[str, Any]:
     records = read_canonical_roster_collection(
-        service.list_users(include_inactive=include_inactive)
+        service.list_users(include_inactive=include_inactive, include_deleted=include_deleted)
     )
     return {"users": [_user_payload(record) for record in records]}
 
@@ -252,6 +258,15 @@ def create_user(payload: UserCreate, admin: AdminIdentity = Depends(require_admi
 def update_user(roster_id: str, payload: UserPatch, admin: AdminIdentity = Depends(require_admin), service: UserManagementService = Depends(get_user_management_service)) -> dict[str, Any]:
     try:
         stored = service.update_user(roster_id, payload, actor=admin.email)
+        return _user_payload(_post_write_user_record(service, stored))
+    except (KeyError, ValueError) as exc:
+        raise _translated(exc) from exc
+
+
+@router.delete("/users/{roster_id}", response_model=UserView)
+def delete_user(roster_id: str, payload: UserDelete, admin: AdminIdentity = Depends(require_admin), service: UserManagementService = Depends(get_user_management_service)) -> dict[str, Any]:
+    try:
+        stored = service.delete_user(roster_id, payload, actor=admin.email)
         return _user_payload(_post_write_user_record(service, stored))
     except (KeyError, ValueError) as exc:
         raise _translated(exc) from exc

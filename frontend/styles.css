@@ -598,6 +598,12 @@ td small { margin-top: 3px; }
 .switchRow { grid-column: 1 / -1; display: flex !important; grid-template-columns: auto 1fr !important; align-items: center; }
 .switchRow input { min-height: 18px; }
 .formActions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.deleteUserEntry { margin-right: auto; }
+#userForm .formActions, #deleteUserForm .formActions { flex-wrap: wrap; }
+.deleteUserIdentity { grid-column: 1 / -1; display: grid; gap: 7px; padding: 16px; border: 1px solid var(--line); border-radius: 11px; overflow-wrap: anywhere; }
+.deleteUserIdentity strong { font-size: 18px; }
+.deleteUserIdentity span { color: var(--muted); }
+#deleteUserForm > p, #deleteUserForm > button { grid-column: 1 / -1; }
 .drawerNote { color: var(--muted); font-size: 10px; line-height: 1.6; }
 .scopeImpact {
   grid-column: 1 / -1;

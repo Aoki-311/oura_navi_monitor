@@ -29,6 +29,9 @@ _USER_DOCUMENT_FIELDS = frozenset(
         "team",
         "label_ids",
         "is_active",
+        "is_deleted",
+        "deleted_at",
+        "deleted_by",
         "created_at",
         "updated_at",
         "updated_by",
@@ -112,7 +115,7 @@ class UserDirectoryRepository:
             payload[_DOCUMENT_ID_FIELD] = document_id
         return payload
 
-    def list_users(self, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+    def list_users(self, *, include_inactive: bool = True, include_deleted: bool = False) -> list[dict[str, Any]]:
         query = self._user_collection()
         if not include_inactive:
             query = query.where(filter=FieldFilter("is_active", "==", True))
@@ -120,6 +123,10 @@ class UserDirectoryRepository:
             self._payload(document, preserve_document_id=True)
             for document in query.stream()
         ]
+        # Legacy documents omit is_deleted; a Firestore equality filter would
+        # accidentally hide all of them, so apply this additive field in memory.
+        if not include_deleted:
+            users = [user for user in users if user.get("is_deleted") is not True]
         return sorted(users, key=lambda item: (str(item.get("area") or ""), str(item.get("name") or "")))
 
     def get_user(self, roster_id: str) -> dict[str, Any] | None:
@@ -133,7 +140,7 @@ class UserDirectoryRepository:
     def find_user_by_email(self, email: str) -> dict[str, Any] | None:
         normalized = normalize_roster_email(email)
         matches = []
-        for user in self.list_users(include_inactive=True):
+        for user in self.list_users(include_inactive=True, include_deleted=True):
             try:
                 candidate = normalize_roster_email(user.get("email"))
             except ValueError:
@@ -172,6 +179,8 @@ class UserDirectoryRepository:
         def commit(transaction: Any) -> dict[str, Any]:
             current = user_ref.get(transaction=transaction)
             current_payload = dict(current.to_dict() or {}) if current.exists else {}
+            if current_payload.get("is_deleted") is True:
+                raise ManagementError("user_deleted", "deleted user cannot be overwritten")
             if action == "create" and current.exists:
                 raise ValueError("user already exists")
             if action == "update" and not current.exists:
@@ -310,6 +319,8 @@ class UserDirectoryRepository:
             if not current.exists:
                 raise ValueError("user not found")
             current_payload = dict(current.to_dict() or {})
+            if current_payload.get("is_deleted") is True:
+                raise ManagementError("user_deleted", "deleted user cannot be bound")
             current_chat_user_id = str(current_payload.get("chat_user_id") or "").strip()
             current_user_id = str(current_payload.get("user_id") or "").strip()
             if current_chat_user_id and current_chat_user_id != resolved_chat_user_id:
@@ -364,6 +375,50 @@ class UserDirectoryRepository:
                 dict(change),
             )
             return {**current_payload, **patch}
+
+        return commit(self._client.transaction())
+
+    def archive_user_and_change(
+        self,
+        roster_id: str,
+        change: dict[str, Any],
+        *,
+        expected_updated_at: str,
+    ) -> dict[str, Any]:
+        """CAS archive and audit atomically, retaining every identity claim."""
+
+        resolved_id = str(roster_id or "").strip()
+        change_id = str(change.get("change_id") or "").strip()
+        if not resolved_id or not change_id or change.get("action") != "delete":
+            raise ValueError("roster id and delete audit are required")
+        user_ref = self._user_collection().document(resolved_id)
+
+        @firestore.transactional
+        def commit(transaction: Any) -> dict[str, Any]:
+            current = user_ref.get(transaction=transaction)
+            if not current.exists:
+                raise KeyError("user not found")
+            current_payload = dict(current.to_dict() or {})
+            if current_payload.get("is_deleted") is True:
+                raise ManagementError("user_deleted", "user is already deleted")
+            if revision_text(current_payload.get("updated_at")) != str(expected_updated_at or "").strip():
+                raise ManagementError("update_conflict", "user delete conflict")
+            patch = {
+                "is_deleted": True,
+                "is_active": False,
+                "deleted_at": change["updated_at"],
+                "deleted_by": change["updated_by"],
+                "updated_at": change["updated_at"],
+                "updated_by": change["updated_by"],
+            }
+            # Do not replace the document or touch label/identity claim rows.
+            # A malformed legacy profile must still be safe to archive.
+            transaction.update(user_ref, patch)
+            transaction.set(
+                self._client.collection(self._changes).document(change_id),
+                dict(change),
+            )
+            return {**current_payload, **patch, _DOCUMENT_ID_FIELD: resolved_id}
 
         return commit(self._client.transaction())
 

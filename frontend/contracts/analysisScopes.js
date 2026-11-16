@@ -9,7 +9,7 @@ export function isSummaryRole(value) {
 }
 
 export function isSummaryUser(row) {
-  return isSummaryRole(row?.role) && ["MR(DM)", "MR(HCS)"].includes(canonicalDepartment(row?.department));
+  return isSummaryRole(row?.role) && ["MR(DM)", "MR(HCS)", "MR(ブロック)"].includes(canonicalDepartment(row?.department));
 }
 
 export function isExactSummaryRoleSet(values) {

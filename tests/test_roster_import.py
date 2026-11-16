@@ -63,7 +63,7 @@ def test_bootstrap_apply_resumes_only_an_exact_partial_plan(
 
     class Directory:
         @staticmethod
-        def list_users(*, include_inactive: bool = True):
+        def list_users(*, include_inactive: bool = True, include_deleted: bool = False):
             assert include_inactive is True
             return [dict(item) for item in stored]
 
@@ -123,7 +123,7 @@ def test_bootstrap_apply_refuses_to_overwrite_a_changed_existing_row(
 
     class Directory:
         @staticmethod
-        def list_users(*, include_inactive: bool = True):
+        def list_users(*, include_inactive: bool = True, include_deleted: bool = False):
             return [dict(changed)]
 
     credential = roster_workbook.parent / "approved-credential.json"
@@ -286,13 +286,30 @@ def test_roster_area_is_not_inferred_from_workplace_or_map_coverage(
     assert all(item["area"] == item["area_key"] == "北海道東北" for item in niigata_hcs)
 
 
+def test_new_departments_keep_block_as_mr_and_misw_outside_analytics(roster_workbook: Path) -> None:
+    workbook = load_workbook(roster_workbook)
+    sheet = workbook.active
+    sheet.append(["関西", "大阪", "ブロック利用者", "block@example.com", "社員MR", "6~10年", "MR（ブロック）"])
+    sheet.append(["東京", "虎ノ門", "MisW利用者", "misw@example.com", "本部メンバー", "ー", "本社（MisW）"])
+    sheet.append(["東京", "虎ノ門", "セールスマーケ利用者", "sales@example.com", "本部メンバー", "ー", "本社（セールスマーケ）"])
+    workbook.save(roster_workbook)
+    workbook.close()
+    plan = load_roster_plan(roster_workbook)
+    assert plan.scope_counts == {"global": 2, "user_map": 5, "management": 7}
+    by_email = {row["email"]: row for row in plan.users}
+    assert by_email["block@example.com"]["mr_experience"] == "6~10年"
+    assert by_email["misw@example.com"]["department"] == "MisW本社"
+    assert by_email["misw@example.com"]["area_key"] == "本社・虎ノ門"
+    assert by_email["sales@example.com"]["department"] == "セールスマーケ本社"
+
+
 class SyncDirectory:
     def __init__(self, users):
         self.users = {item["roster_id"]: dict(item) for item in users}
         self.audit = []
 
-    def list_users(self, *, include_inactive=True):
-        return [dict(item) for item in self.users.values()]
+    def list_users(self, *, include_inactive=True, include_deleted=False):
+        return [dict(item) for item in self.users.values() if include_deleted or item.get("is_deleted") is not True]
 
     def get_user(self, roster_id):
         return dict(self.users[roster_id]) if roster_id in self.users else None
@@ -309,6 +326,39 @@ class SyncDirectory:
         self.users[user["roster_id"]] = dict(user)
         self.audit.append(change)
         return dict(user)
+
+
+def test_sync_does_not_resurrect_or_rewrite_an_administrator_deleted_user(roster_workbook: Path) -> None:
+    plan = load_roster_plan(roster_workbook)
+    archived = {
+        **plan.users[0], "name": "削除時の氏名", "is_active": False,
+        "is_deleted": True, "deleted_at": "2026-11-16T20:00:00+00:00",
+        "deleted_by": "admin@example.com", "updated_at": "2026-11-16T20:00:00+00:00",
+        "user_id": "historic-subject", "chat_user_id": "historic-chat",
+    }
+    directory = SyncDirectory([archived])
+    diff = importer._sync_diff(plan, directory.list_users(include_deleted=True))
+    assert diff["summary"]["deletedWorkbookUsers"] == 1
+    assert diff["summary"]["createUsers"] == 3
+    assert diff["summary"]["updateUsers"] == 0
+    receipt = importer._apply_sync(
+        plan, directory=directory, actor="admin@example.com",
+        expected_sync_digest=diff["summary"]["syncDigest"],
+    )
+    assert receipt["appliedUsers"] == 3
+    assert receipt["readbackMatched"] is True
+    assert directory.users[archived["roster_id"]] == archived
+    assert all(row["target_id"] != archived["roster_id"] for row in directory.audit)
+
+
+def test_bootstrap_rejects_deleted_identities_before_any_write(roster_workbook: Path, monkeypatch) -> None:
+    plan = load_roster_plan(roster_workbook)
+    directory = SyncDirectory([{**plan.users[-1], "is_deleted": True, "is_active": False}])
+    monkeypatch.setattr(importer, "_directory_for", lambda _credential: directory)
+    monkeypatch.setattr(importer, "UserManagementService", lambda **_kwargs: pytest.fail("bootstrap must fail before constructing the writer"))
+    with pytest.raises(RuntimeError, match="deleted roster identities; use --sync"):
+        importer._apply_plan(plan, actor="admin@example.com", credential_file="unused")
+    assert directory.audit == []
 
 
 def test_sync_keeps_complete_roster_without_login_or_usage_records(
@@ -351,7 +401,7 @@ def test_sync_updates_stable_identity_preserves_history_and_is_resumable(hcs_wor
     assert actual["role"] == "社員MR"
     assert actual["team"] == "HCS静岡マルチ"
     for key in (*importer._PRESERVED_FIELDS, *importer._IDENTITY_FIELDS):
-        assert actual[key] == current[key]
+        assert actual.get(key) == current.get(key)
     assert directory.users["outside-id"] == outside
     assert source["roster_id"] not in directory.users
     assert len(directory.audit) == 4

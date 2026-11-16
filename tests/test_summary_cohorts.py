@@ -231,7 +231,7 @@ def legacy_chat_service():
     return service, _window(now), publication
 
 
-@pytest.mark.parametrize("cohort,population", [("all", 2), ("dm", 2), ("hcs", 0)])
+@pytest.mark.parametrize("cohort,population", [("all", 2), ("dm", 2), ("hcs", 0), ("block", 0)])
 def test_frozen_v1_publication_serves_every_summary_panel_with_current_membership(cohort, population):
     service, window, publication = legacy_chat_service()
     payloads = [getattr(service, name)(window=window, cohort=cohort) for name in (
@@ -324,7 +324,7 @@ class LegacyNewsRepository(_Repository):
         return [row for row in self.events if row["roster_id"] in members]
 
 
-@pytest.mark.parametrize("cohort,population", [("all", 2), ("dm", 2), ("hcs", 0)])
+@pytest.mark.parametrize("cohort,population", [("all", 2), ("dm", 2), ("hcs", 0), ("block", 0)])
 def test_news_frozen_v1_receipts_keep_current_summary_and_user_map_population(cohort, population):
     repository = LegacyNewsRepository()
     dashboard = _service(repository).dashboard(window=news_window(), now=NOW, cohort=cohort)
@@ -359,28 +359,31 @@ def test_news_legacy_receipts_still_reject_unknown_or_corrupt_snapshots(corrupti
 
 
 @pytest.mark.parametrize("path", ["overview", "environment", "trend", "regions", "overview/users"])
-def test_analytics_routes_bind_and_validate_cohort(path):
+@pytest.mark.parametrize("cohort,population", [("hcs", 2), ("block", 0)])
+def test_analytics_routes_bind_and_validate_cohort(path, cohort, population):
     service, _ = chat_service()
     app.dependency_overrides[get_settings] = _settings
     app.dependency_overrides[get_analytics_service] = lambda: service
     try:
         client = TestClient(app)
         headers = {"x-monitor-admin-email": "admin@example.com"}
-        response = client.get(f"/api/analytics/{path}", params={"cohort": "hcs"}, headers=headers)
+        response = client.get(f"/api/analytics/{path}", params={"cohort": cohort}, headers=headers)
         assert response.status_code == 200
-        assert response.json()["cohort"] == "hcs"
-        assert response.json()["scopeUserCount"] == 2
+        assert response.json()["cohort"] == cohort
+        assert response.json()["scopeUserCount"] == population
         assert client.get(f"/api/analytics/{path}", params={"cohort": "unknown"}, headers=headers).status_code == 422
     finally:
         app.dependency_overrides.clear()
 
 
-def test_export_binds_cohort_to_csv_and_idempotency():
+@pytest.mark.parametrize("cohort", ["hcs", "block"])
+def test_export_binds_cohort_to_csv_and_idempotency(cohort):
     class CohortExport(ExportAnalytics):
         def overview_users(self, **kwargs):
             payload = super().overview_users(**kwargs)
             payload["cohort"] = kwargs["cohort"]
-            payload["users"][0]["department"] = "MR(HCS)"
+            payload["scopePolicyVersion"] = SCOPE_POLICY_VERSION
+            payload["users"][0]["department"] = "MR(ブロック)" if cohort == "block" else "MR(HCS)"
             return payload
 
     exports = _Exports()
@@ -388,7 +391,7 @@ def test_export_binds_cohort_to_csv_and_idempotency():
     app.dependency_overrides[get_analytics_service] = CohortExport
     app.dependency_overrides[get_export_job_repository] = lambda: exports
     body = {
-        "kind": "overview_users", "cohort": "hcs", "expectedPublishedRunId": "run-1",
+        "kind": "overview_users", "cohort": cohort, "expectedPublishedRunId": "run-1",
         "expectedRosterFingerprint": "roster-fingerprint-1", "expectedScopePolicyVersion": SCOPE_POLICY_VERSION,
         **_EXPORT_SNAPSHOT, "idempotencyKey": "cohort-export-1",
     }
@@ -397,12 +400,12 @@ def test_export_binds_cohort_to_csv_and_idempotency():
         headers = {"x-monitor-admin-email": "admin@example.com"}
         response = client.post("/api/export/jobs", json=body, headers=headers)
         assert response.status_code == 201
-        assert "summary_hcs_" in response.json()["filename"]
+        assert f"summary_{cohort}_" in response.json()["filename"]
         download = client.get(response.json()["downloadUrl"], headers=headers)
         rows = list(csv.DictReader(io.StringIO(download.text.lstrip("\ufeff"))))
-        assert rows[0]["対象MR"] == "hcs"
+        assert rows[0]["対象MR"] == cohort
         job = exports.jobs[response.json()["jobId"]]
-        assert job["snapshot_metadata"]["cohort"] == "hcs"
+        assert job["snapshot_metadata"]["cohort"] == cohort
         conflict = client.post("/api/export/jobs", json={**body, "cohort": "dm"}, headers=headers)
         assert conflict.status_code == 409
         assert conflict.json()["detail"]["code"] == "idempotency_conflict"

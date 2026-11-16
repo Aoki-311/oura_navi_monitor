@@ -11,8 +11,11 @@ class Department(StrEnum):
 
     DM_FIELD = "MR(DM)"
     HCS_FIELD = "MR(HCS)"
+    BLOCK_FIELD = "MR(ブロック)"
     HEALTHCARE_HQ = "ヘルスケア本社"
     DM_HQ = "DM本社"
+    MISW_HQ = "MisW本社"
+    SALES_MARKETING_HQ = "セールスマーケ本社"
     ADMIN = "管理者"
 
     @classmethod
@@ -32,19 +35,22 @@ class SummaryCohort(StrEnum):
     ALL = "all"
     DM = "dm"
     HCS = "hcs"
+    BLOCK = "block"
 
 
 SUMMARY_ROLES: Final[tuple[str, ...]] = ("社員MR", "本社MR", "コントラクトMR")
-SCOPE_POLICY_VERSION: Final[str] = "summary_department_v2"
+SCOPE_POLICY_VERSION: Final[str] = "summary_department_v3"
+PREVIOUS_SCOPE_POLICY_VERSION: Final[str] = "summary_department_v2"
 LEGACY_SCOPE_POLICY_VERSION: Final[str] = "summary_role_v1"
 READABLE_SCOPE_POLICY_VERSIONS: Final[frozenset[str]] = frozenset(
-    {SCOPE_POLICY_VERSION, LEGACY_SCOPE_POLICY_VERSION}
+    {SCOPE_POLICY_VERSION, PREVIOUS_SCOPE_POLICY_VERSION, LEGACY_SCOPE_POLICY_VERSION}
 )
 _SUMMARY_DEPARTMENTS: Final[frozenset[Department]] = frozenset(
-    {Department.DM_FIELD, Department.HCS_FIELD}
+    {Department.DM_FIELD, Department.HCS_FIELD, Department.BLOCK_FIELD}
 )
 _USER_MAP_DEPARTMENTS: Final[frozenset[Department]] = frozenset(
-    {*_SUMMARY_DEPARTMENTS, Department.HEALTHCARE_HQ, Department.DM_HQ}
+    {*_SUMMARY_DEPARTMENTS, Department.HEALTHCARE_HQ, Department.DM_HQ,
+     Department.SALES_MARKETING_HQ}
 )
 
 
@@ -79,12 +85,13 @@ def evaluate_membership(
     department: Department | str,
     is_active: bool,
     label_ids: Iterable[str] = (),
+    is_deleted: bool = False,
 ) -> ScopeEvaluation:
     """Safely derive scopes for both valid and legacy roster rows.
 
     Summary membership requires a field department and an exact MR role.
-    Headquarters remain eligible for USER_MAP. Monitor labels are annotations
-    only and never grant either scope.
+    DM, healthcare and sales-marketing headquarters remain eligible for USER_MAP.
+    MisW headquarters are management-only. Monitor labels never grant scopes.
     """
 
     del label_ids
@@ -101,6 +108,7 @@ def evaluate_membership(
     user_map_enabled = bool(
         resolved_department is not None
         and is_active
+        and not is_deleted
         and resolved_department in _USER_MAP_DEPARTMENTS
     )
     global_enabled = bool(
@@ -125,6 +133,7 @@ def membership_for(
     department: Department | str,
     is_active: bool,
     label_ids: Iterable[str] = (),
+    is_deleted: bool = False,
 ) -> ScopeMembership:
     """Return the single governed membership projection."""
 
@@ -133,6 +142,7 @@ def membership_for(
         department=department,
         is_active=is_active,
         label_ids=label_ids,
+        is_deleted=is_deleted,
     ).membership
 
 
@@ -147,12 +157,14 @@ def summary_cohort_matches(
         role=row.get("role"),
         department=str(row.get("department") or ""),
         is_active=row.get("is_active") is True,
+        is_deleted=row.get("is_deleted") is True,
     )
     if not evaluation.membership.global_enabled:
         return False
     return selected is SummaryCohort.ALL or evaluation.department is {
         SummaryCohort.DM: Department.DM_FIELD,
         SummaryCohort.HCS: Department.HCS_FIELD,
+        SummaryCohort.BLOCK: Department.BLOCK_FIELD,
     }[selected]
 
 

@@ -32,6 +32,24 @@ def test_canonical_roster_reader_normalizes_one_valid_record() -> None:
     assert record.analytics_eligible is True
 
 
+def test_deleted_roster_is_excluded_without_treating_inactive_as_deleted() -> None:
+    inactive = read_canonical_roster({**_valid_row(), "is_active": False})
+    archived = read_canonical_roster({**_valid_row(), "is_deleted": True})
+    assert inactive.value["is_deleted"] is False
+    assert inactive.projection_eligible is True
+    assert archived.value["is_active"] is False
+    assert archived.value["is_deleted"] is True
+    assert not archived.identity_eligible
+    assert not archived.projection_eligible
+    assert not archived.analytics_eligible
+    assert not archived.evaluation.membership.user_map_enabled
+    assert archived.issues == ()
+    malformed = read_canonical_roster({**_valid_row(), "is_deleted": "false"})
+    assert "invalid_is_deleted" in malformed.issues
+    assert not malformed.analytics_eligible
+    assert malformed.value["is_active"] is False
+
+
 def test_team_is_read_only_for_canonical_hcs_and_old_records_remain_valid() -> None:
     hcs = read_canonical_roster({**_valid_row(), "department": "MR（HCS）", "team": "　関西Ａ  チーム　"})
     assert hcs.value["department"] == "MR(HCS)"

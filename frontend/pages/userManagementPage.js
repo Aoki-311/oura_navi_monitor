@@ -2,6 +2,7 @@ import {
   createManagedLabel,
   createManagedUser,
   deleteManagedLabel,
+  deleteManagedUser,
   getManagedLabels,
   getManagedUsers,
   getManagementMetadata,
@@ -232,7 +233,30 @@ export class UserManagementPage {
     return model;
   }
 
-  async completeCommittedReadback({ form, lifecycle, errorBox, verify, apply, successMessage }) {
+  async verifyUserDeletion(expected) {
+    const archived = await getManagedUsers({ include_inactive: true, include_deleted: true }, { signal: this.signal });
+    if (!archived || !Array.isArray(archived.users)) throw new Error("削除状態を確認する名簿の形式が不正です。");
+    const candidates = archived.users.filter((row) => row?.rosterId === expected.rosterId);
+    const model = managementUsersModel({ users: candidates }, { includeDeleted: true });
+    const target = model.items[0];
+    if (candidates.length === 1 && !model.issues.length && target && !target.isDeleted) {
+      const error = new Error("確認時点では対象ユーザーは削除されていません。");
+      error.code = "user_not_deleted";
+      throw error;
+    }
+    if (candidates.length !== 1 || model.issues.length || !target?.isDeleted || target.isActive || !target.deletedAt || !target.updatedAt) {
+      throw new Error("対象ユーザーの削除記録を確認できません。");
+    }
+    if (expected.updatedAt && target.updatedAt !== expected.updatedAt) throw new Error("削除記録の版が応答と一致しません。");
+    const raw = await getManagedUsers({ include_inactive: true }, { signal: this.signal });
+    if (!raw || !Array.isArray(raw.users)) throw new Error("削除後のユーザー一覧の形式が不正です。");
+    if (raw.users.some((row) => row?.rosterId === expected.rosterId)) throw new Error("対象ユーザーが削除後の一覧に残っています。");
+    const remaining = managementUsersModel(raw);
+    if (remaining.issues.length) throw new Error("削除後のユーザー一覧を確認できません。");
+    return remaining;
+  }
+
+  async completeCommittedReadback({ form, lifecycle, errorBox, verify, apply, successMessage, unverifiedMessage = "変更は受付済みですが、保存結果を確認できません。", onUnverified }) {
     const retryId = "committedReadbackRetry";
     const setCommittedState = (message) => {
       lifecycle.setPhase("committed_unverified");
@@ -268,8 +292,9 @@ export class UserManagementPage {
         return true;
       } catch (error) {
         if (!isCancellation(error) && form.isConnected) {
-          setCommittedState(`変更は受付済みですが、保存結果を確認できません。${error?.message || "確認を再試行してください。"}`);
-          this.toast("変更は受付済みですが、保存結果を確認できません。", "error");
+          setCommittedState(`${unverifiedMessage}${error?.message || "確認を再試行してください。"}`);
+          onUnverified?.(error);
+          this.toast(unverifiedMessage, "error");
         }
         return false;
       }
@@ -281,7 +306,7 @@ export class UserManagementPage {
     const body = this.root.querySelector("#managementBody");
     if (!body) return;
     body.innerHTML = `
-      <div class="managementScopeSummary" aria-label="名簿の分析範囲"><span>名簿 ${this.users.length}名</span><span>全体サマリー ${this.users.filter((row) => row.scopePolicyVerified && row.globalScopeEnabled).length}名</span><span>ユーザー分析 ${this.users.filter((row) => row.scopePolicyVerified && row.userMapScopeEnabled).length}名</span><span>要修正 ${this.users.filter((row) => row.rosterIssues.length).length}名</span></div>
+      <div class="managementScopeSummary" aria-label="名簿の分析範囲"><span>名簿 ${this.users.length}名</span><span>有効 ${this.users.filter((row) => row.isActive).length}名</span><span>停用 ${this.users.filter((row) => !row.isActive).length}名</span><span>全体サマリー ${this.users.filter((row) => row.scopePolicyVerified && row.globalScopeEnabled).length}名</span><span>ユーザー分析 ${this.users.filter((row) => row.scopePolicyVerified && row.userMapScopeEnabled).length}名</span><span>要修正 ${this.users.filter((row) => row.rosterIssues.length).length}名</span></div>
       <div class="subtabs" role="tablist" aria-label="管理対象">
         <button role="tab" aria-selected="${this.subtab === "users"}" data-subtab="users" class="${this.subtab === "users" ? "isActive" : ""}">ユーザー管理 <span>${this.users.length}</span></button>
         <button role="tab" aria-selected="${this.subtab === "labels"}" data-subtab="labels" class="${this.subtab === "labels" ? "isActive" : ""}">ラベル管理 <span>${this.labels.length}</span></button>
@@ -448,14 +473,14 @@ export class UserManagementPage {
       <fieldset ${labelEditingEnabled ? "" : "disabled"}><legend>分析ラベル</legend><div class="labelChoices">${labelChoices.map((row) => `<label><input type="checkbox" name="label" value="${escapeHtml(row.labelId)}" ${selectedLabels.has(row.labelId) ? "checked" : ""} ${row.isActive ? "" : "disabled"}><span style="--chip:${escapeHtml(row.color)}">${escapeHtml(row.name)}${row.isActive ? "" : "（停用・保持）"}</span></label>`).join("") || '<span class="muted">利用可能な分析ラベルはありません</span>'}</div>${!labelEditingEnabled ? '<p class="fieldNote">ラベル台帳を確認できないため、現在の関係を変更せず保存します。</p>' : danglingLabelIds.length ? `<p class="fieldNote">存在しないラベル参照（${escapeHtml(danglingLabelIds.join("、"))}）は、このユーザーを保存すると削除されます。</p>` : ""}</fieldset>
       ${isNew ? '<label class="switchRow"><input name="is_active" type="checkbox" checked>登録時から有効</label>' : `<label class="switchRow"><input name="is_active" type="checkbox" ${user.isActive ? "checked" : ""}>このユーザーを有効にする</label>`}
       <p class="scopeImpact" id="scopeImpact" role="status"></p><p class="formError" id="userFormError" role="alert" hidden></p>
-      <div class="formActions"><button type="button" class="ghostButton" id="cancelUser">キャンセル</button><button type="submit" class="primaryButton" disabled>保存</button></div>
+      <div class="formActions">${!isNew ? `<button type="button" class="dangerButton deleteUserEntry" id="deleteUser" ${user.rosterId && user.updatedAt ? "" : "disabled"}>ユーザーを削除</button>` : ""}<button type="button" class="ghostButton" id="cancelUser">キャンセル</button><button type="submit" class="primaryButton" disabled>保存</button></div>
     </form></aside></div>`;
     const form = host.querySelector("#userForm");
     const lifecycle = this.installDrawer(form, form.elements.name);
     const submitButton = form.querySelector('[type="submit"]');
     const updateDepartmentFields = () => {
       const department = form.elements.department.value;
-      const isMr = ["MR(DM)", "MR(HCS)"].includes(department);
+      const isMr = ["MR(DM)", "MR(HCS)", "MR(ブロック)"].includes(department);
       form.elements.team.disabled = department !== "MR(HCS)";
       if (department !== "MR(HCS)") form.elements.team.value = "";
       form.elements.mr_experience.disabled = !isMr;
@@ -527,6 +552,11 @@ export class UserManagementPage {
     form.elements.is_active.addEventListener("change", updateScopeImpact);
     host.querySelector("#closeDrawer").addEventListener("click", lifecycle.close);
     host.querySelector("#cancelUser").addEventListener("click", lifecycle.close);
+    host.querySelector("#deleteUser")?.addEventListener("click", () => {
+      if (lifecycle.getPhase() !== "idle") return;
+      lifecycle.close();
+      if (!form.isConnected) this.openUserDeletion(user);
+    });
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (lifecycle.getPhase() !== "idle") return;
@@ -619,6 +649,16 @@ export class UserManagementPage {
           lifecycle.markClean();
           lifecycle.setPhase("committed_unverified");
           await verifyCommitted();
+        } else if (error?.code === "user_deleted") {
+          writeSucceeded = true;
+          lifecycle.markClean();
+          await this.completeCommittedReadback({
+            form, lifecycle, errorBox,
+            verify: () => this.verifyUserDeletion({ rosterId: user.rosterId }),
+            apply: (model) => this.applyUsersReadback(model),
+            successMessage: "対象ユーザーは既に削除されています。最新の一覧に更新しました。",
+            unverifiedMessage: "対象ユーザーの削除状態を確認できません。",
+          });
         } else if (!isCancellation(error)) {
           if (error?.code === "scope_policy_conflict") {
             scopePreviewVerified = false;
@@ -634,6 +674,167 @@ export class UserManagementPage {
           lifecycle.setPhase("idle");
           if (submit.isConnected) submit.disabled = !scopePreviewVerified;
           if (form.isConnected) form.removeAttribute("aria-busy");
+        }
+      }
+    });
+  }
+
+  openUserDeletion(user, { notice = "" } = {}) {
+    if (!user?.rosterId || !user.updatedAt || !this.metadata) return;
+    this.dialogCleanup?.();
+    this.releaseLeaveGuard?.();
+    const host = this.root.querySelector("#drawerHost");
+    host.innerHTML = `<div class="drawerBackdrop"><aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="deleteUserTitle" aria-describedby="deleteUserDescription">
+      <div class="drawerHead"><h3 id="deleteUserTitle">ユーザーを削除しますか？</h3><button id="closeDrawer" type="button" class="iconButton" aria-label="削除確認を閉じる">×</button></div>
+      <form id="deleteUserForm" class="formGrid">
+        <div class="deleteUserIdentity"><strong>${escapeHtml(user.name)}</strong><span>${escapeHtml(user.email)}</span></div>
+        <p id="deleteUserDescription" class="fieldNote">Monitorの名簿から削除します。過去の会話・利用ログは保持します。分析への反映は次回データ更新後です。OurA-Naviのログイン権限は変更されません。削除後はこの画面から編集・再有効化できません。</p>
+        <p class="fieldNote">一時的にMonitorの分析対象から外す場合は、編集画面で「このユーザーを有効にする」をオフにしてください。停用ユーザーは名簿に残ります。</p>
+        <p class="formError" id="deleteUserError" role="alert" ${notice ? "" : "hidden"}>${escapeHtml(notice)}</p>
+        <div class="formActions"><button id="cancelDeleteUser" type="button" class="ghostButton">キャンセル</button><button id="confirmDeleteUser" type="submit" class="dangerButton">このユーザーを削除</button></div>
+      </form></aside></div>`;
+    const form = host.querySelector("#deleteUserForm");
+    const confirm = host.querySelector("#confirmDeleteUser");
+    const errorBox = host.querySelector("#deleteUserError");
+    const lifecycle = this.installDrawer(form, host.querySelector("#cancelDeleteUser"));
+    host.querySelector("#closeDrawer").addEventListener("click", lifecycle.close);
+    host.querySelector("#cancelDeleteUser").addEventListener("click", lifecycle.close);
+    const reload = async () => {
+      lifecycle.setPhase("deleting");
+      form.setAttribute("aria-busy", "true");
+      confirm.disabled = true;
+      const retry = host.querySelector("#reloadDeleteUser");
+      if (retry) retry.disabled = true;
+      try {
+        const [raw, metadata] = await Promise.all([
+          getManagedUsers({ include_inactive: true }, { signal: this.signal }),
+          getManagementMetadata({ signal: this.signal }),
+        ]);
+        if (!form.isConnected || !this.isCurrent()) return;
+        const model = managementUsersModel(raw);
+        if (model.issues.length) throw new Error("最新のユーザー一覧を確認できません。");
+        this.metadata = managementMetadataModel(metadata);
+        this.applyUsersReadback(model);
+        const latest = this.users.find((row) => row.rosterId === user.rosterId);
+        if (!latest) {
+          this.applyUsersReadback(await this.verifyUserDeletion({ rosterId: user.rosterId }));
+          if (!form.isConnected || !this.isCurrent()) return;
+          lifecycle.setPhase("idle");
+          this.closeDrawer();
+          this.render();
+          this.toast("対象ユーザーは既に削除されています。最新の一覧に更新しました。", "success");
+          return;
+        }
+        this.openUserDeletion(latest, { notice: "最新の内容に更新しました。氏名・メールを確認し、削除する場合はもう一度操作してください。" });
+      } catch (error) {
+        if (!isCancellation(error) && form.isConnected) {
+          errorBox.textContent = `最新の内容を確認できません。${error.message}`;
+          errorBox.hidden = false;
+          let button = host.querySelector("#reloadDeleteUser");
+          if (!button) {
+            button = document.createElement("button");
+            button.id = "reloadDeleteUser";
+            button.type = "button";
+            button.className = "ghostButton";
+            button.textContent = "最新の内容を読み直す";
+            errorBox.insertAdjacentElement("afterend", button);
+          }
+          button.disabled = false;
+          button.onclick = () => { void reload(); };
+        }
+      } finally {
+        if (form.isConnected) {
+          lifecycle.setPhase("idle");
+          form.removeAttribute("aria-busy");
+        }
+      }
+    };
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (lifecycle.getPhase() !== "idle" || confirm.disabled) return;
+      confirm.disabled = true;
+      form.setAttribute("aria-busy", "true");
+      lifecycle.setPhase("deleting");
+      errorBox.hidden = true;
+      let committedOrUncertain = false;
+      const expected = { rosterId: user.rosterId };
+      const offerReturnToList = (error) => {
+        if (error?.code !== "user_not_deleted") return;
+        let back = form.querySelector("#returnToUserList");
+        if (!back) {
+          back = document.createElement("button");
+          back.id = "returnToUserList";
+          back.type = "button";
+          back.className = "ghostButton";
+          back.textContent = "最新の一覧に戻る";
+          errorBox.insertAdjacentElement("afterend", back);
+        }
+        back.disabled = false;
+        back.onclick = async () => {
+          back.disabled = true;
+          form.setAttribute("aria-busy", "true");
+          const retry = form.querySelector("#committedReadbackRetry");
+          if (retry) retry.disabled = true;
+          try {
+            const model = managementUsersModel(await getManagedUsers({ include_inactive: true }, { signal: this.signal }));
+            if (!form.isConnected || !this.isCurrent()) return;
+            if (model.issues.length) throw new Error("最新のユーザー一覧を確認できません。");
+            this.applyUsersReadback(model);
+            lifecycle.setPhase("idle");
+            this.closeDrawer();
+            this.render();
+            this.toast("削除完了は確認できていません。最新の一覧を表示しました。", "error");
+          } catch (readError) {
+            if (!isCancellation(readError) && form.isConnected) {
+              errorBox.textContent = `一覧を更新できません。${readError.message}`;
+              back.disabled = false;
+              if (retry) retry.disabled = false;
+            }
+          } finally {
+            if (form.isConnected) form.removeAttribute("aria-busy");
+          }
+        };
+      };
+      const verifyCommitted = (successMessage = "ユーザーを削除しました。分析には次回のデータ更新後に反映されます。") => this.completeCommittedReadback({
+        form, lifecycle, errorBox,
+        verify: () => this.verifyUserDeletion(expected),
+        apply: (model) => this.applyUsersReadback(model),
+        successMessage,
+        unverifiedMessage: "削除結果を確認できません。削除操作は繰り返さず、確認を再試行してください。",
+        onUnverified: offerReturnToList,
+      });
+      try {
+        const saved = await deleteManagedUser(user.rosterId, {
+          expected_updated_at: user.updatedAt,
+          expected_scope_policy_version: this.metadata.scopePolicyVersion,
+        }, { signal: this.signal });
+        committedOrUncertain = true;
+        lifecycle.markClean();
+        const response = managementUsersModel({ users: [saved] }, { includeDeleted: true });
+        if (!response.issues.length && response.items[0]?.rosterId === user.rosterId && response.items[0].isDeleted) {
+          expected.updatedAt = response.items[0].updatedAt;
+        }
+        await verifyCommitted();
+      } catch (error) {
+        if (error?.code === "update_conflict" || error?.code === "scope_policy_conflict") {
+          this.toast(error.message, "error");
+          await reload();
+        } else if (error?.code === "user_deleted") {
+          committedOrUncertain = true;
+          await verifyCommitted("対象ユーザーは既に削除されています。最新の一覧に更新しました。");
+        } else if (committedOrUncertain || error?.code === "readback_conflict" || error?.status >= 500 || error?.status === 408 || error instanceof TypeError || error instanceof SyntaxError) {
+          committedOrUncertain = true;
+          await verifyCommitted();
+        } else if (!isCancellation(error) && form.isConnected) {
+          errorBox.textContent = error.message;
+          errorBox.hidden = false;
+          this.toast(error.message, "error");
+        }
+      } finally {
+        if (!committedOrUncertain && form.isConnected) {
+          lifecycle.setPhase("idle");
+          if (!host.querySelector("#reloadDeleteUser")) confirm.disabled = false;
+          form.removeAttribute("aria-busy");
         }
       }
     });
