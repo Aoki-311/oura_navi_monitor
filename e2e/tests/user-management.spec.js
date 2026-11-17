@@ -62,10 +62,21 @@ for (const repairCase of [
   });
 }
 
-test("a mismatched save response becomes committed-unverified and never repeats the mutation", async ({ page }) => {
+test("a mismatched save response becomes committed-unverified and never repeats the mutation", async ({ page }, testInfo) => {
   let updateBody = null;
   let patchCount = 0;
+  let readbacksStarted = 0;
+  let readbacksCompleted = 0;
+  let releaseRetry;
+  const retryPending = new Promise((resolve) => { releaseRetry = resolve; });
   await installApiMocks(page);
+  await page.route(/\/api\/admin\/users(?:\?.*)?$/, async (route) => {
+    if (route.request().method() !== "GET" || patchCount === 0) return route.fallback();
+    readbacksStarted += 1;
+    if (readbacksStarted === 2) await retryPending;
+    await route.fulfill({ json: managedUsers });
+    readbacksCompleted += 1;
+  });
   await page.route("**/api/admin/users/roster_1", async (route) => {
     if (route.request().method() !== "PATCH") return route.fallback();
     patchCount += 1;
@@ -78,12 +89,32 @@ test("a mismatched save response becomes committed-unverified and never repeats 
   await page.locator("#userForm").getByRole("button", { name: "保存" }).click();
 
   await expect(page.locator(".drawer")).toBeVisible();
+  await expect.poll(() => readbacksCompleted).toBe(1);
+  await expect(page.locator("#userForm")).not.toHaveAttribute("aria-busy", "true");
   await expect(page.locator("#userFormError")).toContainText("変更は受付済みですが、保存結果を確認できません");
-  await expect(page.getByRole("button", { name: "確認を再試行" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "確認を再試行" })).toBeEnabled();
   await page.getByRole("button", { name: "確認を再試行" }).click();
+  try {
+    await expect.poll(() => readbacksStarted).toBe(2);
+    expect(readbacksCompleted).toBe(1);
+    await expect(page.locator("#userForm")).toHaveAttribute("aria-busy", "true");
+    await expect(page.getByRole("button", { name: "確認を再試行" })).toBeDisabled();
+    // This old text is still visible while the current GET is pending.
+    await expect(page.locator("#userFormError")).toContainText("保存結果を確認できません");
+    expect(patchCount).toBe(1);
+  } finally {
+    releaseRetry();
+  }
+  await expect.poll(() => readbacksCompleted).toBe(2);
+  await expect(page.locator("#userForm")).toBeVisible();
+  await expect(page.locator("#userForm")).not.toHaveAttribute("aria-busy", "true");
+  await expect(page.getByRole("button", { name: "確認を再試行" })).toBeEnabled();
   await expect(page.locator("#userFormError")).toContainText("保存結果を確認できません");
+  await expect(page.locator("#toast")).not.toContainText("保存しました");
+  expect(readbacksStarted).toBe(2);
   expect(patchCount).toBe(1);
   expect(updateBody.expected_scope_policy_version).toBe("summary_department_v2");
+  await testInfo.attach("mismatched-save-readbacks", { body: JSON.stringify({ patchCount, readbacksStarted, readbacksCompleted }), contentType: "application/json" });
 });
 
 test("role changes recompute summary membership through the server policy", async ({ page }) => {

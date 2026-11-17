@@ -1,6 +1,43 @@
 const { test, expect } = require("@playwright/test");
 const { installApiMocks, managedUsers, makeManagedUsers, managementMetadata } = require("./fixtures");
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function holdNextReadback(state, includeDeleted = true) {
+  const released = deferred();
+  const held = { read: null, release: released.resolve };
+  state.onReadback = async (read) => {
+    if (read.includeDeleted !== includeDeleted) return;
+    state.onReadback = null;
+    held.read = read;
+    await released.promise;
+  };
+  return held;
+}
+
+function completedReadbacks(state) {
+  return state.readbacks.filter((read) => read.completed)
+    .map((read) => [read.includeDeleted, read.status, read.includesDeleted ?? null]);
+}
+
+async function expectFailedReadback(page, state, expectedReads) {
+  // The previous error remains visible during retries. Wait for this cycle's
+  // responses AND its UI completion before changing the mock's recovery state.
+  await expect.poll(() => completedReadbacks(state)).toEqual(expectedReads);
+  expect(state.readbacks).toHaveLength(expectedReads.length);
+  await expect(page.locator("#deleteUserForm")).toBeVisible();
+  await expect(page.locator("#deleteUserForm")).not.toHaveAttribute("aria-busy", "true");
+  await expect(page.getByRole("button", { name: "確認を再試行" })).toBeEnabled();
+  await expect(page.locator("#deleteUserError")).toContainText("削除結果を確認できません");
+  await expect(page.locator("#confirmDeleteUser")).toBeDisabled();
+  await expect(page.locator("#toast")).not.toContainText("削除しました");
+  expect(state.deletions).toHaveLength(1);
+}
+
 async function installDeletionApi(page, users = managedUsers.users) {
   await installApiMocks(page);
   const state = {
@@ -8,6 +45,8 @@ async function installDeletionApi(page, users = managedUsers.users) {
     metadata: structuredClone(managementMetadata),
     deletions: [],
     reads: [],
+    readbacks: [],
+    onReadback: null,
     failReadback: false,
     exposeDeleted: false,
     onDelete: null,
@@ -25,8 +64,21 @@ async function installDeletionApi(page, users = managedUsers.users) {
     if (route.request().method() !== "GET") return route.fallback();
     const includeDeleted = new URL(route.request().url()).searchParams.get("include_deleted") === "true";
     state.reads.push(includeDeleted);
-    if (state.failReadback && state.deletions.length) return route.fulfill({ status: 503, json: { detail: "unavailable" } });
-    return route.fulfill({ json: { users: state.users.filter((row) => includeDeleted || state.exposeDeleted || !row.isDeleted) } });
+    const read = { includeDeleted, completed: false };
+    if (state.deletions.length) {
+      state.readbacks.push(read);
+      if (state.onReadback) await state.onReadback(read);
+    }
+    if (state.failReadback && state.deletions.length) {
+      read.status = 503;
+      await route.fulfill({ status: 503, json: { detail: "unavailable" } });
+    } else {
+      const users = state.users.filter((row) => includeDeleted || state.exposeDeleted || !row.isDeleted);
+      read.status = 200;
+      read.includesDeleted = users.some((row) => row.isDeleted);
+      await route.fulfill({ json: { users } });
+    }
+    read.completed = true;
   });
   await page.route(/\/api\/admin\/users\/[^/?]+$/, async (route) => {
     if (route.request().method() !== "DELETE") return route.fallback();
@@ -101,24 +153,60 @@ test("deleting is a leave barrier and repeated submission cannot issue another D
 });
 
 for (const failure of ["readback unavailable", "deleted user remains in default list"]) {
-  test(`${failure} cannot report success or repeat DELETE`, async ({ page }) => {
-    const state = await installDeletionApi(page);
-    if (failure === "readback unavailable") state.failReadback = true;
-    else state.exposeDeleted = true;
-    await openDeletion(page);
-    await page.locator("#confirmDeleteUser").click();
-    await expect(page.locator("#deleteUserError")).toContainText("削除結果を確認できません");
-    await expect(page.locator("#confirmDeleteUser")).toBeDisabled();
-    await expect(page.locator("#toast")).not.toContainText("削除しました");
-    await page.getByRole("button", { name: "確認を再試行" }).click();
-    await expect(page.locator("#deleteUserError")).toContainText("削除結果を確認できません");
-    expect(state.deletions).toHaveLength(1);
-    state.failReadback = false;
-    state.exposeDeleted = false;
-    await page.getByRole("button", { name: "確認を再試行" }).click();
-    await expect(page.locator("#deleteUserForm")).toHaveCount(0);
-    expect(state.deletions).toHaveLength(1);
-  });
+  for (const responseTiming of ["response before stale-error check", "response after stale-error check"]) {
+    test(`${failure} cannot report success or repeat DELETE (${responseTiming})`, async ({ page }, testInfo) => {
+      const state = await installDeletionApi(page);
+      if (failure === "readback unavailable") state.failReadback = true;
+      else state.exposeDeleted = true;
+      const failedCycle = failure === "readback unavailable"
+        ? [[true, 503, null]] : [[true, 200, true], [false, 200, true]];
+      await openDeletion(page);
+      await page.locator("#confirmDeleteUser").click();
+      await expectFailedReadback(page, state, failedCycle);
+
+      const failedReads = [...failedCycle, ...failedCycle];
+      const held = holdNextReadback(state);
+      await page.getByRole("button", { name: "確認を再試行" }).click();
+      try {
+        await expect.poll(() => held.read !== null).toBe(true);
+        await expect(page.locator("#deleteUserForm")).toHaveAttribute("aria-busy", "true");
+        await expect(page.getByRole("button", { name: "確認を再試行" })).toBeDisabled();
+        expect(completedReadbacks(state)).toEqual(failedCycle);
+        // Exercise both orderings around the stale text assertion. Neither ordering
+        // may allow the healthy mock state to leak into this failed retry.
+        if (responseTiming === "response before stale-error check") {
+          held.release();
+          await expect.poll(() => completedReadbacks(state)).toEqual(failedReads);
+        }
+        await expect(page.locator("#deleteUserError")).toContainText("削除結果を確認できません");
+      } finally {
+        held.release();
+      }
+      await expectFailedReadback(page, state, failedReads);
+
+      state.failReadback = false;
+      state.exposeDeleted = false;
+      const defaultList = holdNextReadback(state, false);
+      await page.getByRole("button", { name: "確認を再試行" }).click();
+      try {
+        await expect.poll(() => defaultList.read !== null).toBe(true);
+        await expect.poll(() => completedReadbacks(state)).toEqual([...failedReads, [true, 200, true]]);
+        await expect(page.locator("#deleteUserForm")).toBeVisible();
+        await expect(page.locator("#deleteUserForm")).toHaveAttribute("aria-busy", "true");
+        await expect(page.getByRole("button", { name: "確認を再試行" })).toBeDisabled();
+        await expect(page.locator("#toast")).not.toContainText("削除しました");
+        expect(state.deletions).toHaveLength(1);
+      } finally {
+        defaultList.release();
+      }
+      await expect(page.locator("#deleteUserForm")).toHaveCount(0);
+      await expect(page.locator("#toast")).toContainText("ユーザーを削除しました");
+      await expect.poll(() => completedReadbacks(state)).toEqual([...failedReads, [true, 200, true], [false, 200, false]]);
+      expect(state.readbacks).toHaveLength(failedReads.length + 2);
+      expect(state.deletions).toHaveLength(1);
+      await testInfo.attach("readback-cycles", { body: JSON.stringify({ failure, responseTiming, deletions: state.deletions.length, readbacks: state.readbacks }, null, 2), contentType: "application/json" });
+    });
+  }
 }
 
 test("permission failure keeps the user and allows cancellation", async ({ page }) => {
