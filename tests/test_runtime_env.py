@@ -94,6 +94,21 @@ def test_cloud_build_gates_the_candidate_with_browser_contract_and_immutable_dig
     assert "ReconciliationPending" in readback_owner
 
 
+def test_cloud_build_checks_the_sdk_python_before_deploy_and_reuses_it_for_verification() -> None:
+    root = Path(__file__).resolve().parents[1]
+    cloudbuild = (root / "cloudbuild.yaml").read_text(encoding="utf-8")
+    deploy = cloudbuild.split("  - id: cloud-run-deploy\n", 1)[1].split("  - id: verify-candidate\n", 1)[0]
+    verify = cloudbuild.split("  - id: verify-candidate\n", 1)[1].split("\nsubstitutions:", 1)[0]
+    invocation = "bash scripts/cloud_sdk_python.sh scripts/verify_candidate_readback.py"
+    preflight = invocation + " --help >/dev/null"
+
+    assert deploy.index(preflight) < deploy.index("gcloud run")
+    assert invocation + " \\\n" in verify
+    assert "python3 scripts/verify_candidate_readback.py" not in cloudbuild
+    assert "apt-get" not in deploy + verify
+    assert (root / "scripts/cloud_sdk_python.sh").is_file()
+
+
 def test_docker_push_receipt_extracts_one_exact_commit_digest(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "extract_docker_push_digest.sh"
